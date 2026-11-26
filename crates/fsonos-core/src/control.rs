@@ -547,13 +547,13 @@ pub struct Queued {
     pub proof: Option<queue_removal::QueuedProof>,
 }
 
-/// Add a Spotify track, album or playlist (`spotify:<kind>:<id>`) to the
+/// Add a Spotify track, episode, album or playlist (`spotify:<kind>:<id>`) to the
 /// queue of the group `coordinator` leads: at its end, or with `next` right
 /// after the track playing (when the group plays its queue; else at the
 /// end too). An album or playlist adds its tracks. Rendered with the
 /// household's own Spotify account, relearned and retried once on UPnP 800
-/// after an unchanged, explicitly refused attempt. A lost track reply is
-/// accepted only when a coherent read shows exactly the requested insertion,
+/// after an unchanged, explicitly refused attempt. A lost track or episode reply
+/// is accepted only when a coherent read shows exactly the requested insertion,
 /// with the original neighbors intact; an uncertain write is never replayed.
 /// Container expansions require an acknowledged range. No playback is started.
 pub fn enqueue_spotify<T: Transport + ?Sized>(

@@ -13,6 +13,7 @@ use std::cell::{Cell, RefCell};
 use std::net::IpAddr;
 
 const TRACK: &str = "spotify:track:EnqueueRecoveryTest";
+const EPISODE: &str = "spotify:episode:EnqueueRecoveryEpisode";
 const OWNER: &str = "http://example.invalid/owner.mp3";
 const ORIGINAL: [&str; 3] = [
     "http://example.invalid/a.mp3",
@@ -238,43 +239,46 @@ impl Transport for Intercept<'_> {
 }
 
 #[test]
-fn lost_track_replies_recover_append_and_next_without_repeating_writes() {
-    for s2 in [false, true] {
-        for next in [false, true] {
-            for reply in [Reply::Accepted, Reply::Lost, Reply::Malformed] {
-                let rig = Rig::new(s2);
-                let t = Intercept::new(&rig, reply, Edit::None);
-                let result = rig.enqueue(&t, TRACK, next).unwrap();
-                let first = if next { 2 } else { 4 };
-                assert_eq!(result.first, first);
-                assert!(result.playing_queue);
-                assert_eq!(result.uris.len(), 1);
-                assert_eq!(
-                    spotify_uri_from_renderer_uri(&result.uris[0]).as_deref(),
-                    Some(TRACK)
-                );
-                let mut expected: Vec<String> = ORIGINAL.iter().map(|uri| (*uri).into()).collect();
-                expected.insert(usize::try_from(first - 1).unwrap(), TRACK.into());
-                assert_eq!(rig.queue(), expected);
-                t.only_add_writes(1);
-                assert_eq!(
-                    soap::get_position_info(&rig.sim.lan(), rig.host)
+fn single_item_replies_recover_append_and_next_without_repeating_writes() {
+    for source in [TRACK, EPISODE] {
+        for s2 in [false, true] {
+            for next in [false, true] {
+                for reply in [Reply::Accepted, Reply::Lost, Reply::Malformed] {
+                    let rig = Rig::new(s2);
+                    let t = Intercept::new(&rig, reply, Edit::None);
+                    let result = rig.enqueue(&t, source, next).unwrap();
+                    let first = if next { 2 } else { 4 };
+                    assert_eq!(result.first, first);
+                    assert!(result.playing_queue);
+                    assert_eq!(result.uris.len(), 1);
+                    assert_eq!(
+                        spotify_uri_from_renderer_uri(&result.uris[0]).as_deref(),
+                        Some(source)
+                    );
+                    let mut expected: Vec<String> =
+                        ORIGINAL.iter().map(|uri| (*uri).into()).collect();
+                    expected.insert(usize::try_from(first - 1).unwrap(), source.into());
+                    assert_eq!(rig.queue(), expected);
+                    t.only_add_writes(1);
+                    assert_eq!(
+                        soap::get_position_info(&rig.sim.lan(), rig.host)
+                            .unwrap()
+                            .track,
+                        1
+                    );
+                    // The recovered receipt remains usable by the shared undo path.
+                    assert!(
+                        control::unqueue(
+                            &rig.sim.lan(),
+                            &rig.houses,
+                            &rig.id,
+                            result.first,
+                            &result.uris
+                        )
                         .unwrap()
-                        .track,
-                    1
-                );
-                // The recovered receipt remains usable by the shared undo path.
-                assert!(
-                    control::unqueue(
-                        &rig.sim.lan(),
-                        &rig.houses,
-                        &rig.id,
-                        result.first,
-                        &result.uris
-                    )
-                    .unwrap()
-                );
-                assert_eq!(rig.queue(), ORIGINAL);
+                    );
+                    assert_eq!(rig.queue(), ORIGINAL);
+                }
             }
         }
     }
@@ -282,28 +286,32 @@ fn lost_track_replies_recover_append_and_next_without_repeating_writes() {
 
 #[test]
 fn an_existing_duplicate_is_not_a_successful_new_enqueue() {
-    for s2 in [false, true] {
-        let rig = Rig::new(s2);
-        rig.enqueue(&rig.sim.lan(), TRACK, false).unwrap();
-        let before = rig.queue();
-        let t = Intercept::new(&rig, Reply::NotApplied, Edit::None);
-        let error = rig.enqueue(&t, TRACK, false).unwrap_err();
-        assert!(error.to_string().contains("uncertain"), "{error}");
-        assert_eq!(rig.queue(), before);
-        t.only_add_writes(1);
+    for source in [TRACK, EPISODE] {
+        for s2 in [false, true] {
+            let rig = Rig::new(s2);
+            rig.enqueue(&rig.sim.lan(), source, false).unwrap();
+            let before = rig.queue();
+            let t = Intercept::new(&rig, Reply::NotApplied, Edit::None);
+            let error = rig.enqueue(&t, source, false).unwrap_err();
+            assert!(error.to_string().contains("uncertain"), "{error}");
+            assert_eq!(rig.queue(), before);
+            t.only_add_writes(1);
+        }
     }
 }
 
 #[test]
 fn acknowledged_replies_cannot_hide_a_replacement_track_or_neighbor() {
-    for s2 in [false, true] {
-        for edit in [Edit::Prefix, Edit::InsertedTrack, Edit::AfterSnapshot] {
-            let rig = Rig::new(s2);
-            let t = Intercept::new(&rig, Reply::Accepted, edit);
-            let error = rig.enqueue(&t, TRACK, false).unwrap_err();
-            assert!(error.to_string().contains("uncertain"), "{error}");
-            t.only_add_writes(1);
-            assert!(rig.queue().iter().any(|uri| uri == OWNER));
+    for source in [TRACK, EPISODE] {
+        for s2 in [false, true] {
+            for edit in [Edit::Prefix, Edit::InsertedTrack, Edit::AfterSnapshot] {
+                let rig = Rig::new(s2);
+                let t = Intercept::new(&rig, Reply::Accepted, edit);
+                let error = rig.enqueue(&t, source, false).unwrap_err();
+                assert!(error.to_string().contains("uncertain"), "{error}");
+                t.only_add_writes(1);
+                assert!(rig.queue().iter().any(|uri| uri == OWNER));
+            }
         }
     }
 }

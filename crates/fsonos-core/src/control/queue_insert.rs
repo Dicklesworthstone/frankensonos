@@ -170,7 +170,8 @@ fn prepare<T: Transport + ?Sized>(
 
 /// Acknowledged containers require the reported range and unchanged neighbors.
 /// Lost container replies remain uncertain: the unknown expansion cannot be
-/// inferred from an arbitrary new suffix. A known single track can be recovered.
+/// inferred from an arbitrary new suffix. A known single track or episode can
+/// be recovered by its exact identity and unchanged neighbors.
 pub(super) fn enqueue<T: Transport + ?Sized>(
     t: &T,
     host: IpAddr,
@@ -178,16 +179,23 @@ pub(super) fn enqueue<T: Transport + ?Sized>(
     request: &Request<'_>,
     destination: Option<&TrackBatchDestination>,
 ) -> Result<Queued, CoreError> {
-    let expected = if SpotifyContainer::of(request.source_uri).is_some()
-        || SpotifyBare::of(request.source_uri).is_some()
-    {
-        None
-    } else if request
+    let expected = if request
         .source_uri
         .strip_prefix("spotify:track:")
         .is_some_and(|id| !id.is_empty())
+        || request
+            .source_uri
+            .strip_prefix("spotify:episode:")
+            .is_some_and(|id| !id.is_empty())
     {
         Some(request.source_uri)
+    } else if SpotifyContainer::of(request.source_uri).is_some()
+        || matches!(
+            SpotifyBare::of(request.source_uri),
+            Some(SpotifyBare::Artist | SpotifyBare::Show)
+        )
+    {
+        None
     } else {
         return Err(invalid(
             "enqueue requires a Spotify track, album, playlist, artist, episode or show",

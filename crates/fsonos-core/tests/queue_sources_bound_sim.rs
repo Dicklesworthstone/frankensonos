@@ -22,6 +22,7 @@ const ORIGINAL: [&str; 3] = [
 ];
 const EXTERNAL: &str = "x-file-cifs://example.invalid/another-controller.flac";
 const TRACK: &str = "spotify:track:1000000000000000000001";
+const EPISODE: &str = "spotify:episode:3000000000000000000001";
 const ALBUM: &str = "spotify:album:2000000000000000000001";
 
 struct Rig {
@@ -451,30 +452,30 @@ fn native_next_refuses_a_stable_position_that_does_not_identify_a_queue_occurren
 }
 
 #[test]
-fn lost_replies_recover_only_exact_tracks_and_never_repeat_container_adds() {
+fn lost_replies_recover_exact_single_items_and_never_repeat_container_adds() {
     for generation in [1, 2] {
-        for native in [false, true] {
-            for container in [false, true] {
-                let rig = Rig::new(generation);
-                let source = if native {
-                    Source::Native(rig.native(container))
-                } else {
-                    Source::Spotify(if container { ALBUM } else { TRACK })
-                };
-                let destination = rig.destination();
-                let mut wire = Wire::new(&rig);
-                wire.reply = Reply::Lost;
-                let result = source.enqueue(&wire, &rig, false, &destination);
-                if container {
-                    assert!(matches!(result, Err(CoreError::Uncertain(_))));
-                } else {
-                    let added = result.unwrap();
-                    assert_eq!((added.first, added.uris.len()), (4, 1));
-                    assert!(added.proof.is_some());
-                }
-                wire.only_adds(1);
-                assert!(rig.queue().len() > ORIGINAL.len());
+        for kind in 0..5 {
+            let rig = Rig::new(generation);
+            let source = match kind {
+                0 => Source::Spotify(TRACK),
+                1 => Source::Spotify(EPISODE),
+                2 => Source::Spotify(ALBUM),
+                3 => Source::Native(rig.native(false)),
+                _ => Source::Native(rig.native(true)),
+            };
+            let destination = rig.destination();
+            let mut wire = Wire::new(&rig);
+            wire.reply = Reply::Lost;
+            let result = source.enqueue(&wire, &rig, false, &destination);
+            if matches!(kind, 2 | 4) {
+                assert!(matches!(result, Err(CoreError::Uncertain(_))));
+            } else {
+                let added = result.unwrap();
+                assert_eq!((added.first, added.uris.len()), (4, 1));
+                assert!(added.proof.is_some());
             }
+            wire.only_adds(1);
+            assert!(rig.queue().len() > ORIGINAL.len());
         }
     }
 }
