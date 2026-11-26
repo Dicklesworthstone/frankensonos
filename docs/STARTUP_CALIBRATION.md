@@ -35,14 +35,19 @@ connected to the chosen sink as well as through Sonos.
 
 ## The handoff
 
-The startup phase uses the same bounded noise, captured monitor reference,
-PCM decoder, acoustic estimator and three-window agreement as
-[active measurement](ACTIVE_CALIBRATION.md). It makes at most three attempts,
-each using a 12–30 second capture, under a 180-second startup-phase budget.
+A clean first probe can calibrate mpv in one 12–30 second capture. The
+controller measures the lag of the whole recording, then divides the monitor
+audio with a complete microphone tail into three nonoverlapping excerpts.
+Each excerpt must independently find a clear peak over the full allowed delay
+range. All three must agree within 40 ms and support the whole-recording
+estimate. If the excerpts disagree, calibration can still use the original
+three-capture method when the first full recording yielded a clear estimate.
+It emits at most three probes across both paths. The startup phase keeps its 180-second budget.
+[Measurement-only mode](ACTIVE_CALIBRATION.md) continues to require three full captures.
 Silence, ambiguous correlation or a failed capture cannot authorize a delay.
 The signal is digitally limited, not acoustically loudness-calibrated.
 
-All three captures must belong to one uninterrupted mpv playback generation.
+All captures must belong to one uninterrupted mpv playback generation.
 During active capture, the existing IPC connection is checked before emission
 and periodically while recording. A delivered pause, seek, restart, output or
 media change ends the startup phase rather than refilling its audible budget.
@@ -73,8 +78,8 @@ transaction with another controller and cannot detect every transient change.
 
 No microphone file is saved or uploaded. Real microphone routing, timestamp
 accuracy, Sonos buffering and display timing still need installation-specific
-qualification. This adds the startup-to-passive handoff, not automatic device
-selection, macOS pairing, browser control or a faster single-chirp estimator.
+qualification. Automatic device selection, macOS pairing, browser control and physical lip-sync
+qualification remain separate work.
 
 ## Regression checks
 

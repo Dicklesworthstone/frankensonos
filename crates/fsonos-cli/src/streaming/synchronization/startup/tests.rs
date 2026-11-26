@@ -2,25 +2,15 @@
 
 use std::cell::{Cell, RefCell};
 use std::io::{BufRead as _, BufReader, Write as _};
-use std::os::unix::fs::DirBuilderExt as _;
-use std::os::unix::net::UnixListener;
-use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::os::unix::net::UnixStream;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant};
 
 use serde_json::{Value, json};
 
 use super::*;
-
-struct Directory(PathBuf);
-impl Drop for Directory {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_file(self.0.join("ipc"));
-        let _ = std::fs::remove_dir(&self.0);
-    }
-}
 
 struct Player {
     delay: f64,
@@ -31,22 +21,7 @@ struct Player {
 }
 
 fn with_player(test: impl FnOnce(&mut mpv::Controller, Arc<Mutex<Player>>)) {
-    static NEXT: AtomicU64 = AtomicU64::new(0);
-    let stamp = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap()
-        .as_nanos();
-    let path = std::env::temp_dir().join(format!(
-        "fs-{stamp:x}-{:x}",
-        NEXT.fetch_add(1, Ordering::Relaxed),
-    ));
-    std::fs::DirBuilder::new()
-        .mode(0o700)
-        .create(&path)
-        .unwrap();
-    let directory = Directory(path);
-    let socket = directory.0.join("ipc");
-    let listener = UnixListener::bind(&socket).unwrap();
+    let (socket, mut peer) = UnixStream::pair().unwrap();
     let state = Arc::new(Mutex::new(Player {
         delay: 0.1,
         paused: false,
@@ -56,7 +31,6 @@ fn with_player(test: impl FnOnce(&mut mpv::Controller, Arc<Mutex<Player>>)) {
     }));
     let remote = Arc::clone(&state);
     let worker = thread::spawn(move || {
-        let (mut peer, _) = listener.accept().unwrap();
         peer.set_read_timeout(Some(Duration::from_secs(30)))
             .unwrap();
         peer.set_write_timeout(Some(Duration::from_secs(3)))
@@ -106,7 +80,7 @@ fn with_player(test: impl FnOnce(&mut mpv::Controller, Arc<Mutex<Player>>)) {
             }
         }
     });
-    let client = mpv::Client::connect(&socket).unwrap();
+    let client = mpv::Client::from_stream(socket).unwrap();
     let mut controller = mpv::Controller::new(client, 0.0).unwrap();
     test(&mut controller, state);
     drop(controller);
@@ -126,8 +100,12 @@ fn probe() -> probe::Config {
 }
 
 fn pcm() -> Vec<u8> {
+    delayed_pcm(32_000, 3_200)
+}
+
+fn delayed_pcm(length: usize, lag: usize) -> Vec<u8> {
     let mut seed = 0xF50A_u32;
-    let samples: Vec<i16> = (0..32_000)
+    let samples: Vec<i16> = (0..length)
         .map(|_| {
             seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
             i16::try_from((seed >> 16) & 0x3fff).unwrap() - 8_192
@@ -138,7 +116,7 @@ fn pcm() -> Vec<u8> {
         bytes.extend(sample.to_le_bytes());
         bytes.extend(
             index
-                .checked_sub(3_200)
+                .checked_sub(lag)
                 .map_or(0, |at| samples[at])
                 .to_le_bytes(),
         );
@@ -193,6 +171,64 @@ fn startup_corrects_once_then_passive_tracking_uses_fresh_agreement_and_restores
         assert_eq!(state.lock().unwrap().writes, [-0.4]);
         controller.restore().unwrap();
         assert_eq!(state.lock().unwrap().writes, [-0.4, 0.1]);
+    });
+}
+
+#[test]
+fn first_probe_can_correct_a_multi_second_lag_only_while_the_stream_is_still_owned() {
+    for still_owned in [true, false] {
+        with_player(|controller, state| {
+            // A 14-second capture has time for three distinct reference
+            // excerpts and the full five-second search after each one.
+            let mut capture = Some(delayed_pcm(14 * 8_000, 33_000));
+            let phases = RefCell::new(Vec::new());
+            let result = with_capture(
+                controller,
+                5_000,
+                &stop(),
+                probe(),
+                |settled| {
+                    let mut phases = phases.borrow_mut();
+                    phases.push(settled);
+                    Ok(still_owned || phases.len() < 3)
+                },
+                |_, _, _| Ok(Some(capture.take().expect("expected only one capture"))),
+            );
+            assert_eq!(*phases.borrow(), [false, true, true]);
+            assert_eq!(result.is_ok(), still_owned);
+            if still_owned {
+                assert_eq!(state.lock().unwrap().writes, [-4.125]);
+                controller.restore().unwrap();
+                assert_eq!(state.lock().unwrap().writes, [-4.125, 0.1]);
+            } else {
+                assert!(state.lock().unwrap().writes.is_empty());
+            }
+        });
+    }
+}
+
+#[test]
+fn incomplete_first_probe_evidence_uses_the_original_three_capture_budget() {
+    with_player(|controller, state| {
+        let mut first = delayed_pcm(14 * 8_000, 33_000);
+        // Remove the microphone's middle excerpt. The entire recording still
+        // correlates strongly, but the isolated evidence cannot be confirmed.
+        for frame in first[4 * (33_000 + 24_000)..4 * (33_000 + 48_000)].chunks_exact_mut(4) {
+            frame[2..].fill(0);
+        }
+        let clean = delayed_pcm(14 * 8_000, 33_000);
+        let mut captures = [first, clean.clone(), clean].into_iter();
+        with_capture(
+            controller,
+            5_000,
+            &stop(),
+            probe(),
+            |_| Ok(true),
+            |_, _, _| Ok(captures.next()),
+        )
+        .unwrap();
+        assert!(captures.next().is_none());
+        assert_eq!(state.lock().unwrap().writes, [-4.125]);
     });
 }
 

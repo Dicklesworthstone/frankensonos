@@ -32,7 +32,7 @@ impl Client {
         Self::from_stream(UnixStream::connect(path).context("connect to the local mpv socket")?)
     }
 
-    fn from_stream(socket: UnixStream) -> anyhow::Result<Self> {
+    pub(super) fn from_stream(socket: UnixStream) -> anyhow::Result<Self> {
         socket.set_nonblocking(true)?;
         Ok(Self {
             socket,

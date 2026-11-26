@@ -116,9 +116,36 @@ pub fn estimate(
     if max_lag_samples <= 2 * guard || max_lag_samples > len / 2 {
         return Err("maximum lag must be over 20 ms and at most half the recording");
     }
+    correlate(reference, microphone, max_lag_samples)
+}
+
+/// Search the entire allowed delay range for one excerpt of a startup probe.
+/// The microphone includes the lag tail, so even a near-limit delay must match
+/// the whole excerpt. Each excerpt supplies different reference audio.
+pub(super) fn estimate_excerpt(
+    reference: &[f64],
+    microphone: &[f64],
+    max_lag_samples: usize,
+) -> Result<Estimate, &'static str> {
+    if reference.len() < 2 * SAMPLE_RATE
+        || microphone.len() > MAX_SAMPLES
+        || microphone.len().checked_sub(reference.len()) != Some(max_lag_samples)
+        || max_lag_samples <= 2 * (SAMPLE_RATE / 100)
+    {
+        return Err("insufficient audio for an independent probe excerpt");
+    }
+    correlate(reference, microphone, max_lag_samples)
+}
+
+fn correlate(
+    reference: &[f64],
+    microphone: &[f64],
+    max_lag_samples: usize,
+) -> Result<Estimate, &'static str> {
+    let guard = SAMPLE_RATE / 100;
     let reference = centered(reference)?;
     let microphone = centered(microphone)?;
-    let fft_len = (2 * len).next_power_of_two();
+    let fft_len = (reference.len() + microphone.len()).next_power_of_two();
     let mut dry = vec![Complex::default(); fft_len];
     let mut wet = vec![Complex::default(); fft_len];
     for (value, sample) in dry.iter_mut().zip(&reference) {
@@ -165,8 +192,9 @@ pub fn estimate(
     if peak_ratio < 1.5 {
         return Err("ambiguous correlation peaks; use varied audio rather than a tone");
     }
-    let original = &reference[..len - peak];
-    let delayed = &microphone[peak..];
+    let overlap = reference.len().min(microphone.len() - peak);
+    let original = &reference[..overlap];
+    let delayed = &microphone[peak..peak + overlap];
     let dry_mean = original.iter().sum::<f64>() / original.len() as f64;
     let wet_mean = delayed.iter().sum::<f64>() / delayed.len() as f64;
     let mut covariance = 0.0;

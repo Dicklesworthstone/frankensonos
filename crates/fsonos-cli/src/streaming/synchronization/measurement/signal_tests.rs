@@ -13,8 +13,12 @@ fn stop() -> Stop {
     }
 }
 
-fn pcm(lag: usize, mut seed: u32) -> Vec<u8> {
-    let reference: Vec<i16> = (0..4 * SAMPLE_RATE)
+fn pcm(lag: usize, seed: u32) -> Vec<u8> {
+    pcm_window(4 * SAMPLE_RATE, lag, seed)
+}
+
+fn pcm_window(samples: usize, lag: usize, mut seed: u32) -> Vec<u8> {
+    let reference: Vec<i16> = (0..samples)
         .map(|_| {
             seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
             i16::try_from(seed % 20_001).unwrap() - 10_000
@@ -39,6 +43,46 @@ fn three_independent_audio_windows_finish_with_the_median_lag() {
     assert_eq!(measured.spread_samples, 20);
     assert!(measured.estimate.correlation > 0.99);
     assert!(windows.next().is_none());
+}
+
+#[test]
+fn startup_accepts_a_single_capture_with_three_matching_excerpts() {
+    // The first 9 seconds provide three distinct 3-second dry excerpts.
+    // Allow a delay anywhere in 0..5s, including well beyond an excerpt.
+    let mut first = Some(pcm_window(14 * SAMPLE_RATE, 33_000, 101));
+    let lag = collect_startup(5_000, &stop(), || Ok(first.take())).unwrap();
+    assert_eq!(lag.lag_samples, 33_000);
+}
+
+#[test]
+fn startup_refuses_a_single_strong_peak_when_one_excerpt_is_missing_or_shifted() {
+    for missing in [true, false] {
+        let mut first = pcm_window(14 * SAMPLE_RATE, 33_000, 101);
+        let shifted = pcm_window(14 * SAMPLE_RATE, 36_000, 101);
+        let range = 4 * (33_000 + 24_000)..4 * (36_000 + 48_000);
+        for (frame, other) in first[range.clone()]
+            .chunks_exact_mut(4)
+            .zip(shifted[range].chunks_exact(4))
+        {
+            if missing {
+                frame[2..].fill(0);
+            } else {
+                frame[2..].copy_from_slice(&other[2..]);
+            }
+        }
+        let (dry, wet) = calibration::decode_pcm(&first).unwrap();
+        assert_eq!(
+            latency::estimate(&dry, &wet, 5 * SAMPLE_RATE)
+                .unwrap()
+                .lag_samples,
+            33_000
+        );
+        let clean = pcm_window(14 * SAMPLE_RATE, 33_000, 102);
+        let mut captures = [first, clean.clone(), clean].into_iter();
+        let lag = collect_startup(5_000, &stop(), || Ok(captures.next())).unwrap();
+        assert!(captures.next().is_none());
+        assert_eq!(lag.lag_samples, 33_000);
+    }
 }
 
 #[test]

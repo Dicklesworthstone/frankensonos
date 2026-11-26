@@ -53,9 +53,8 @@ fn with_capture(
     let window = controller
         .begin_window()?
         .context("start mpv playback before requesting audible startup calibration")?;
-    // The existing estimator and three-window agreement remain unchanged.
-    // Config supplies the stricter three-attempt audible budget, consumed once.
-    let measured = measurement::collect(max_lag_ms, stop, || {
+    // An inconclusive first capture counts toward the same audible budget.
+    let measured = measurement::collect_startup(max_lag_ms, stop, || {
         ensure!(
             verify(false)? && !stop.requested(),
             "startup room check cancelled"
@@ -80,7 +79,7 @@ fn with_capture(
     );
     uninterrupted(controller, window)?;
     ensure!(!stop.requested(), "startup correction cancelled");
-    let lag = measured.estimate.seconds();
+    let lag = measured.seconds();
     if controller.apply(lag, window)? {
         eprintln!("fsonos sync: startup acoustic lag {lag:.3} s; mpv correction confirmed");
     } else {

@@ -321,8 +321,9 @@ fsonos stream Kitchen --virtual-output movie --sync-launched-mpv \
 ```
 
 Replace `room_mic` with your Pulse microphone source. `--sync-probe movie`
-opts into audible calibration noise on that output; omit it to measure from
-the movie's own audio. Managed launch supplies a private IPC socket and Pulse
+opts into audible calibration noise on that output. One capture can set the
+initial delay when three separate excerpts confirm the same lag. Omit the probe
+to measure from the movie's own audio. Managed launch supplies a private IPC socket and Pulse
 routing, waits for that exact child to become ready, and uses the existing
 ownership-checked delay correction and cleanup. User configuration and automatically loaded user
 scripts are disabled. See [Application streaming](docs/STREAM_APPLICATION.md)

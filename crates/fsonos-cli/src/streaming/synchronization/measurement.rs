@@ -103,13 +103,59 @@ fn check(stop: &Stop) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// `record` also checks the live encoder and the intended Sonos source before
-/// and after each capture. Its error is terminal, not another noisy window.
-/// The shared deadline cancels an in-flight PCM capture through `Stop`.
+/// In the first audible startup capture, look for three nonoverlapping pieces
+/// of reference audio. Each must independently match somewhere in the full
+/// microphone lag range. A strong isolated transient cannot pass all three.
+fn probe_agreement(
+    reference: &[f64],
+    microphone: &[f64],
+    max_lag: usize,
+    whole: Estimate,
+) -> Option<Measurement> {
+    let width = reference.len().checked_sub(max_lag)? / 3;
+    let mut agreement = Agreement::default();
+    let mut result = None;
+    for index in 0..3 {
+        let start = index * width;
+        let end = start + width;
+        let estimate = latency::estimate_excerpt(
+            &reference[start..end],
+            &microphone[start..end + max_lag],
+            max_lag,
+        )
+        .ok()?;
+        if estimate.lag_samples.abs_diff(whole.lag_samples) > AGREEMENT_SAMPLES {
+            return None;
+        }
+        result = agreement.observe(estimate, 1);
+    }
+    result
+}
+
 pub(super) fn collect(
     max_lag_ms: u32,
     stop: &Stop,
+    record: impl FnMut() -> anyhow::Result<Option<Vec<u8>>>,
+) -> anyhow::Result<Measurement> {
+    collect_windows(max_lag_ms, stop, record, false)
+}
+
+pub(super) fn collect_startup(
+    max_lag_ms: u32,
+    stop: &Stop,
+    record: impl FnMut() -> anyhow::Result<Option<Vec<u8>>>,
+) -> anyhow::Result<Estimate> {
+    Ok(collect_windows(max_lag_ms, stop, record, true)?.estimate)
+}
+
+/// `record` also checks the live encoder and the intended Sonos source before
+/// and after each capture. Its error is terminal, not another noisy window.
+/// The shared deadline cancels an in-flight PCM capture through `Stop`.
+fn collect_windows(
+    max_lag_ms: u32,
+    stop: &Stop,
     mut record: impl FnMut() -> anyhow::Result<Option<Vec<u8>>>,
+    audible_startup: bool,
 ) -> anyhow::Result<Measurement> {
     ensure!(
         (21..=14_000).contains(&max_lag_ms),
@@ -131,6 +177,13 @@ pub(super) fn collect(
         match estimate {
             Ok(estimate) => {
                 last_rejection = None;
+                if audible_startup && windows_read == 1 {
+                    let measured = probe_agreement(&reference, &microphone, max_lag, estimate);
+                    check(stop)?;
+                    if let Some(measured) = measured {
+                        return Ok(measured);
+                    }
+                }
                 if let Some(measured) = agreement.observe(estimate, windows_read) {
                     return Ok(measured);
                 }
