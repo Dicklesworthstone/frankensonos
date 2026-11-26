@@ -92,7 +92,7 @@ impl Fence {
         path: &str,
         action: &str,
         body: &str,
-    ) -> Result<(), ProtoError> {
+    ) -> Result<bool, ProtoError> {
         let mut state = self
             .0
             .lock()
@@ -114,6 +114,15 @@ impl Fence {
             action: action.into(),
             body: body.into(),
         }) {
+            // An originally idle snapshot also asks for Stop. The first
+            // recovery Stop already satisfied that effect if fresh reads
+            // still confirm it; report the proof without another dispatch.
+            if host == lead
+                && action.contains("#Stop\"")
+                && soap::get_transport_info(t, host)?.state == TransportState::Stopped
+            {
+                return Ok(false);
+            }
             return Err(refused(
                 "an announcement recovery mutation was already attempted; it was not replayed",
             ));
@@ -125,30 +134,10 @@ impl Fence {
             if let Some(next) = next {
                 state.expected = next;
             }
-        } else if action.contains("#DelegateGroupCoordinationTo")
-            && argument(body, "NewCoordinator", &record.plan.lead.0)
-        {
-            let survivor = record.effects.continuations.iter().any(|entry| {
-                entry
-                    .survivor()
-                    .is_some_and(|survivor| record.proof.host(survivor).ok() == Some(host))
-            });
-            if !survivor || !argument(body, "RejoinGroup", "1") {
-                return Err(refused(
-                    "announcement recovery refused an unproved coordination transfer",
-                ));
+        } else if action.contains("#DelegateGroupCoordinationTo") {
+            if let Some(next) = delegated_source(t, record, host, body, &state.expected)? {
+                state.expected = next;
             }
-            let media = soap::get_media_info(t, host)?;
-            let uri = if media.uri.starts_with("x-rincon-queue:") {
-                format!("x-rincon-queue:{}#0", record.plan.lead.0)
-            } else {
-                media.uri
-            };
-            state.expected = Source {
-                uri,
-                metadata: Some(media.uri_metadata),
-                allow_paused: true,
-            };
         } else if host == lead && action.contains("#Pause") {
             // Silent snapshot restoration can explicitly pause before or
             // after source selection. Only that issued write grants this.
@@ -156,8 +145,62 @@ impl Fence {
         } else if host == lead && action.contains("#Play\"") {
             state.expected.allow_paused = false;
         }
-        Ok(())
+        Ok(true)
     }
+}
+
+fn delegated_source<T: Transport + ?Sized>(
+    t: &T,
+    record: &AnnouncementRecovery,
+    host: IpAddr,
+    body: &str,
+    current: &Source,
+) -> Result<Option<Source>, ProtoError> {
+    let entry = record
+        .effects
+        .continuations
+        .iter()
+        .find(|entry| {
+            argument(body, "NewCoordinator", &entry.coordinator.0)
+                && entry
+                    .survivor()
+                    .is_some_and(|survivor| record.proof.host(survivor).ok() == Some(host))
+        })
+        .ok_or_else(|| {
+            refused("announcement recovery refused an unproved coordination transfer")
+        })?;
+    if !argument(body, "RejoinGroup", "1") {
+        return Err(refused(
+            "announcement recovery cannot detach the live survivor",
+        ));
+    }
+    if entry.coordinator == record.plan.lead {
+        let media = soap::get_media_info(t, host)?;
+        let uri = if media.uri.starts_with("x-rincon-queue:") {
+            format!("x-rincon-queue:{}#0", record.plan.lead.0)
+        } else {
+            media.uri
+        };
+        return Ok(Some(Source {
+            uri,
+            metadata: Some(media.uri_metadata),
+            allow_paused: true,
+        }));
+    }
+    // The temporary lead can itself be an original member, not the returning
+    // coordinator. It follows the same native handoff without taking ownership
+    // of the survivor's queue or replaying that queue from its own snapshot.
+    if entry
+        .survivor()
+        .is_some_and(|survivor| current.uri == format!("x-rincon:{}", survivor.0))
+    {
+        return Ok(Some(Source {
+            uri: format!("x-rincon:{}", entry.coordinator.0),
+            metadata: None,
+            allow_paused: true,
+        }));
+    }
+    Ok(None)
 }
 
 fn next_source(record: &AnnouncementRecovery, body: &str) -> Result<Option<Source>, ProtoError> {

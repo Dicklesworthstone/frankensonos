@@ -57,7 +57,10 @@ fn a_repeated_start_keeps_a_playing_or_paused_middle_movement() {
             assert_eq!(feed.queued(), retained);
             assert_eq!(feed.playing, Some(current));
             assert!(!feed.accepted_playback());
-            assert!(plays(&store).is_empty(), "starting is not a listening event");
+            assert!(
+                plays(&store).is_empty(),
+                "starting is not a listening event"
+            );
             assert_eq!(writes(&rig, before), ["SetPlayMode", "Play"]);
         }
     }
@@ -220,10 +223,7 @@ impl Transport for Interrupted<'_> {
         if name == self.on {
             self.seen.set(self.seen.get() + 1);
         }
-        if name == self.on
-            && self.seen.get() == self.after_reads
-            && !self.edited.replace(true)
-        {
+        if name == self.on && self.seen.get() == self.after_reads && !self.edited.replace(true) {
             match self.interruption {
                 Interruption::Source => {
                     transport::set_av_transport_uri(

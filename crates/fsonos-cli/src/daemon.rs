@@ -55,6 +55,7 @@ use crate::config::{self, GlobalArgs, ServeArgs};
 use crate::dj::sync::LibrarySync;
 use crate::schedule_cmd::SchedulerArgs;
 
+mod announcement_recovery;
 mod bridge_compat;
 mod spotify_auth;
 
@@ -186,15 +187,19 @@ pub fn live_surface(
     ));
     let listener = Arc::downgrade(&live);
     let routes = listener.clone();
-    let mut surface = surface.with_announcements(
-        fsonos_api::surface::announce::Announcements::new(
-            media,
-            Box::new(move || listener.upgrade()?.snapshot().callback),
-        )
-        .with_media_route(Box::new(move |player| {
-            routes.upgrade()?.callback_for(player)
-        })),
-    );
+    let mut announcements = fsonos_api::surface::announce::Announcements::new(
+        media,
+        Box::new(move || listener.upgrade()?.snapshot().callback),
+    )
+    .with_media_route(Box::new(move |player| {
+        routes.upgrade()?.callback_for(player)
+    }));
+    if let Some(directory) = global.data_dir() {
+        announcements = announcements.with_journal(Arc::new(
+            announcement_recovery::Journal::new(&directory).map_err(Failure::from)?,
+        ));
+    }
+    let mut surface = surface.with_announcements(announcements);
     if let Some(dir) = global.data_dir() {
         surface = crate::spotify_sources::install(surface, &dir, None);
     }
@@ -366,12 +371,18 @@ pub fn run(global: &GlobalArgs, args: &ServeArgs, scheduler: &SchedulerArgs) -> 
     // The owner's Spotify sign-in comes back to this daemon's own port.
     let surface = spotify_auth::install(surface, args, &data_dir);
     let surface = Arc::new(with_action_log(surface, &data_dir, "serve").with_doctor_checks(checks));
+    // Retire process-local sleep continuation authority before a scheduler
+    // may adopt old fades. Speaker recovery itself waits off the startup path.
+    surface.prepare_announcement_recovery()?;
     let stop = Arc::new(AtomicBool::new(false));
     for signal in [signal_hook::consts::SIGINT, signal_hook::consts::SIGTERM] {
         signal_hook::flag::register(signal, Arc::clone(&stop))
             .context("install the SIGINT/SIGTERM handler")?;
     }
     let mut background = supervision::BackgroundWorkers::new(Arc::clone(&stop));
+    background.push(
+        announcement_recovery::start(&surface, &stop).context("start announcement recovery")?,
+    );
     // Retain both live followers so a lost DJ/history worker cannot leave a
     // healthy-looking daemon that silently stops maintaining playback.
     for worker in fsonos_api::surface::follow_supervised(&surface, &stop)

@@ -1,7 +1,7 @@
-//! Bounded, process-local announcement jobs. Cancellation requests release
+//! Bounded announcement jobs and retained recovery receipts. Cancellation requests release
 //! waiting clips or let the core finish ownership-checked restoration.
 
-use super::{AnnounceDto, AnnounceRequest, Surface};
+use super::{AnnounceDto, AnnounceRequest, AnnouncementContext, Surface};
 use crate::{ApiError, ErrorCode, Failure};
 use fastapi::{JsonSchema, fastapi_openapi};
 use fsonos_core::announce::{AnnouncementControl, AnnouncementPhase};
@@ -10,8 +10,8 @@ use serde::{Deserialize, Serialize};
 use std::collections::VecDeque;
 use std::sync::{Arc, Mutex, PoisonError};
 
-/// Includes active jobs and the newest terminal receipts. Restarting the
-/// daemon retires these IDs; no recording or speech text is retained here.
+/// Includes active jobs and the newest terminal receipts. A configured journal
+/// preserves household recovery receipts across restarts, without speech/audio.
 pub const MAX_RETAINED: usize = 64;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -91,6 +91,10 @@ pub struct AnnouncementJobDto {
     pub finished_at: Option<i64>,
     pub cancel_requested: bool,
     pub can_cancel: bool,
+    /// Imported household evidence has no original playback worker to cancel.
+    /// Its result may be partial while another household remains unavailable.
+    #[serde(default)]
+    pub recovery: bool,
     pub progress: Vec<AnnouncementProgressDto>,
     pub result: Option<AnnounceDto>,
     pub error: Option<ApiError>,
@@ -108,6 +112,8 @@ struct State {
     finished_at: Option<i64>,
     result: Option<AnnounceDto>,
     error: Option<ApiError>,
+    /// Imported recovery has no original playback worker to cancel.
+    recovery: Option<Vec<AnnouncementProgressDto>>,
 }
 
 pub(super) struct Job {
@@ -121,6 +127,10 @@ pub(super) struct Job {
 }
 
 impl Job {
+    pub(super) fn id(&self) -> &str {
+        &self.id
+    }
+
     fn state(&self) -> std::sync::MutexGuard<'_, State> {
         self.state.lock().unwrap_or_else(PoisonError::into_inner)
     }
@@ -161,24 +171,25 @@ impl Job {
 
     fn view(&self) -> AnnouncementJobDto {
         let state = self.state();
-        let progress: Vec<_> = self
-            .control
-            .progress()
-            .into_iter()
-            .map(|row| AnnouncementProgressDto {
-                household: row.household.map(|household| household.0),
-                lead: row.lead.0,
-                rooms: row.rooms,
-                phase: match row.phase {
-                    AnnouncementPhase::Queued => "queued",
-                    AnnouncementPhase::Preparing => "preparing",
-                    AnnouncementPhase::Playing => "playing",
-                    AnnouncementPhase::Restoring => "restoring",
-                    AnnouncementPhase::Complete => "complete",
-                }
-                .into(),
-            })
-            .collect();
+        let progress: Vec<_> = state.recovery.clone().unwrap_or_else(|| {
+            self.control
+                .progress()
+                .into_iter()
+                .map(|row| AnnouncementProgressDto {
+                    household: row.household.map(|household| household.0),
+                    lead: row.lead.0,
+                    rooms: row.rooms,
+                    phase: match row.phase {
+                        AnnouncementPhase::Queued => "queued",
+                        AnnouncementPhase::Preparing => "preparing",
+                        AnnouncementPhase::Playing => "playing",
+                        AnnouncementPhase::Restoring => "restoring",
+                        AnnouncementPhase::Complete => "complete",
+                    }
+                    .into(),
+                })
+                .collect()
+        });
         let phase = if state.phase.terminal() || progress.is_empty() {
             state.phase
         } else if progress.iter().any(|row| row.phase == "playing") {
@@ -193,7 +204,7 @@ impl Job {
             // The final report and sleep recovery still belong to delivery.
             AnnouncementJobPhase::Restoring
         };
-        let cancel_requested = self.control.is_cancelled();
+        let cancel_requested = state.recovery.is_none() && self.control.is_cancelled();
         let mut done = format!("announcement {}: {}", self.id, phase.name());
         if cancel_requested && !phase.terminal() {
             done.push_str("; cancellation requested; wait for playback and restoration to finish");
@@ -215,7 +226,8 @@ impl Job {
             created_at: self.created_at,
             finished_at: state.finished_at,
             cancel_requested,
-            can_cancel: !phase.terminal() && !cancel_requested,
+            can_cancel: state.recovery.is_none() && !phase.terminal() && !cancel_requested,
+            recovery: state.recovery.is_some(),
             progress,
             result: state.result.clone(),
             error: state.error.clone(),
@@ -230,7 +242,7 @@ impl Job {
         // Serialize the final terminal publication with cancellation admission.
         // A late cancel is a read of the completed receipt, never a new Stop.
         let state = self.state();
-        !state.phase.terminal() && self.control.cancel()
+        state.recovery.is_none() && !state.phase.terminal() && self.control.cancel()
     }
 }
 
@@ -274,6 +286,7 @@ impl Jobs {
                 finished_at: None,
                 result: None,
                 error: None,
+                recovery: None,
             }),
         });
         let mut entries = self.entries();
@@ -291,6 +304,99 @@ impl Jobs {
         }
         entries.push_back(Arc::clone(&job));
         Ok(job)
+    }
+
+    /// Both synchronous and background announcements publish here before
+    /// delivery. Startup recovery must never claim one of their checkpoints.
+    pub(super) fn live(&self, id: &str) -> bool {
+        self.entries().iter().any(|entry| {
+            if entry.id != id {
+                return false;
+            }
+            let state = entry.state();
+            state.recovery.is_none() && !state.phase.terminal()
+        })
+    }
+
+    /// Merge all household receipts for the original caller and original job
+    /// ID. Only recovery-owned rows are refreshed; an active local job keeps
+    /// its cancellation and completion authority.
+    pub(super) fn import(
+        &self,
+        context: &AnnouncementContext,
+        result: AnnounceDto,
+        progress: Vec<AnnouncementProgressDto>,
+        pending: bool,
+        at: i64,
+    ) -> Result<(), Failure> {
+        let phase = if pending {
+            AnnouncementJobPhase::Restoring
+        } else if result.clean {
+            AnnouncementJobPhase::Completed
+        } else if result.households.iter().all(|row| {
+            row.error.is_none()
+                && row.not_restored.is_empty()
+                && matches!(row.outcome.as_str(), "finished" | "cancelled")
+        }) && result
+            .households
+            .iter()
+            .any(|row| row.outcome == "cancelled")
+            && result
+                .households
+                .iter()
+                .map(|row| row.rooms.len())
+                .sum::<usize>()
+                == context.rooms.len()
+        {
+            AnnouncementJobPhase::Cancelled
+        } else {
+            AnnouncementJobPhase::Failed
+        };
+        let mut entries = self.entries();
+        if let Some(job) = entries.iter().find(|job| job.id == context.id) {
+            let mut state = job.state();
+            if state.recovery.is_none() && (!state.phase.terminal() || !pending) {
+                return Ok(());
+            }
+            state.phase = phase;
+            state.finished_at = if pending {
+                None
+            } else {
+                Some(state.finished_at.unwrap_or(at))
+            };
+            state.result = Some(result);
+            state.error = None;
+            state.recovery = Some(progress);
+            return Ok(());
+        }
+        while entries.len() >= MAX_RETAINED {
+            let Some(oldest) = entries
+                .iter()
+                .position(|entry| entry.state().phase.terminal())
+            else {
+                return Err(Failure::new(
+                    ErrorCode::NotReady,
+                    "announcement receipt capacity is full",
+                ));
+            };
+            entries.remove(oldest);
+        }
+        entries.push_back(Arc::new(Job {
+            id: context.id.clone(),
+            owner: context.client.clone(),
+            kind: context.kind.clone(),
+            rooms: context.rooms.clone(),
+            created_at: context.created_at,
+            control: AnnouncementControl::default(),
+            state: Mutex::new(State {
+                phase,
+                finished_at: (!pending).then_some(at),
+                result: Some(result),
+                error: None,
+                recovery: Some(progress),
+            }),
+        }));
+        Ok(())
     }
 
     fn visible(&self, client: &Client, owner: bool) -> Vec<Arc<Job>> {
@@ -384,7 +490,7 @@ impl Surface {
         validate_id(id)?;
         self.visible_announcement_jobs(client).into_iter().find(|job| job.id == id).ok_or_else(|| {
             Failure::new(ErrorCode::NoMatch, "no retained announcement with that id is visible to this caller")
-                .with_hint("Read list_announcements. Jobs are process-local and older completed receipts expire.")
+                .with_hint("Read list_announcements. Older completed receipts expire; interrupted jobs are retained when a durable journal is configured.")
         })
     }
 

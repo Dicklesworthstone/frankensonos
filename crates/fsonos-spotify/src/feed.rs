@@ -796,10 +796,9 @@ impl QueueFeed {
         self.restore_played_from(position);
         self.playing = Some(position);
         self.jumped = false;
-        let (played, ahead): (Vec<QueuedWork>, Vec<QueuedWork>) =
-            std::mem::take(&mut self.queued)
-                .into_iter()
-                .partition(|w| w.is_whole() && w.last().is_none_or(|last| last < position));
+        let (played, ahead): (Vec<QueuedWork>, Vec<QueuedWork>) = std::mem::take(&mut self.queued)
+            .into_iter()
+            .partition(|w| w.is_whole() && w.last().is_none_or(|last| last < position));
         self.queued = ahead;
         self.played
             .extend(played.into_iter().filter(|w| w.last().is_some()));

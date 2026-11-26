@@ -45,16 +45,7 @@ fn sink() -> EventSink {
 #[test]
 fn only_explicit_decimal_event_keys_are_admitted() {
     let sink = sink();
-    for sequence in [
-        "",
-        "-1",
-        "+0",
-        "1.0",
-        "0x0",
-        "1 2",
-        "4294967296",
-        "unknown",
-    ] {
+    for sequence in ["", "-1", "+0", "1.0", "0x0", "1 2", "4294967296", "unknown"] {
         let mut headers = HEADERS;
         headers[3].1 = sequence;
         assert_eq!(post(&sink, &headers, BODY), 400, "SEQ: {sequence:?}");
@@ -133,5 +124,8 @@ fn invalid_utf8_is_rejected_instead_of_rewriting_event_values() {
     assert_eq!(post(&sink, &HEADERS, body), 400);
     assert!(sink.recv_event(Duration::ZERO).unwrap().is_none());
     assert_eq!(post(&sink, &HEADERS, BODY), 200);
-    assert_eq!(sink.recv_timeout(WAIT).unwrap().property("Volume"), Some("17"));
+    assert_eq!(
+        sink.recv_timeout(WAIT).unwrap().property("Volume"),
+        Some("17")
+    );
 }

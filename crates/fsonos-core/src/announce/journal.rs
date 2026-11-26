@@ -447,6 +447,7 @@ impl<T: Transport + ?Sized> Transport for Claimed<'_, T> {
         action: &str,
         body: &str,
     ) -> Result<String, ProtoError> {
+        let mut confirmed_stop = false;
         if mutation(action) {
             if !self.claim.checkpoint.current(self.claim.record) {
                 return Err(ProtoError::Malformed(
@@ -464,13 +465,21 @@ impl<T: Transport + ?Sized> Transport for Claimed<'_, T> {
                 ));
             }
             if let Some(fence) = &self.fence {
-                fence.before(self.inner, self.claim.record, host, path, action, body)?;
+                confirmed_stop =
+                    !fence.before(self.inner, self.claim.record, host, path, action, body)?;
             }
             if !self.claim.checkpoint.current(self.claim.record) {
                 return Err(ProtoError::Malformed(
                     "announcement recovery was retired during its reads".into(),
                 ));
             }
+        }
+        if confirmed_stop {
+            return Ok(fsonos_proto::soap::envelope(
+                &fsonos_proto::soap::AV_TRANSPORT,
+                "StopResponse",
+                "",
+            ));
         }
         self.inner.soap_post(host, path, action, body)
     }

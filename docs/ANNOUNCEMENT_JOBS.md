@@ -172,8 +172,11 @@ and primary-player identities are retained for delivery.
 
 The daemon retains at most 64 active jobs and recent receipts, newest first.
 It retires the oldest terminal entries first and never evicts active work to
-make room. Jobs are process-local: restarting the daemon retires their IDs
-and does not replay an interrupted clip. Use the existing
+make room. Daemon announcements that reach their first durable checkpoint retain
+per-household recovery evidence and recent receipts across restarts, under the
+original job ID and caller identity. Queued work and unfinished synthesis that
+have not reached that checkpoint remain process-local. Restart never replays an
+interrupted clip. Use the existing
 [announcement schedules](SCHEDULED_ANNOUNCEMENTS.md) when a future recipe must
 persist across daemon restarts.
 
@@ -188,5 +191,35 @@ shutdown boundary. Completed receipts stay unchanged.
 The shutdown drain waits up to 60 seconds for this recovery, regardless of
 the clip's original duration, and logs any work left in flight at the deadline.
 A forced termination, host failure or kill after the service manager's timeout
-cannot run this cleanup: announcement snapshots and restoration state are not
-durable across a process loss.
+cannot run the ordinary drain. The daemon's private `announcement-recovery.json`
+records original snapshots, exact physical players and boot identities, caller
+policy context, and attempted speaker changes before dispatch. It contains no
+speech text or uploaded audio. The file is atomically replaced, synced, and
+bounded to 64 household records and 8 MiB; unfinished records are never evicted
+to admit another announcement. An unreadable or invalid journal is preserved
+and refuses new announcement writes.
+
+On restart, a supervised worker inspects each interrupted household. An
+established announcement can be restored only while its exact clip, temporary
+group, endpoints and boot identities remain owned. Newer playback, a paused
+clip, regrouping, changed devices and listener level changes are preserved.
+Current quiet-hour and caller caps still limit restored volume. Missing or
+unreadable speakers remain pending, and automatic recovery expires after
+24 hours. An affected household cannot start another announcement while that
+inspection is pending; other households and ordinary playback controls remain
+available.
+
+Cleanup takes a durable claim before its first speaker write. If that cleanup
+is interrupted again, the next process reports its uncertain result and does
+not replay it. Interrupted preparation that never established clip ownership
+also remains an explicit incomplete result for inspection. Recovery receipts
+appear through the existing CLI, HTTP, MCP and browser job views. A crash leaves
+delivery failed even when its owned music and groups were restored; it cannot
+be reported as a successfully delivered clip. Recovery jobs have no original
+playback worker to cancel.
+
+A fade that the abandoned announcement could have interrupted is retired only
+when its original coordinator and deadline still match. Recovery creates no new
+sleep timer and preserves a replacement timer armed later. The speaker's own
+sleep backstop is left intact. Direct CLI delivery without a daemon journal
+retains the existing process-local cleanup behavior.

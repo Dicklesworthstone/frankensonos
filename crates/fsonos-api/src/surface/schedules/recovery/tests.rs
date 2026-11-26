@@ -19,6 +19,52 @@ static NEXT_DIR: AtomicU64 = AtomicU64::new(0);
 
 mod fades;
 
+#[test]
+fn announcement_startup_retires_exact_sleep_deadlines_and_preserves_newer_timers() {
+    let scratch = Scratch::new();
+    let ends = chrono::DateTime::parse_from_rfc3339("2026-10-07T22:00:00Z")
+        .unwrap()
+        .to_utc();
+    let interrupted = SleepTimer {
+        coordinator: PlayerId("RINCON_INTERRUPTED".into()),
+        room: "Interrupted".into(),
+        ends,
+        fading: true,
+    };
+    let newer = SleepTimer {
+        coordinator: PlayerId("RINCON_REARMED".into()),
+        room: "Newer timer".into(),
+        ends: ends + chrono::TimeDelta::minutes(10),
+        fading: false,
+    };
+    std::fs::write(
+        scratch.path(),
+        serde_json::to_vec(&SavedTimers {
+            timers: vec![interrupted.clone(), newer.clone()],
+            fades: Vec::new(),
+        })
+        .unwrap(),
+    )
+    .unwrap();
+    let sleep = Sleep::default().saved_in(scratch.path());
+    retire_announcements(
+        &sleep,
+        &[
+            (interrupted.coordinator.clone(), ends.timestamp_millis()),
+            (newer.coordinator.clone(), ends.timestamp_millis()),
+        ],
+    )
+    .unwrap();
+    let saved: SavedTimers =
+        serde_json::from_slice(&std::fs::read(scratch.path()).unwrap()).unwrap();
+    assert_eq!(saved.timers, vec![newer.clone()]);
+    assert_eq!(sleep.saved_timers(), vec![newer]);
+    // The same exact old evidence stays harmless after another startup.
+    let next = Sleep::default().saved_in(scratch.path());
+    retire_announcements(&next, &[(interrupted.coordinator, ends.timestamp_millis())]).unwrap();
+    assert_eq!(next.saved_timers().len(), 1);
+}
+
 struct Scratch(PathBuf);
 
 impl Scratch {

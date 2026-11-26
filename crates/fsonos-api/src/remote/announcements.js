@@ -137,18 +137,21 @@ const AnnouncementRemote = (() => {
 
   function jobOf(value) {
     const invalid = () => { throw new Error('The daemon returned an unreadable announcement job. Refresh jobs before another action.'); };
+    const recovery = value?.recovery === true;
     if (!value || !/^[0-9a-f]{32}$/.test(value.id) || !text(value.done)
         || !['speech', 'chime', 'wav'].includes(value.kind)
         || !['queued', 'preparing', 'playing', 'restoring', 'completed', 'cancelled', 'failed'].includes(value.phase)
         || !Array.isArray(value.rooms) || !value.rooms.length || value.rooms.length > 512
         || !value.rooms.every(room => text(room) && room.lastIndexOf('@') > 0 && !room.endsWith('@'))
-        || new Set(value.rooms).size !== value.rooms.length
+        || (!recovery && new Set(value.rooms).size !== value.rooms.length)
         || !Number.isSafeInteger(value.created_at)
         || (value.finished_at !== null && !Number.isSafeInteger(value.finished_at))
         || typeof value.cancel_requested !== 'boolean' || typeof value.can_cancel !== 'boolean'
+        || (value.recovery !== undefined && typeof value.recovery !== 'boolean')
         || !Array.isArray(value.progress) || value.progress.length > 512) invalid();
     const terminal = jobFinished(value);
-    if (value.can_cancel !== (!terminal && !value.cancel_requested)
+    if ((recovery ? value.can_cancel || value.cancel_requested || (!terminal && value.phase !== 'restoring')
+        : value.can_cancel !== (!terminal && !value.cancel_requested))
         || terminal !== (value.finished_at !== null)) invalid();
     const progress = value.progress.map(row => {
       if (!row || (row.household !== null && !text(row.household)) || !text(row.lead)
@@ -160,18 +163,22 @@ const AnnouncementRemote = (() => {
     const error = value.error;
     if (error !== null && (!error || !text(error.code) || !text(error.detail)
         || (error.hint != null && typeof error.hint !== 'string'))) invalid();
-    if ((!terminal && (result || error)) || (terminal && !result && !error)
+    if ((!terminal && !recovery && (result || error))
+        || (!terminal && recovery && (!result || result.clean || error))
+        || (terminal && !result && !error)
         || (value.phase === 'completed' && (!result?.clean || error))
         || (value.phase === 'failed' && result?.clean)) invalid();
     // The job identity retains admitted qualified names. Core delivery pins
     // player IDs and may report newer display names after a queued room rename.
-    if (result && result.households.reduce((count, row) => count + row.rooms.length, 0) !== value.rooms.length) invalid();
-    if (value.phase === 'cancelled' && (!value.cancel_requested || !result || error
+    const recordedRooms = result?.households.reduce((count, row) => count + row.rooms.length, 0);
+    if (result && (recordedRooms > value.rooms.length
+        || ((!recovery || result.clean) && recordedRooms !== value.rooms.length))) invalid();
+    if (value.phase === 'cancelled' && ((!recovery && !value.cancel_requested) || !result || error
         || !result.households.some(row => row.outcome === 'cancelled')
         || result.households.some(row => !['finished', 'cancelled'].includes(row.outcome) || row.error || row.not_restored.length))) invalid();
     return Object.freeze({ id: value.id, done: value.done, kind: value.kind, rooms: Object.freeze([...value.rooms]),
       phase: value.phase, created_at: value.created_at, finished_at: value.finished_at,
-      cancel_requested: value.cancel_requested, can_cancel: value.can_cancel, progress: Object.freeze(progress), result,
+      cancel_requested: value.cancel_requested, can_cancel: value.can_cancel, recovery, progress: Object.freeze(progress), result,
       error: error === null ? null : Object.freeze({ code: error.code, detail: error.detail, hint: error.hint || '' }) });
   }
 
@@ -185,7 +192,7 @@ const AnnouncementRemote = (() => {
   function admittedJob(value, reviewed) {
     const job = jobOf(value), kind = reviewed.body.text !== undefined ? 'speech'
       : reviewed.body.chime !== undefined ? 'chime' : 'wav';
-    if (job.kind !== kind || !sameRooms(job.rooms, reviewed.body.rooms)) {
+    if (job.recovery || job.kind !== kind || !sameRooms(job.rooms, reviewed.body.rooms)) {
       throw new Error('The returned job does not match the reviewed source and exact rooms. Its outcome is uncertain; refresh jobs.');
     }
     return job;
@@ -225,8 +232,15 @@ const AnnouncementRemote = (() => {
         for (const job of jobs) {
           const previous = state.jobs.find(old => old.id === job.id);
           if (previous && jobIdentity(previous) !== jobIdentity(job)) throw new Error('An announcement identity changed unexpectedly. Refresh jobs before acting.');
-          if (previous && ((previous.cancel_requested && !job.cancel_requested)
-              || (jobFinished(previous) && JSON.stringify(previous) !== JSON.stringify(job)))) {
+          // The same immutable ID may become a read-only recovery receipt
+          // after a crash. It can never regain permission to cancel playback.
+          // Retained terminal receipts may lose older household detail under
+          // bounded retention or gain an observed completion time on restart.
+          const enteringRecovery = previous && !previous.recovery && job.recovery;
+          if (previous && ((previous.recovery && !job.recovery)
+              || (previous.cancel_requested && !job.cancel_requested && !job.recovery)
+              || (jobFinished(previous) && !enteringRecovery && (job.recovery
+                ? !jobFinished(job) : JSON.stringify(previous) !== JSON.stringify(job))))) {
             throw new Error('A completed or cancelled announcement returned an older state. Refresh jobs before acting.');
           }
         }
@@ -257,7 +271,7 @@ const AnnouncementRemote = (() => {
       stopRead(); state.cancelling.add(job.id); state.message = 'Requesting cancellation; restoration may still take time…'; publish();
       try {
         const receipt = jobOf(await call('announcementCancel', { params: { id: job.id }, body: {} }));
-        if (jobIdentity(receipt) !== jobIdentity(job) || (!receipt.cancel_requested && !jobFinished(receipt))) {
+        if (jobIdentity(receipt) !== jobIdentity(job) || (!receipt.cancel_requested && !jobFinished(receipt) && !receipt.recovery)) {
           throw new Error('The cancellation receipt did not confirm this exact job. Refresh jobs.');
         }
         if (!disposed) {
@@ -289,7 +303,7 @@ const AnnouncementRemote = (() => {
     const list = el('div', { class: 'announcement-job-list' });
     const refresh = el('button', { type: 'button', text: 'Refresh jobs', onclick: () => { void control.refresh(); } });
     const node = el('section', { class: 'announcement-jobs' }, heading,
-      el('p', { text: 'Queued and active announcements can be cancelled here. The daemon finishes safe restoration before marking a job complete. Recent receipts expire when the daemon restarts.' }),
+      el('p', { text: 'Queued and active announcements can be cancelled here. The daemon finishes safe restoration before marking a job complete. Interrupted announcements keep recovery receipts across daemon restarts.' }),
       refresh, message, list);
     const control = jobModel({ call, completed, changed: render });
     function render(state) {
@@ -302,6 +316,7 @@ const AnnouncementRemote = (() => {
           completed: 'Finished and restored', cancelled: 'Cancelled', failed: 'Needs attention' };
         const card = el('section', { class: 'announcement-job' }, el('h4', { text: `${labels[job.phase]} · ${job.kind}` }),
           el('p', { text: job.rooms.join(' · ') }), el('p', { class: 'empty', text: `Job ${job.id}` }));
+        if (job.recovery) card.append(el('p', { text: 'Retained recovery receipt. Playback will not be repeated.' }));
         if (job.cancel_requested && !jobFinished(job)) card.append(el('p', { text: 'Cancellation requested. Waiting for playback and restoration to finish.' }));
         for (const row of job.progress) card.append(el('p', { text: `${row.rooms.join(' + ')}: ${row.phase}` }));
         if (job.result) {
@@ -312,7 +327,7 @@ const AnnouncementRemote = (() => {
           }
         }
         if (job.error) card.append(el('p', { text: `${job.error.detail} ${job.error.hint}`.trim() }));
-        if (!jobFinished(job)) {
+        if (!jobFinished(job) && !job.recovery) {
           const cancel = el('button', { type: 'button', text: state.cancelling.has(job.id) ? 'Requesting cancellation…' : 'Cancel this announcement',
             'data-announcement-job': job.id, onclick: () => { void control.cancel(job); } });
           cancel.disabled = !control.canCancel(job); card.append(cancel);

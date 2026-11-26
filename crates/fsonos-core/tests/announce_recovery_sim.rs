@@ -382,6 +382,93 @@ fn restart_returns_a_partial_groups_live_survivor_with_new_edits_and_pause() {
 }
 
 #[test]
+fn a_temporary_member_lead_follows_native_handback_to_its_original_coordinator() {
+    for s2 in [false, true] {
+        let sim = sim(s2, true);
+        let lan = sim.lan();
+        queue(&sim, &lan, "Alpha");
+        join(&sim, &lan, "Beta", "Alpha");
+        join(&sim, &lan, "Gamma", "Alpha");
+        soap::set_volume(&lan, host(&sim, "Alpha"), 11).unwrap();
+        soap::set_volume(&lan, host(&sim, "Beta"), 19).unwrap();
+        let journal = interrupted(&sim, &lan, &["Alpha", "Beta"]);
+        assert_eq!(*journal.record().lead(), id(&sim, "Beta"));
+        let survivor = host(&sim, "Gamma");
+        soap::seek_position(&lan, survivor, 75).unwrap();
+        soap::pause(&lan, survivor).unwrap();
+        let from = sim.soap_log().len();
+        let report = fast().recover(&lan, &journal.record(), &journal, None);
+        assert!(report.restore_failed.is_empty(), "{report:#?}");
+        assert!(
+            report
+                .restored
+                .iter()
+                .all(|(_, restored)| restored.skipped.is_empty()),
+            "{report:#?}"
+        );
+        let current = houses(&sim, &lan);
+        for room in ["Alpha", "Beta", "Gamma"] {
+            assert_eq!(
+                resolve_room(&current, room).unwrap().coordinator.id,
+                id(&sim, "Alpha")
+            );
+        }
+        assert_eq!(
+            soap::get_transport_info(&lan, host(&sim, "Alpha"))
+                .unwrap()
+                .state,
+            TransportState::Paused
+        );
+        assert_eq!(
+            soap::get_position_info(&lan, host(&sim, "Alpha"))
+                .unwrap()
+                .position_secs,
+            Some(75)
+        );
+        assert_eq!(soap::get_volume(&lan, host(&sim, "Alpha")).unwrap(), 11);
+        assert_eq!(soap::get_volume(&lan, host(&sim, "Beta")).unwrap(), 19);
+        no_clip_replayed(&sim.soap_log()[from..]);
+    }
+}
+
+#[test]
+fn an_originally_idle_room_is_restored_by_one_confirmed_stop() {
+    for s2 in [false, true] {
+        let sim = sim(s2, false);
+        let lan = sim.lan();
+        soap::set_volume(&lan, host(&sim, "Alpha"), 12).unwrap();
+        let journal = interrupted(&sim, &lan, &["Alpha"]);
+        let from = sim.soap_log().len();
+        let report = fast().recover(&lan, &journal.record(), &journal, None);
+        assert!(report.restore_failed.is_empty(), "{report:#?}");
+        assert!(
+            report
+                .restored
+                .iter()
+                .all(|(_, restored)| restored.skipped.is_empty()),
+            "{report:#?}"
+        );
+        let log = sim.soap_log();
+        assert_eq!(
+            log[from..]
+                .iter()
+                .filter(|entry| entry.action == "Stop")
+                .count(),
+            1,
+            "{report:#?}"
+        );
+        assert_eq!(
+            soap::get_transport_info(&lan, host(&sim, "Alpha"))
+                .unwrap()
+                .state,
+            TransportState::Stopped
+        );
+        assert_eq!(soap::get_volume(&lan, host(&sim, "Alpha")).unwrap(), 12);
+        no_clip_replayed(&log[from..]);
+    }
+}
+
+#[test]
 fn newer_source_group_pause_or_boot_identity_prevents_restart_writes() {
     for s2 in [false, true] {
         for change in ["source", "group", "pause", "boot"] {
@@ -746,7 +833,10 @@ impl Transport for DuringRecovery<'_> {
                     soap::play(self.lan, self.lead)?;
                 }
                 Intervene::PauseBeforeRestore | Intervene::PauseAfterSelection => {
-                    soap::pause(self.lan, self.lead)?
+                    // Both boundaries follow a confirmed Stop/SetURI. A real
+                    // listener resumes then pauses that loaded source.
+                    soap::play(self.lan, self.lead)?;
+                    soap::pause(self.lan, self.lead)?;
                 }
             }
             self.after

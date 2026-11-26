@@ -1028,6 +1028,61 @@ impl Surface {
         receipt
     }
 
+    /// Read potential sleep interruptions before announcement persistence;
+    /// never suspend a fade merely to prepare its durable record.
+    pub(super) fn announcement_sleep_candidates(
+        &self,
+        household: &HouseholdState,
+        players: &[PlayerId],
+    ) -> Vec<SleepTimer> {
+        let Some(sleep) = &self.sleep else {
+            return Vec::new();
+        };
+        let mut candidates: Vec<_> = household
+            .rooms
+            .iter()
+            .filter(|room| players.contains(&room.primary))
+            .filter_map(|room| sleep.timers.announcement_interruption(&room.coordinator))
+            .collect();
+        candidates.sort_by(|a, b| a.coordinator.0.cmp(&b.coordinator.0));
+        candidates.dedup_by(|a, b| a.coordinator == b.coordinator);
+        candidates
+    }
+
+    pub(super) fn announcing_matching(
+        &self,
+        room: &fsonos_core::Room,
+        expected: Option<&SleepTimer>,
+    ) -> Result<Option<SleepResume>, fsonos_core::CoreError> {
+        let Some(sleep) = &self.sleep else {
+            return Ok(None);
+        };
+        let receipt = sleep.timers.interrupt_for_announcement_matching(
+            &sleep.fader,
+            &room.coordinator,
+            expected,
+        )?;
+        sleep.fader.supersede(&room.primary);
+        Ok(receipt)
+    }
+
+    /// Startup only: retire exact interrupted timer identities on disk before
+    /// any sleep worker can adopt them. Native device backstops are untouched.
+    pub(super) fn retire_announcement_sleep_candidates(
+        &self,
+        interrupted: &[(PlayerId, i64)],
+    ) -> Result<(), Failure> {
+        if let Some(sleep) = &self.sleep {
+            recovery::retire_announcements(sleep, interrupted).map_err(|error| {
+                Failure::new(
+                    ErrorCode::NotReady,
+                    format!("cannot retain interrupted announcement sleep decisions: {error}",),
+                )
+            })?;
+        }
+        Ok(())
+    }
+
     /// Resume only interrupted sleeps whose announcement still owns recovery.
     /// Callers pass receipts only for groups whose music and levels were
     /// restored; an external override must not acquire a fresh timer.

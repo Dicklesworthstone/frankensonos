@@ -1889,7 +1889,7 @@ reach on the LAN; control endpoints never move onto that listener. Regression
 and simulator checks remain separate from opt-in real speech and physical-Sonos
 acceptance.
 
-Announcements also expose bounded process-local jobs through CLI `--background`
+Announcements also expose bounded jobs through CLI `--background`
 and `announcements`, HTTP `/announcements`, and MCP start/list/get/cancel tools.
 The phone remote and dashboard share job observation and cancellation, release
 their creation flow after admission, and show each household's final restoration
@@ -1907,8 +1907,20 @@ delivery before draining workers. Queued clips and speech generation stop;
 active clips restore through the same ownership checks as explicit cancellation.
 Earlier scheduler reservations and requests still resolving rooms cannot bypass
 shutdown. The bounded drain does not wait for a five-minute clip to finish.
-Hard-crash restoration remains unimplemented because announcement snapshots and
-attempted effects are process-local.
+The daemon now journals per-household snapshots, physical identities, temporary
+group ownership and attempted effects before speaker writes. On restart, a
+supervised worker can restore an established, still-owned announcement without
+replaying its clip. Fresh source, pause, group, endpoint and boot checks preserve
+newer listener intent; restored levels use the initiating caller's current caps.
+A durable claim precedes cleanup, so a second crash never replays uncertain
+restoration. Unfinished preparation and previously claimed cleanup retain
+explicit incomplete receipts instead of inventing recovery authority. Recovery
+expires after 24 hours, keeps unavailable households pending, and retains bounded
+receipts under the original job and caller identities. Interrupted sleep fades
+are retired by their exact old coordinator and deadline; a newer timer survives.
+Direct clients without the daemon journal retain process-local recovery. The
+new Rust integration tests still require an executable workspace build; storage
+checks alone do not establish Sonos or complete daemon acceptance.
 
 Announcement cleanup rechecks each room's current volume cap immediately before
 restoring an owned level. Quiet hours and policy edits during the clip can lower

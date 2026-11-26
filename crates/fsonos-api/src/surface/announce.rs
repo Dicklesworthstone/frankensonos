@@ -26,6 +26,7 @@ use fsonos_types::PlayerId;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fmt::Write as _;
+use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::SystemTime;
 
@@ -35,6 +36,10 @@ use crate::plan::Rooms;
 
 mod jobs;
 pub use jobs::{AnnouncementJobDto, AnnouncementJobPhase, AnnouncementProgressDto};
+mod recovery;
+pub use recovery::{
+    AnnouncementContext, AnnouncementJournal, AnnouncementRecoveryPass, PendingAnnouncement,
+};
 
 /// The tool name announcements are authorized and logged under.
 pub const TOOL: &str = "announce";
@@ -136,6 +141,10 @@ pub struct Announcements {
     route: Option<MediaRoute>,
     turns: Arc<Turns>,
     jobs: jobs::Jobs,
+    journal: Option<Arc<dyn AnnouncementJournal>>,
+    recovering: AtomicBool,
+    recovery_prepared: Mutex<bool>,
+    recovery_observations: Mutex<HashMap<String, HouseholdAnnouncement>>,
     /// Reservations and final job publication share the shutdown boundary.
     stopping: Mutex<bool>,
 }
@@ -150,6 +159,10 @@ impl Announcements {
             route: None,
             turns: Arc::new(Turns::default()),
             jobs: jobs::Jobs::default(),
+            journal: None,
+            recovering: AtomicBool::new(false),
+            recovery_prepared: Mutex::new(false),
+            recovery_observations: Mutex::new(HashMap::new()),
             stopping: Mutex::new(false),
         }
     }
@@ -326,9 +339,10 @@ impl Surface {
     /// that is stopping lets them put the music back first.
     #[must_use]
     pub fn announcements_pending(&self) -> u64 {
-        self.announcements
-            .as_ref()
-            .map_or(0, |with| with.turns.held().values().sum::<usize>() as u64)
+        self.announcements.as_ref().map_or(0, |with| {
+            with.turns.held().values().sum::<usize>() as u64
+                + u64::from(with.recovering.load(std::sync::atomic::Ordering::Acquire))
+        })
     }
 
     /// Close admission and cancel all accepted announcements before draining
@@ -389,7 +403,18 @@ impl Surface {
     ) -> Result<AnnounceDto, Failure> {
         let (prepared, turn, job) = self.prepare_announcement(client, req, permit, TOOL)?;
         job.preparing();
-        let result = self.deliver_announcement(client, prepared, &job.control);
+        let delivered = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            self.deliver_announcement(client, prepared, &job.control)
+        }));
+        let result = match delivered {
+            Ok(result) => result,
+            Err(panic) => {
+                job.finish(&Err(Failure::new(ErrorCode::Internal,
+                    "announcement worker stopped unexpectedly; its durable recovery remains inspectable")), self.clock.now().timestamp());
+                drop(turn);
+                std::panic::resume_unwind(panic);
+            }
+        };
         job.finish(&result, self.clock.now().timestamp());
         drop(turn);
         result
@@ -445,6 +470,12 @@ impl Surface {
         let aliases = self.aliases();
         let rooms = room_view(&households, aliases.as_ref(), client);
         let selected = targets(&rooms, &req.rooms).map_err(|f| self.explain(f))?;
+        self.announcement_recovery_ready(
+            &selected
+                .iter()
+                .map(|target| target.household)
+                .collect::<Vec<_>>(),
+        )?;
         let players = selected
             .iter()
             .map(|target| {
@@ -478,7 +509,16 @@ impl Surface {
         // the drain or refuses it before a worker can touch the speakers.
         let created_at = self.clock.now().timestamp();
         let _admission = with.admitting()?;
-        let job = with.jobs.insert(client, kind, named, created_at)?;
+        let job = with.jobs.insert(client, kind, named.clone(), created_at)?;
+        let context = AnnouncementContext {
+            id: job.id().to_owned(),
+            client: client.key().to_owned(),
+            kind: kind.to_owned(),
+            rooms: named,
+            created_at,
+            interrupted_sleeps: Vec::new(),
+            interrupted_sleep_deadlines: std::collections::BTreeMap::new(),
+        };
         Ok((
             PreparedAnnouncement {
                 operation,
@@ -486,6 +526,7 @@ impl Surface {
                 volume,
                 households,
                 players,
+                context,
             },
             turn,
             job,
@@ -505,6 +546,7 @@ impl Surface {
             volume,
             households,
             players,
+            context,
         } = prepared;
         let with = self
             .announcements
@@ -557,13 +599,21 @@ impl Surface {
         // back (see `announcing`). Read the policy and clock at that boundary:
         // a queued clip may have waited across quiet hours or a policy edit.
         let sleeping = std::sync::Mutex::new(Vec::new());
+        let recording = with
+            .journal
+            .as_ref()
+            .map(|journal| recovery::Recording::new(&**journal, &context, self));
         let authorize = || {
             self.guard(client)
                 .authorize(operation, false)
                 .map_err(|error| error.to_string())
         };
         let cap = |room: &Room| {
-            if let Some(receipt) = self.announcing(room) {
+            let receipt = recording.as_ref().map_or_else(
+                || self.announcing(room),
+                |recording| recording.announcing(room),
+            );
+            if let Some(receipt) = receipt {
                 sleeping
                     .lock()
                     .unwrap_or_else(PoisonError::into_inner)
@@ -597,24 +647,36 @@ impl Surface {
             self.sleep_again(&households, &restored);
         };
         let live = self.live();
-        let report = with
-            .announcer
-            .announce_controlled(
+        let callbacks = AnnouncementCallbacks {
+            authorize: &authorize,
+            cap: &cap,
+            restore_cap: Some(&restore_cap),
+            completed: &completed,
+            clip_url: Some(&clip_url),
+        };
+        let report = if let Some(recording) = &recording {
+            with.announcer.announce_controlled_with_checkpoint(
                 &*self.transport,
                 &targets,
                 &clip,
                 volume,
                 live.as_deref(),
-                &AnnouncementCallbacks {
-                    authorize: &authorize,
-                    cap: &cap,
-                    restore_cap: Some(&restore_cap),
-                    completed: &completed,
-                    clip_url: Some(&clip_url),
-                },
+                &callbacks,
+                control,
+                recording,
+            )
+        } else {
+            with.announcer.announce_controlled(
+                &*self.transport,
+                &targets,
+                &clip,
+                volume,
+                live.as_deref(),
+                &callbacks,
                 control,
             )
-            .map_err(|e| Failure::invalid(e.to_string()))?;
+        }
+        .map_err(|e| Failure::invalid(e.to_string()))?;
 
         let dto = AnnounceDto::from_report(&households, &report);
         let clamped: Vec<String> = dto
@@ -643,6 +705,7 @@ struct PreparedAnnouncement {
     volume: u8,
     households: Vec<HouseholdState>,
     players: Vec<(usize, PlayerId)>,
+    context: AnnouncementContext,
 }
 
 fn admitted_targets<'a>(

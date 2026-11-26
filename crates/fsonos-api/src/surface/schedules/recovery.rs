@@ -181,6 +181,53 @@ pub(super) fn supersede(sleep: &Sleep, id: &PlayerId) -> Option<SleepTimer> {
     state.pending.remove(id)
 }
 
+/// Announcement startup has durable evidence for exact suspended fades. This
+/// runs before the scheduler: remove those saved candidates without touching
+/// speakers or a later timer at the same coordinator. A publication failure
+/// aborts startup, so a terminal announcement cannot erase the suppression.
+pub(super) fn retire_announcements(
+    sleep: &Sleep,
+    interrupted: &[(PlayerId, i64)],
+) -> io::Result<()> {
+    let Some(path) = sleep.saved.as_deref() else {
+        return Ok(());
+    };
+    if interrupted.is_empty() {
+        return Ok(());
+    }
+    let mut state = sleep.writing.lock().unwrap_or_else(PoisonError::into_inner);
+    state.load(path)?;
+    for (coordinator, ends) in interrupted {
+        if state
+            .pending
+            .get(coordinator)
+            .is_some_and(|timer| timer.ends.timestamp_millis() == *ends)
+        {
+            state.pending.remove(coordinator);
+            state.dirty = true;
+        }
+        let fading: Vec<_> = state
+            .fades
+            .values()
+            .filter(|fade| {
+                fade.timer.coordinator == *coordinator
+                    && fade.timer.ends.timestamp_millis() == *ends
+            })
+            .map(|fade| fade.id.clone())
+            .collect();
+        for id in fading {
+            state.fades.remove(&id);
+            state.active_fades.remove(&id);
+            state.resumed_fades.remove(&id);
+            state.dirty = true;
+        }
+    }
+    if state.dirty {
+        write(sleep, path, &mut state)?;
+    }
+    Ok(())
+}
+
 /// Startup candidates only, never a second copy of an already armed timer.
 pub(super) fn saved(sleep: &Sleep) -> Vec<SleepTimer> {
     let Some(path) = sleep.saved.as_deref() else {

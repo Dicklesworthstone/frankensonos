@@ -334,10 +334,8 @@ fn an_unapplied_join_remains_uncertain_without_replaying_it() {
     let t = Lost::new(&f, "SetAVTransportURI", false);
     let before = f.sim.soap_log().len();
     let result = control::join(&t, &f.houses(), &f.member, &f.leader);
-    assert!(
-        matches!(result, Err(CoreError::Uncertain(ref detail))
-            if detail.contains("group write acknowledgement lost") && detail.contains("inspect"))
-    );
+    assert!(matches!(result, Err(CoreError::Uncertain(ref detail))
+            if detail.contains("group write acknowledgement lost") && detail.contains("inspect")));
     assert_eq!(t.writes.get(), 1);
     assert_eq!(f.writes_since(before), ["SetAVTransportURI"]);
     assert_eq!(

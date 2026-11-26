@@ -111,6 +111,53 @@ fn a_late_cancellation_neither_changes_the_terminal_receipt_nor_sets_the_token()
 }
 
 #[test]
+fn journal_import_preserves_live_authority_then_exposes_failed_worker_recovery() {
+    let surface = surface(Policy::default());
+    let job = insert(&surface, &Client::McpStdio, 10);
+    let context = AnnouncementContext {
+        id: job.id.clone(),
+        client: "mcp-stdio".into(),
+        kind: "speech".into(),
+        rooms: job.rooms.clone(),
+        created_at: 10,
+        interrupted_sleeps: Vec::new(),
+        interrupted_sleep_deadlines: std::collections::BTreeMap::new(),
+    };
+    let jobs = &surface.announcements.as_ref().unwrap().jobs;
+    let before = job.view();
+    assert!(!before.recovery);
+    let progress = vec![AnnouncementProgressDto {
+        household: Some("TEST_HOUSEHOLD".into()),
+        lead: "RINCON_TEST".into(),
+        rooms: vec!["Kitchen".into()],
+        phase: "restoring".into(),
+    }];
+    jobs.import(
+        &context,
+        report("failed", false),
+        progress.clone(),
+        true,
+        20,
+    )
+    .unwrap();
+    assert_eq!(job.view(), before);
+    assert!(jobs.live(&job.id));
+    job.finish(&Err(Failure::new(ErrorCode::Internal, "worker panic")), 21);
+    jobs.import(&context, report("failed", false), progress, true, 22)
+        .unwrap();
+    let recovering = job.view();
+    assert_eq!(recovering.phase, AnnouncementJobPhase::Restoring);
+    assert!(!recovering.can_cancel);
+    assert!(recovering.recovery);
+    assert!(!jobs.live(&job.id));
+    assert!(!job.request_cancel());
+    jobs.import(&context, report("failed", false), Vec::new(), false, 23)
+        .unwrap();
+    assert_eq!(job.view().phase, AnnouncementJobPhase::Failed);
+    assert_eq!(job.view().finished_at, Some(23));
+}
+
+#[test]
 fn shutdown_cancels_every_active_client_and_preserves_completed_receipts() {
     let surface = Arc::new(surface(Policy::default()));
     let synchronous = insert(&surface, &Client::LoopbackHttp, 10);

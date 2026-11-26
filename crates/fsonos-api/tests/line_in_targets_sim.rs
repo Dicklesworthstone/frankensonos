@@ -156,7 +156,9 @@ impl House {
         assert_eq!((position.track, position.position_secs), (2, Some(17)));
         assert_eq!(position.uri, ORIGINAL[1]);
         assert!(matches!(
-            soap::get_transport_info(&self.sim.lan(), host).unwrap().state,
+            soap::get_transport_info(&self.sim.lan(), host)
+                .unwrap()
+                .state,
             TransportState::Paused | TransportState::Stopped
         ));
     }
@@ -168,7 +170,9 @@ impl House {
             format!("x-rincon-stream:{}", source.0)
         );
         assert_eq!(
-            soap::get_transport_info(&self.sim.lan(), host).unwrap().state,
+            soap::get_transport_info(&self.sim.lan(), host)
+                .unwrap()
+                .state,
             TransportState::Playing
         );
         assert_eq!(self.queue(room, generation), ORIGINAL);

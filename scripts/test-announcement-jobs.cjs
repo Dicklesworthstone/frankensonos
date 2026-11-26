@@ -46,6 +46,51 @@ test('job receipts validate active phases and retain terminal restoration detail
   assert.equal(A.jobOf(broken).error.hint, 'Use a chime');
 });
 
+test('recovery receipts expose partial household evidence without creating a cancellation token', () => {
+  const pending = job('restoring', { recovery: true, can_cancel: false, result: job('failed').result });
+  const parsed = A.jobOf(pending);
+  assert.equal(parsed.recovery, true); assert.equal(parsed.can_cancel, false);
+  assert.deepEqual(parsed.result.households[0].not_restored, ['Manual source retained']);
+  const partial = job('failed', { recovery: true, rooms: ['Main@S2', 'Side@S1'] });
+  assert.equal(A.jobOf(partial).result.households.length, 1);
+  const cancelled = job('cancelled', { recovery: true, cancel_requested: false });
+  assert.equal(A.jobOf(cancelled).phase, 'cancelled');
+  assert.equal(A.jobOf(job()).recovery, false, 'old daemon payloads remain ordinary live jobs');
+  for (const invalid of [
+    { ...pending, can_cancel: true }, { ...pending, cancel_requested: true }, { ...pending, recovery: 'yes' },
+    { ...pending, phase: 'playing' }, { ...pending, result: null },
+    { ...pending, result: job('completed').result },
+    job('completed', { recovery: true, rooms: ['Main@S2', 'Side@S1'] }),
+  ]) assert.throws(() => A.jobOf(invalid));
+  assert.throws(() => A.admittedJob(pending, { body: { text: 'Dinner', rooms: ['Main@S2'] } }), /does not match/);
+});
+
+test('an interrupted live job becomes a read-only recovery receipt and never regains playback authority', async () => {
+  const f = fixture({ jobs: [job('failed')] }); await f.c.setVisible(true);
+  const recovering = job('restoring', { recovery: true, can_cancel: false, result: job('failed').result });
+  f.read(() => [recovering]); assert.equal(await f.c.refresh(), true);
+  assert.equal(f.c.state.jobs[0].recovery, true); assert.equal(f.c.canCancel(f.c.state.jobs[0]), false);
+  assert.equal(await f.c.cancel(f.c.state.jobs[0]), false); assert.equal(f.writes().length, 0);
+  f.read(() => [job('failed', { recovery: true })]); await f.tick();
+  assert.equal(f.c.state.jobs[0].phase, 'failed'); assert.equal(f.timers.size, 0);
+  f.read(() => [job('failed', { recovery: true, finished_at: 999 })]);
+  assert.equal(await f.c.refresh(), true, 'another daemon can reimport the same retained receipt');
+  f.read(() => [recovering]); assert.equal(await f.c.refresh(), false, 'terminal recovery cannot restart cleanup');
+  f.c.dispose();
+
+  const active = fixture({ jobs: [recovering] }); await active.c.setVisible(true);
+  active.read(() => [job('playing')]); assert.equal(await active.c.refresh(), false);
+  assert.equal(active.c.canCancel(active.c.state.jobs[0]), false); active.c.dispose();
+});
+
+test('a cancellation racing a restart accepts the exact read-only recovery receipt without replay', async () => {
+  const f = fixture(); await f.c.setVisible(true);
+  f.cancel(() => job('restoring', { recovery: true, can_cancel: false, result: job('failed').result }));
+  assert.equal(await f.c.cancel(f.c.state.jobs[0]), true);
+  assert.equal(f.c.state.jobs[0].recovery, true); assert.equal(f.c.state.uncertain.size, 0);
+  assert.equal(await f.c.cancel(f.c.state.jobs[0]), false); assert.equal(f.writes().length, 1); f.c.dispose();
+});
+
 test('malformed, contradictory and wrong-room job receipts are rejected', () => {
   const invalid = [null, {}, job('queued', { id: 'other' }), job('queued', { rooms: ['Main'] }),
     job('queued', { rooms: ['Main@S2', 'Main@S2'] }), job('queued', { can_cancel: false }),

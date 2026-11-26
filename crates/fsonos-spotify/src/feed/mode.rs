@@ -49,10 +49,7 @@ pub(super) fn continuation<T: Transport + ?Sized>(
         }
         return Ok(None);
     }
-    if !matches!(
-        live.state,
-        TransportState::Playing | TransportState::Paused
-    ) {
+    if !matches!(live.state, TransportState::Playing | TransportState::Paused) {
         return Err(changed_selection());
     }
     let selected = match stop::selected(feed, at)? {
@@ -78,10 +75,10 @@ fn changed_selection() -> FeedError {
 
 fn resumable<T: Transport + ?Sized>(at: &Speakers<'_, T>) -> Result<bool, FeedError> {
     let live = fsonos_proto::control::get_transport_info(at.transport, host_of(at)?)?;
-    Ok(matches!(
-        live.state,
-        TransportState::Playing | TransportState::Paused
-    ) && live.status != "ERROR_OCCURRED")
+    Ok(
+        matches!(live.state, TransportState::Playing | TransportState::Paused)
+            && live.status != "ERROR_OCCURRED",
+    )
 }
 
 /// Preserve elapsed playback: neither changing the source nor seeking is
