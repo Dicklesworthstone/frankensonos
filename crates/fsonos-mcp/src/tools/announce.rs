@@ -85,16 +85,17 @@ impl Backend {
         let request = AbandonAnnouncementRecoveryRequest { confirm_abandon };
         let body = serde_json::to_value(&request).ok();
         let path = format!("/announcements/{}/abandon", super::segment(id));
-        if let Some(answer) = self.on_daemon(
-            "POST",
-            &path,
-            body.as_ref(),
-            |job: &AnnouncementJobDto| job.done.clone(),
-        ) {
+        if let Some(answer) =
+            self.on_daemon("POST", &path, body.as_ref(), |job: &AnnouncementJobDto| {
+                job.done.clone()
+            })
+        {
             return answer;
         }
         respond(|| {
-            let job = self.surface.abandon_announcement_recovery(&self.client, id, &request)?;
+            let job = self
+                .surface
+                .abandon_announcement_recovery(&self.client, id, &request)?;
             Ok((job.done.clone(), job))
         })
     }

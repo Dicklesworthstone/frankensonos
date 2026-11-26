@@ -60,6 +60,9 @@ const ROOM_SETS_STYLE: &str = include_str!("../../remote/room-sets.css");
 const ROOM_CONFIGURATION: &str = include_str!("../../remote/room-configuration.js");
 const ROOM_CONFIGURATION_PANEL: &str = include_str!("../../remote/room-configuration-panel.js");
 const ROOM_CONFIGURATION_STYLE: &str = include_str!("../../remote/room-configuration.css");
+const POLICY_CONFIGURATION: &str = include_str!("../../remote/policy-configuration.js");
+const POLICY_CONFIGURATION_PANEL: &str = include_str!("../../remote/policy-configuration-panel.js");
+const POLICY_CONFIGURATION_STYLE: &str = include_str!("../../remote/policy-configuration.css");
 const SOURCE_TARGETS: &str = include_str!("../../remote/source-targets.js");
 const SOURCE: &str = include_str!("../../remote/dashboard-source.js");
 const SOURCE_STYLE: &str = include_str!("../../remote/dashboard-source.css");
@@ -108,7 +111,7 @@ pub(super) fn routes(cx: &Ctx<'_>) -> Vec<RouteEntry> {
                 document(
                     "text/css; charset=utf-8",
                     &format!(
-                        "{STYLE}\n{LIBRARY_STYLE}\n{QUEUE_STYLE}\n{ACTIVITY_STYLE}\n{ANNOUNCEMENTS_STYLE}\n{DIRECTION_STYLE}\n{PREFERENCES_STYLE}\n{DJ_CONFIGURATION_STYLE}\n{REHEARSAL_STYLE}\n{SOURCE_STYLE}\n{DJ_TARGETS_STYLE}\n{MUSIC_STYLE}\n{PLAYLIST_SAVE_STYLE}\n{FAVORITES_STYLE}\n{ROOM_CONFIGURATION_STYLE}\n{EQUALIZER_STYLE}\n{ROOM_SETS_STYLE}"
+                        "{STYLE}\n{LIBRARY_STYLE}\n{QUEUE_STYLE}\n{ACTIVITY_STYLE}\n{ANNOUNCEMENTS_STYLE}\n{DIRECTION_STYLE}\n{PREFERENCES_STYLE}\n{DJ_CONFIGURATION_STYLE}\n{REHEARSAL_STYLE}\n{SOURCE_STYLE}\n{DJ_TARGETS_STYLE}\n{MUSIC_STYLE}\n{PLAYLIST_SAVE_STYLE}\n{FAVORITES_STYLE}\n{ROOM_CONFIGURATION_STYLE}\n{POLICY_CONFIGURATION_STYLE}\n{EQUALIZER_STYLE}\n{ROOM_SETS_STYLE}"
                     ),
                 )
             },
@@ -125,7 +128,7 @@ pub(super) fn routes(cx: &Ctx<'_>) -> Vec<RouteEntry> {
                 document(
                     "text/javascript; charset=utf-8",
                     &format!(
-                        "{EVENTS}\n{CORE}\n{SEEK}\n{LIVE}\n{VISUALIZER}\n{AUDIO}\n{SCENE_QUEUE}\n{DJ_DIRECTION}\n{DJ_CONFIGURATION}\n{DJ_CONFIGURATION_PANEL}\n{QUEUE_TRACKS}\n{PLAYLIST}\n{LIBRARY}\n{SESSION}\n{QUEUE}\n{LIBRARY_PANEL}\n{ACTIVITY}\n{ACTIVITY_PANEL}\n{WORKSPACE}\n{PLAY_MODE}\n{GROUPS}\n{TIMERS}\n{SLEEP}\n{VOLUME}\n{EQUALIZER}\n{SCENES}\n{SCHEDULES}\n{ROUTINES}\n{ANNOUNCEMENTS}\n{ANNOUNCEMENTS_PANEL}\n{STEERING}\n{DIRECTION}\n{DJ_PREFERENCES}\n{PREFERENCES}\n{DJ_SESSION}\n{REHEARSAL}\n{ROOM_SETS}\n{ROOM_SETS_PANEL}\n{ROOM_CONFIGURATION}\n{ROOM_CONFIGURATION_PANEL}\n{SOURCE_TARGETS}\n{SOURCE_PLAYER}\n{DJ_TARGETS}\n{DJ_TARGETS_PANEL}\n{SOURCE}\n{PLAYLIST_SAVE}\n{PLAYLIST_SAVE_PANEL}\n{FAVORITES}\n{FAVORITES_PANEL}\n{SPOTIFY_CONNECT}\n{LIBRARY_SYNC}\n{MUSIC}\n{SCRIPT}"
+                        "{EVENTS}\n{CORE}\n{SEEK}\n{LIVE}\n{VISUALIZER}\n{AUDIO}\n{SCENE_QUEUE}\n{DJ_DIRECTION}\n{DJ_CONFIGURATION}\n{DJ_CONFIGURATION_PANEL}\n{QUEUE_TRACKS}\n{PLAYLIST}\n{LIBRARY}\n{SESSION}\n{QUEUE}\n{LIBRARY_PANEL}\n{ACTIVITY}\n{ACTIVITY_PANEL}\n{WORKSPACE}\n{PLAY_MODE}\n{GROUPS}\n{TIMERS}\n{SLEEP}\n{VOLUME}\n{EQUALIZER}\n{SCENES}\n{SCHEDULES}\n{ROUTINES}\n{ANNOUNCEMENTS}\n{ANNOUNCEMENTS_PANEL}\n{STEERING}\n{DIRECTION}\n{DJ_PREFERENCES}\n{PREFERENCES}\n{DJ_SESSION}\n{REHEARSAL}\n{ROOM_SETS}\n{ROOM_SETS_PANEL}\n{ROOM_CONFIGURATION}\n{ROOM_CONFIGURATION_PANEL}\n{POLICY_CONFIGURATION}\n{POLICY_CONFIGURATION_PANEL}\n{SOURCE_TARGETS}\n{SOURCE_PLAYER}\n{DJ_TARGETS}\n{DJ_TARGETS_PANEL}\n{SOURCE}\n{PLAYLIST_SAVE}\n{PLAYLIST_SAVE_PANEL}\n{FAVORITES}\n{FAVORITES_PANEL}\n{SPOTIFY_CONNECT}\n{LIBRARY_SYNC}\n{MUSIC}\n{SCRIPT}"
                     ),
                 )
             },

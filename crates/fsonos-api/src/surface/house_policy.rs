@@ -11,6 +11,11 @@ use std::fmt::Write as _;
 use super::Surface;
 use crate::failure::Failure;
 
+mod configuration;
+pub use configuration::{
+    PolicyConfigurationChange, PolicyConfigurationDto, PolicyConfigureRequest, PolicyConfiguredDto,
+};
+
 /// The effective policy, and the caller under it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PolicyDto {

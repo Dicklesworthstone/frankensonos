@@ -34,7 +34,7 @@ pub mod room_config;
 pub mod schedules;
 
 mod house_policy;
-pub use house_policy::GetPolicy;
+pub use house_policy::{ConfigurePolicy, GetPolicy, PolicyConfiguration};
 
 mod scenes;
 pub use scenes::{ApplyScene, DeleteScene, GetScene, ListScenes, SaveScene};

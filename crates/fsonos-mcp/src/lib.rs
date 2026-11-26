@@ -195,6 +195,10 @@ fn configured_server(
             "configure_rooms".into(),
             fsonos_core::rooms::configuration::MAX_CONFIG_BYTES + 1024,
         );
+        http.tool_input_max_bytes.insert(
+            "configure_policy".into(),
+            fsonos_core::policy::configuration::MAX_CONFIG_BYTES + 1024,
+        );
     }
     // The essentials, in ESSENTIALS order.
     let builder = fastmcp_server::ServerBuilder::try_new_with_fixed_protocol_policy(
@@ -255,6 +259,8 @@ fn configured_server(
             .tool(reviewed_undo::PreviewUndo)
             .tool(reviewed_undo::UndoChecked)
             .tool(tools::GetPolicy)
+            .tool(tools::PolicyConfiguration)
+            .tool(tools::ConfigurePolicy)
             .tool(tools::Doctor)
             .tool(tools::Diagnostics)
             .tool(tools::Previous)

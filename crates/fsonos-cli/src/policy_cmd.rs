@@ -1,5 +1,4 @@
-//! `fsonos policy show|check`: the house policy the CLI runs under, and
-//! whether a policy file can be used.
+//! Read, validate and edit the house policy the CLI runs under.
 //!
 //! `show` prints the running daemon's policy (`GET /policy`) when one
 //! answers, so from another machine `--daemon` shows the house's; otherwise
@@ -8,6 +7,12 @@
 //! caller. `check` validates policy.toml, or `--file`:
 //! it parses and its values are in range. A problem names its line and
 //! column and exits 2.
+//!
+//! `configuration` reads the complete saved policy and its revision. `configure`
+//! changes one rule through the selected daemon or a configuration-only local
+//! surface, preserving unrelated fields and comparing the observed revision.
+
+mod configuration;
 
 use clap::Subcommand;
 use fsonos_api::Failure;
@@ -29,6 +34,13 @@ pub enum PolicyAction {
         /// The file to check [default: policy.toml in the data directory].
         #[arg(long, value_name = "PATH")]
         file: Option<PathBuf>,
+    },
+    /// Read the complete editable policy and its current revision.
+    Configuration,
+    /// Save one reviewed policy edit, preserving unrelated settings.
+    Configure {
+        #[command(subcommand)]
+        change: configuration::Change,
     },
 }
 
@@ -53,7 +65,7 @@ impl CheckDto {
     }
 }
 
-/// `fsonos policy show|check`.
+/// Read, check or configure the selected house's policy.
 pub fn run(global: &GlobalArgs, action: &PolicyAction) -> anyhow::Result<()> {
     match action {
         PolicyAction::Show => {
@@ -74,6 +86,8 @@ pub fn run(global: &GlobalArgs, action: &PolicyAction) -> anyhow::Result<()> {
             let checked = check(&path)?;
             crate::emit(global.json, &checked, CheckDto::text)
         }
+        PolicyAction::Configuration => configuration::read(global),
+        PolicyAction::Configure { change } => configuration::run(global, change),
     }
 }
 

@@ -684,7 +684,9 @@ fn reviewed_line_in_retains_partial_and_uncertain_receipts_without_replay() {
         if uncertain {
             assert!(lost.load(Ordering::SeqCst));
             assert_eq!(
-                soap::get_media_info(&house.sim.lan(), failed.ip).unwrap().uri,
+                soap::get_media_info(&house.sim.lan(), failed.ip)
+                    .unwrap()
+                    .uri,
                 format!("x-rincon-stream:{}", source.0)
             );
         } else {

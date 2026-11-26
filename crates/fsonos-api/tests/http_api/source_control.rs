@@ -227,7 +227,9 @@ fn reviewed_line_in_http_delivers_to_each_group_and_fences_stale_reviews() {
                 format!("x-rincon-stream:{source}")
             );
             assert_eq!(
-                soap::get_transport_info(&sim.lan(), player.ip).unwrap().state,
+                soap::get_transport_info(&sim.lan(), player.ip)
+                    .unwrap()
+                    .state,
                 TransportState::Playing
             );
         }

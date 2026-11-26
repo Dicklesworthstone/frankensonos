@@ -38,6 +38,7 @@ on:
       - "scripts/test-remote-room-sets.cjs"
       - "scripts/test-room-set-bedtime.cjs"
       - "scripts/test-room-configuration.cjs"
+      - "scripts/test-policy-configuration.cjs"
       - "scripts/test-remote-groups.cjs"
       - "scripts/test-remote-transfers.cjs"
       - "scripts/test-remote-read-requests.cjs"
@@ -194,9 +195,9 @@ jobs:
       - name: Web scheduled routine regressions
         if: ${{ !cancelled() }}
         run: node --test scripts/test-remote-schedules.cjs scripts/test-schedule-editing.cjs scripts/test-scheduled-dj-targets.cjs
-      - name: Saved room aliases and default target regressions
+      - name: Saved room configuration and house policy regressions
         if: ${{ !cancelled() }}
-        run: node --test scripts/test-room-configuration.cjs
+        run: node --test scripts/test-room-configuration.cjs scripts/test-policy-configuration.cjs
       - name: Web sleep timer regressions
         if: ${{ !cancelled() }}
         run: node --test scripts/test-remote-timers.cjs

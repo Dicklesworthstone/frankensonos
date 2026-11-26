@@ -91,7 +91,7 @@ can drive:
 | **Scenes** | `scene save dinner` captures grouping, volumes, mutes and what each group plays, or `--from dinner.toml` writes one out (a favorite, [1–10 ordered tracks or episodes](docs/ORDERED_TRACK_SCENES.md), a [saved Sonos playlist](docs/SONOS_PLAYLIST_SCENES.md), a stream, a Spotify link or the DJ with a mood and full direction per group). Ordered selections retain exact order, repeats and optional titles, support silent loading, and can run as scheduled Apply scene routines. Native playlist scenes pin their household and SQ: id and load current saved contents. A captured DJ retains its added filters and remaining lifetime; [reusable directions](docs/DJ_DIRECTIONS.md) restart that lifetime on recall. A captured normal queue remembers its selected occurrence, position and known shuffle/repeat mode; [recall requires that original queue to remain unchanged](docs/SCENE_QUEUES.md). `scene apply dinner` sends only the steps the house needs, `--fade 20s` ramps the volumes there, and `fsonos undo` attempts to restore the prior state |
 | **Sleep & schedules** | [Set, extend, cancel or read sleep timers and fade to pause across rooms](docs/MULTI_ROOM_BEDTIME.md), saved aliases, `all` / `everywhere`, or `all@S1` / `all@S2`, with one result per existing group. The phone and dashboard review every affected group's playback and timer before one command. `sleep all 45m` fades each group out over the last two minutes through the daemon, with the speaker's own timer as a backstop; `pause downstairs --fade 30s` fades the selected groups concurrently. `schedule add "weekdays 07:30" dj start all --mood bright` starts independent DJs with every group checked before the occurrence is claimed. The mood lasts until the time-of-day program changes; use DJ direction flags such as `--genre jazz --artist 'Miles Davis' --for 2h` to reapply settings on each run, or `--automatic` to clear prior steering. Also schedule a pause (including a faded pause across rooms), a volume, a scene, or a [spoken reminder or chime](docs/SCHEDULED_ANNOUNCEMENTS.md); runs with the rights of whoever added it. [Edit an existing routine](docs/ROUTINE_EDITING.md) from the phone, dashboard, CLI (`schedule edit`), HTTP or MCP, retaining its id, creator and paused state; a restarted daemon picks its sleep timers up again |
 | **Announcements** | `say "Dinner is ready" --rooms Kitchen,Office` with offline Linux speech (FrankenTTS, espeak-ng or Piper) or macOS `say`; `chime bell`; `announce --file clip.wav`. Policy-capped playback restores the previous music and speaker state. Add `--background` to inspect or cancel an [announcement job](docs/ANNOUNCEMENT_JOBS.md) from the CLI, HTTP, MCP, phone remote, or dashboard. Durable recovery restores still-owned interrupted clips, including a crash during startup; if a recovery remains pending, explicitly abandon it to keep current playback and allow new announcements |
-| **Safety** | `policy.toml`: per-room caps, a per-step limit, quiet hours, per-client tool allowlists; over-limit volumes are clamped and say so (the local CLI runs uncapped by default); `fsonos log` / `undo`, `fsonos policy show` / `check` |
+| **Safety** | `policy.toml`: per-room caps, a per-step limit, quiet hours, per-client tool allowlists; over-limit volumes are clamped and say so (the local CLI runs uncapped by default); edit saved rules through the browser or `fsonos policy configure`; `fsonos log` / `undo`, `fsonos policy show` / `check` |
 | **Setup & diagnosis** | `fsonos setup` walks a first run (including your Spotify app and sign-in); both web remotes and the [native Apple app](docs/APPLE_REMOTE.md) can [configure the initial Spotify app and sign in](docs/WEB_SPOTIFY_SETUP.md) on the selected daemon without restarting it. `fsonos doctor` checks speakers, Spotify linkage, listeners, the daemon, the store's free disk space and the Tailscale chain, and names the fix for each problem |
 | **Three surfaces** | The `fsonos` CLI (`--json` everywhere), an HTTP API with an OpenAPI document, and an MCP server (tools plus `sonos://zones` and `sonos://dj` resources) over streamable HTTP or stdio, all answering alike, with the same stable error codes ([`docs/ERRORS.md`](docs/ERRORS.md)); room alias/default edits follow the selected daemon too; `fsonos policy check` validates a local policy file |
 | **A house without speakers** | `fsonos sim` starts virtual S1 and S2 households on loopback, so you can try every command, or develop an agent, with no hardware |
@@ -538,6 +538,42 @@ only bass, preserving later treble, loudness and playback changes. Normal undo
 requires the touched settings to remain as the action left them. Even a forced
 undo restores only fields the action reached; a refused or unsent later setting
 is left alone. See [Reviewed undo](docs/REVIEWED_UNDO.md).
+
+Open **House limits & permissions** in the phone remote or dashboard to edit
+default caps, quiet hours, room limits and client rules. The editor shows the
+saved values and a review before saving. The CLI exposes the same settings:
+
+```bash
+fsonos policy configuration --json
+fsonos policy configure defaults --max-volume 60 --max-step 10 --fade-secs 2
+fsonos --daemon policy configure quiet-hours set --start 22:00 --end 07:00 --max-volume 20
+fsonos policy configure room set "Living Room" --max-volume 40
+fsonos policy configure room set "Living Room" --inherit-max-step
+fsonos policy configure client set guest --allow read,playback --deny volume --capped true
+fsonos policy configure quiet-hours clear
+fsonos policy configure room rm "Living Room"
+```
+
+Unspecified CLI fields retain their current values, including a client's grants,
+administration permission and MCP profile. `--allow-none` saves an explicit empty
+allow list; `--inherit-allow` removes that list. Client edits also support
+`--clear-deny`, `--clear-grant`, `--inherit-capped`, `--manage-others true|false`,
+`--mcp-profile essentials|full` and `--inherit-mcp-profile`; `client rm` removes
+the complete client rule. An empty allow list permits only separately granted
+tools, and deny rules still take precedence.
+
+Every edit compares the saved revision. Add `--expected-revision REVISION` to
+require a version you already reviewed; otherwise the CLI reads the current
+configuration and preserves its unmentioned fields. HTTP clients use
+`GET /policy/configuration` followed by `POST /policy/configuration` with
+`{"expected_revision":"…","change":{"kind":"set_defaults","max_volume":60,"max_step":10,"fade_secs":2}}`.
+MCP exposes `policy_configuration` and `configure_policy` with the same request.
+HTTP and MCP `set_*` operations replace the complete named rule, so include every
+field that should remain. A changed revision or uncertain response requires
+another read and review; the selected daemon is never replaced by a fallback
+local write. The owner or a client with `manage_others = true` can administer
+these settings when its tool permissions allow. Saved rules apply to future
+calls, preserving unrelated file entries and comments.
 
 ```toml
 # policy.toml in the data directory. A missing file falls back to the

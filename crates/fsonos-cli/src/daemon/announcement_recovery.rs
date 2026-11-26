@@ -334,9 +334,9 @@ impl AnnouncementJournal for Journal {
             if unfinished.len() != pending.len()
                 || unfinished.iter().any(|record| {
                     !matches!(record.state, State::Pending)
-                        || !pending.iter().any(|entry| {
-                            record.matches(&entry.context, &entry.recovery)
-                        })
+                        || !pending
+                            .iter()
+                            .any(|entry| record.matches(&entry.context, &entry.recovery))
                 })
             {
                 return Ok((false, false));

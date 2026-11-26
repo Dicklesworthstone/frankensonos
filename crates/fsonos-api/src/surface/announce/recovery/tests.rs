@@ -197,13 +197,20 @@ impl AnnouncementJournal for MemoryJournal {
         if self.fail_save.load(Ordering::Acquire) {
             return Err(CoreError::Store("injected full journal".into()));
         }
-        let Some(first) = pending.first() else { return Ok(false); };
+        let Some(first) = pending.first() else {
+            return Ok(false);
+        };
         let mut stored = self.stored.lock().unwrap();
-        let unfinished: Vec<_> = stored.records.values().filter(|entry| {
-            entry.context.id == first.context.id && entry.report.is_none()
-        }).collect();
-        if unfinished.len() != pending.len() || pending.len() != reports.len()
-            || unfinished.iter().any(|entry| entry.claimed || !pending.contains(entry))
+        let unfinished: Vec<_> = stored
+            .records
+            .values()
+            .filter(|entry| entry.context.id == first.context.id && entry.report.is_none())
+            .collect();
+        if unfinished.len() != pending.len()
+            || pending.len() != reports.len()
+            || unfinished
+                .iter()
+                .any(|entry| entry.claimed || !pending.contains(entry))
         {
             return Ok(false);
         }
@@ -763,7 +770,9 @@ fn a_synchronous_worker_panic_releases_live_authority_for_the_same_process_recov
 }
 
 fn confirm_abandon() -> AbandonAnnouncementRecoveryRequest {
-    AbandonAnnouncementRecoveryRequest { confirm_abandon: true }
+    AbandonAnnouncementRecoveryRequest {
+        confirm_abandon: true,
+    }
 }
 
 #[test]
@@ -775,62 +784,120 @@ fn abandonment_keeps_current_playback_and_unblocks_the_household_across_restarts
         let surface = h.surface(Arc::clone(&journal), Policy::default());
         h.offline.store(true, Ordering::Release);
         surface.recover_announcements().unwrap();
-        assert!(surface.announcement_recovery_ready(&[&h.household]).is_err());
-        let before = surface.get_announcement(&Client::McpStdio, &entry.context.id).unwrap();
+        assert!(
+            surface
+                .announcement_recovery_ready(&[&h.household])
+                .is_err()
+        );
+        let before = surface
+            .get_announcement(&Client::McpStdio, &entry.context.id)
+            .unwrap();
         assert!(before.can_abandon_recovery);
         assert!(!before.can_cancel);
         let writes = h.writes.load(Ordering::Acquire);
         let source = soap::get_media_info(&h.sim.lan(), h.host()).unwrap().uri;
-        let receipt = surface.abandon_announcement_recovery(
-            &Client::McpStdio, &entry.context.id, &confirm_abandon(),
-        ).unwrap();
+        let receipt = surface
+            .abandon_announcement_recovery(&Client::McpStdio, &entry.context.id, &confirm_abandon())
+            .unwrap();
         assert_eq!(receipt.phase, AnnouncementJobPhase::Failed);
         assert!(receipt.recovery && !receipt.can_abandon_recovery && !receipt.can_cancel);
         assert!(!receipt.result.as_ref().unwrap().clean);
-        assert!(receipt.done.contains("recovery abandoned by explicit request"));
-        assert!(receipt.done.contains("previous playback, grouping, position and levels were not restored"));
+        assert!(
+            receipt
+                .done
+                .contains("recovery abandoned by explicit request")
+        );
+        assert!(
+            receipt
+                .done
+                .contains("previous playback, grouping, position and levels were not restored")
+        );
         assert!(journal.pending().unwrap().is_empty());
         assert_eq!(journal.claims.load(Ordering::Acquire), 0);
-        surface.announcement_recovery_ready(&[&h.household]).unwrap();
+        surface
+            .announcement_recovery_ready(&[&h.household])
+            .unwrap();
         let checkpoint = journal.checkpoint(&entry.context);
         assert!(!checkpoint.current(&entry.recovery));
         assert!(!checkpoint.claim(&entry.recovery).unwrap());
         assert!(checkpoint.save(&entry.recovery).is_err());
-        assert_eq!(surface.abandon_announcement_recovery(
-            &Client::McpStdio, &entry.context.id, &confirm_abandon(),
-        ).unwrap(), receipt);
+        assert_eq!(
+            surface
+                .abandon_announcement_recovery(
+                    &Client::McpStdio,
+                    &entry.context.id,
+                    &confirm_abandon(),
+                )
+                .unwrap(),
+            receipt
+        );
         h.offline.store(false, Ordering::Release);
         let another = h.surface(journal.restart(), Policy::default());
         another.prepare_announcement_recovery().unwrap();
-        assert_eq!(another.get_announcement(&Client::McpStdio, &entry.context.id)
-            .unwrap().result, receipt.result);
-        assert_eq!(another.recover_announcements().unwrap(), AnnouncementRecoveryPass::default());
+        assert_eq!(
+            another
+                .get_announcement(&Client::McpStdio, &entry.context.id)
+                .unwrap()
+                .result,
+            receipt.result
+        );
+        assert_eq!(
+            another.recover_announcements().unwrap(),
+            AnnouncementRecoveryPass::default()
+        );
         assert_eq!(h.writes.load(Ordering::Acquire), writes);
-        assert_eq!(soap::get_media_info(&h.sim.lan(), h.host()).unwrap().uri, source);
+        assert_eq!(
+            soap::get_media_info(&h.sim.lan(), h.host()).unwrap().uri,
+            source
+        );
     }
 }
 
 #[test]
 fn abandonment_requires_confirmation_and_original_caller_or_configured_owner() {
-    for actor in [Client::McpStdio, Client::Cli, Client::Tailnet("OWNER@example.com".into())] {
+    for actor in [
+        Client::McpStdio,
+        Client::Cli,
+        Client::Tailnet("OWNER@example.com".into()),
+    ] {
         let h = House::new(false);
         let entry = h.crash();
         let journal = h.journal.restart();
-        let surface = h.surface(Arc::clone(&journal),
-            Policy::default().with_owner(Some("owner@example.com".into())));
+        let surface = h.surface(
+            Arc::clone(&journal),
+            Policy::default().with_owner(Some("owner@example.com".into())),
+        );
         surface.prepare_announcement_recovery().unwrap();
         let writes = h.writes.load(Ordering::Acquire);
-        for foreign in [Client::LoopbackHttp, Client::Tailnet("visitor@example.com".into())] {
-            assert_eq!(surface.abandon_announcement_recovery(
-                &foreign, &entry.context.id, &confirm_abandon(),
-            ).unwrap_err().code, ErrorCode::NoMatch);
+        for foreign in [
+            Client::LoopbackHttp,
+            Client::Tailnet("visitor@example.com".into()),
+        ] {
+            assert_eq!(
+                surface
+                    .abandon_announcement_recovery(&foreign, &entry.context.id, &confirm_abandon(),)
+                    .unwrap_err()
+                    .code,
+                ErrorCode::NoMatch
+            );
         }
-        assert_eq!(surface.abandon_announcement_recovery(
-            &actor, &entry.context.id,
-            &AbandonAnnouncementRecoveryRequest { confirm_abandon: false },
-        ).unwrap_err().code, ErrorCode::InvalidArgument);
+        assert_eq!(
+            surface
+                .abandon_announcement_recovery(
+                    &actor,
+                    &entry.context.id,
+                    &AbandonAnnouncementRecoveryRequest {
+                        confirm_abandon: false
+                    },
+                )
+                .unwrap_err()
+                .code,
+            ErrorCode::InvalidArgument
+        );
         assert_eq!(journal.pending().unwrap().len(), 1);
-        surface.abandon_announcement_recovery(&actor, &entry.context.id, &confirm_abandon()).unwrap();
+        surface
+            .abandon_announcement_recovery(&actor, &entry.context.id, &confirm_abandon())
+            .unwrap();
         assert!(journal.pending().unwrap().is_empty());
         assert_eq!(h.writes.load(Ordering::Acquire), writes);
     }
@@ -844,17 +911,30 @@ fn denied_or_unwritable_abandonment_retains_every_record_and_household_block() {
         let journal = h.journal.restart();
         let policy = if deny {
             Policy::from_toml("[clients.mcp-stdio]\ndeny = [\"announce\"]\n").unwrap()
-        } else { Policy::default() };
+        } else {
+            Policy::default()
+        };
         let surface = h.surface(Arc::clone(&journal), policy);
         surface.prepare_announcement_recovery().unwrap();
         journal.fail_save.store(!deny, Ordering::Release);
         let writes = h.writes.load(Ordering::Acquire);
-        let result = surface.abandon_announcement_recovery(
-            &Client::McpStdio, &entry.context.id, &confirm_abandon(),
-        ).unwrap_err();
-        assert_eq!(result.code, if deny { ErrorCode::PolicyDenied } else { ErrorCode::NotReady });
+        let result = surface
+            .abandon_announcement_recovery(&Client::McpStdio, &entry.context.id, &confirm_abandon())
+            .unwrap_err();
+        assert_eq!(
+            result.code,
+            if deny {
+                ErrorCode::PolicyDenied
+            } else {
+                ErrorCode::NotReady
+            }
+        );
         assert_eq!(journal.pending().unwrap().len(), 1);
-        assert!(surface.announcement_recovery_ready(&[&h.household]).is_err());
+        assert!(
+            surface
+                .announcement_recovery_ready(&[&h.household])
+                .is_err()
+        );
         assert_eq!(h.writes.load(Ordering::Acquire), writes);
     }
 }
@@ -880,14 +960,18 @@ fn abandonment_refuses_a_claimed_household_without_partially_retiring_the_job() 
     surface.prepare_announcement_recovery().unwrap();
     // The advisory UI receipt was unclaimed; a worker wins one claim before
     // the explicit request arrives. The other household must stay pending.
-    assert!(surface.get_announcement(&Client::McpStdio, &context.id)
-        .unwrap().can_abandon_recovery);
+    assert!(
+        surface
+            .get_announcement(&Client::McpStdio, &context.id)
+            .unwrap()
+            .can_abandon_recovery
+    );
     let checkpoint = journal.checkpoint(&context);
     assert!(checkpoint.claim(&b.recovery).unwrap());
     let writes = first.writes.load(Ordering::Acquire);
-    let result = surface.abandon_announcement_recovery(
-        &Client::McpStdio, &context.id, &confirm_abandon(),
-    ).unwrap_err();
+    let result = surface
+        .abandon_announcement_recovery(&Client::McpStdio, &context.id, &confirm_abandon())
+        .unwrap_err();
     assert_eq!(result.code, ErrorCode::NotReady);
     assert!(result.detail.contains("already claimed"));
     assert_eq!(journal.pending().unwrap().len(), 2);
@@ -895,14 +979,22 @@ fn abandonment_refuses_a_claimed_household_without_partially_retiring_the_job() 
     assert_eq!(first.writes.load(Ordering::Acquire), writes);
     let completed = waiting(&b, "original cleanup finished with an incomplete receipt");
     checkpoint.complete(&b.recovery, &completed).unwrap();
-    let receipt = surface.abandon_announcement_recovery(
-        &Client::McpStdio, &context.id, &confirm_abandon(),
-    ).unwrap();
+    let receipt = surface
+        .abandon_announcement_recovery(&Client::McpStdio, &context.id, &confirm_abandon())
+        .unwrap();
     assert_eq!(receipt.phase, AnnouncementJobPhase::Failed);
     assert_eq!(receipt.result.unwrap().households.len(), 2);
     assert!(journal.pending().unwrap().is_empty());
-    assert_eq!(journal.completed().unwrap().iter()
-        .find(|entry| entry.recovery.id() == b.recovery.id()).unwrap().report, Some(completed));
+    assert_eq!(
+        journal
+            .completed()
+            .unwrap()
+            .iter()
+            .find(|entry| entry.recovery.id() == b.recovery.id())
+            .unwrap()
+            .report,
+        Some(completed)
+    );
 }
 
 #[test]
@@ -914,8 +1006,7 @@ fn abandonment_request_requires_a_boolean_confirmation_and_no_extra_intent() {
     ] {
         assert!(serde_json::from_value::<AbandonAnnouncementRecoveryRequest>(value).is_err());
     }
-    let request: AbandonAnnouncementRecoveryRequest = serde_json::from_value(
-        serde_json::json!({"confirm_abandon": true}),
-    ).unwrap();
+    let request: AbandonAnnouncementRecoveryRequest =
+        serde_json::from_value(serde_json::json!({"confirm_abandon": true})).unwrap();
     assert!(request.confirm_abandon);
 }

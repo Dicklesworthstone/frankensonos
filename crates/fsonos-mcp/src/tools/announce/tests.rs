@@ -172,8 +172,12 @@ fn job_tools_register_with_read_hints_and_required_cancel_identity() {
             );
         }
         if tool.name == "abandon_announcement_recovery" {
-            assert!(value["inputSchema"]["required"].as_array().unwrap()
-                .contains(&json!("confirm_abandon")));
+            assert!(
+                value["inputSchema"]["required"]
+                    .as_array()
+                    .unwrap()
+                    .contains(&json!("confirm_abandon"))
+            );
         }
         if tool.name == "announce_start" {
             for key in ["text", "chime", "wav_base64", "voice", "rooms", "volume"] {
@@ -190,11 +194,18 @@ fn abandon_forwards_the_exact_confirmed_job_without_local_fallback_or_replay() {
             calls: Mutex::default(),
             answer: Err(Failure::new(ErrorCode::OutcomeUncertain, "reply lost")),
         });
-        assert!(backend(&reply).abandon_announcement_recovery(ID, confirm_abandon).is_err());
-        assert_eq!(*reply.calls.lock().unwrap(), [json!([
-            "POST", format!("/announcements/{ID}/abandon"),
-            {"confirm_abandon": confirm_abandon}
-        ])]);
+        assert!(
+            backend(&reply)
+                .abandon_announcement_recovery(ID, confirm_abandon)
+                .is_err()
+        );
+        assert_eq!(
+            *reply.calls.lock().unwrap(),
+            [json!([
+                "POST", format!("/announcements/{ID}/abandon"),
+                {"confirm_abandon": confirm_abandon}
+            ])]
+        );
     }
     let mut receipt = job();
     receipt["phase"] = json!("failed");
@@ -212,8 +223,16 @@ fn abandon_forwards_the_exact_confirmed_job_without_local_fallback_or_replay() {
             "not_restored": ["previous playback and levels were not restored"]
         }]
     });
-    let reply = Arc::new(Reply { calls: Mutex::default(), answer: Ok(receipt.clone()) });
-    assert_eq!(backend(&reply).abandon_announcement_recovery(ID, true)
-        .unwrap().structured_content, Some(receipt));
+    let reply = Arc::new(Reply {
+        calls: Mutex::default(),
+        answer: Ok(receipt.clone()),
+    });
+    assert_eq!(
+        backend(&reply)
+            .abandon_announcement_recovery(ID, true)
+            .unwrap()
+            .structured_content,
+        Some(receipt)
+    );
     assert_eq!(reply.calls.lock().unwrap().len(), 1);
 }

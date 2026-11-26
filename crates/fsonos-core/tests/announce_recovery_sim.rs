@@ -664,9 +664,7 @@ fn accepted_clip_writes_recover_after_a_crash_before_the_established_checkpoint(
                 "the worker never saved an established marker"
             );
             assert_eq!(
-                soap::get_media_info(&lan, host(&sim, "Alpha"))
-                    .unwrap()
-                    .uri,
+                soap::get_media_info(&lan, host(&sim, "Alpha")).unwrap().uri,
                 CLIP
             );
             let from = sim.soap_log().len();

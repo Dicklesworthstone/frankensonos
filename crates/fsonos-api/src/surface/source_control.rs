@@ -198,7 +198,9 @@ impl ReviewedSourceRequest {
         validate_revision(&self.expected_revision)?;
         if let ReviewedSource::LineIn { source } = &self.source {
             if self.mode != ReviewedSourceMode::Play {
-                return Err(Failure::invalid("physical line-in inputs support play only"));
+                return Err(Failure::invalid(
+                    "physical line-in inputs support play only",
+                ));
             }
             return PlayLineInRequest {
                 zone: self.zone.clone(),
@@ -264,7 +266,9 @@ impl ReviewedSourceRequest {
             ReviewedSource::Favorite { favorite } => request.favorite = Some(favorite.clone()),
             ReviewedSource::Playlist { playlist } => request.playlist = Some(playlist.clone()),
             ReviewedSource::LineIn { .. } => {
-                return Err(Failure::invalid("physical line-in inputs support play only"));
+                return Err(Failure::invalid(
+                    "physical line-in inputs support play only",
+                ));
             }
             ReviewedSource::Tracks { .. } => {
                 return Err(Failure::new(

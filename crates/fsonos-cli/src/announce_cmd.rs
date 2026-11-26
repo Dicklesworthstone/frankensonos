@@ -219,7 +219,9 @@ pub fn jobs(global: &GlobalArgs, args: &JobsArgs) -> anyhow::Result<()> {
                 Some(JobsCommand::Cancel { .. }) => {
                     daemon.post(&format!("{path}/cancel"), &serde_json::json!({}))?
                 }
-                Some(JobsCommand::Abandon { confirm_abandon, .. }) => daemon.post(
+                Some(JobsCommand::Abandon {
+                    confirm_abandon, ..
+                }) => daemon.post(
                     &format!("{path}/abandon"),
                     &AbandonAnnouncementRecoveryRequest {
                         confirm_abandon: *confirm_abandon,
@@ -271,16 +273,14 @@ mod tests {
 
         let id = "0123456789abcdef0123456789abcdef";
         assert!(Cli::try_parse_from(["announcements", "abandon", id]).is_err());
-        let parsed = Cli::try_parse_from([
-            "announcements",
-            "abandon",
-            id,
-            "--confirm-abandon",
-        ])
-        .unwrap();
+        let parsed =
+            Cli::try_parse_from(["announcements", "abandon", id, "--confirm-abandon"]).unwrap();
         assert!(matches!(
             parsed.jobs.action,
-            Some(JobsCommand::Abandon { confirm_abandon: true, .. })
+            Some(JobsCommand::Abandon {
+                confirm_abandon: true,
+                ..
+            })
         ));
         assert!(Cli::try_parse_from(["announcements", "cancel", id]).is_ok());
     }

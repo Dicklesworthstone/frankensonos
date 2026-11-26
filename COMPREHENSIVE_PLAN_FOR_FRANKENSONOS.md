@@ -1082,6 +1082,21 @@ the house to agents they can bound and reverse. The guardrails live in
   a lower cap, fade durations, and per-client tool allowlists. Over-limit volume
   is clamped and the response says so; a disallowed tool returns
   `POLICY_DENIED`.
+- Owners and permitted administrators can now edit that persisted policy from
+  the phone/dashboard's **House limits & permissions** editor, CLI
+  `policy configuration` / `policy configure`, HTTP
+  `GET` / `POST /policy/configuration`, and MCP `policy_configuration` /
+  `configure_policy`. Edits cover defaults, quiet hours, room caps, and complete
+  client allow/deny/grant/capped/administration/MCP-profile rules. Every write
+  compares a reviewed revision and rechecks current authority while holding
+  the configuration lock. CLI partial flags preserve unspecified fields at
+  that same revision; the browser reviews a complete draft before saving.
+  Explicit empty allow lists remain distinct from inheritance, and room/client
+  identities match core normalization. Unrelated TOML entries and comments are
+  retained; identical edits are verified no-ops. Changed or uncertain results
+  require a new read and review, and a failed selected-daemon write is never
+  replayed locally. Policy edits are recorded as configuration changes outside
+  playback undo; new limits govern subsequent operations.
 - Client identity is a surface plus a principal: `cli` (a person at the
   terminal), `mcp-stdio` (a local agent), `loopback-http` (a local process), or
   a tailnet principal. The daemon binds the tailnet directly by default

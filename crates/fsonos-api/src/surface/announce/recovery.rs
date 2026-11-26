@@ -7,8 +7,8 @@ use super::{
 };
 use crate::{ErrorCode, Failure};
 use fastapi::{JsonSchema, fastapi_openapi};
-use fsonos_core::policy::Client;
 use fsonos_core::announce::{AnnouncementCheckpoint, AnnouncementRecovery};
+use fsonos_core::policy::Client;
 use fsonos_core::sleep::{SleepResume, SleepTimer};
 use fsonos_core::{CoreError, HouseholdState, Room};
 use fsonos_types::PlayerId;
@@ -444,9 +444,15 @@ impl Surface {
             )
             .with_hint("Use cancel_announcement for a queued or active clip; cancellation continues safe restoration."));
         }
-        let with = self.announcements.as_ref().expect("a retained job has announcements");
+        let with = self
+            .announcements
+            .as_ref()
+            .expect("a retained job has announcements");
         let journal = with.journal.as_ref().ok_or_else(|| {
-            Failure::new(ErrorCode::NotImplemented, "no durable announcement journal is configured")
+            Failure::new(
+                ErrorCode::NotImplemented,
+                "no durable announcement journal is configured",
+            )
         })?;
         let _admission = with.admitting()?;
         let all = all_records(&**journal)?;
@@ -712,7 +718,10 @@ fn import(
             dto,
             progress,
             pending,
-            pending && entries.iter().all(|entry| entry.report.is_some() || !entry.claimed),
+            pending
+                && entries
+                    .iter()
+                    .all(|entry| entry.report.is_some() || !entry.claimed),
             surface.clock.now().timestamp(),
         )?;
     }
