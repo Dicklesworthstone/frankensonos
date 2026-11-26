@@ -19,6 +19,100 @@ pub struct SleepResume {
     current: Arc<AtomicBool>,
 }
 
+#[cfg(test)]
+mod checkpoint_tests {
+    use super::*;
+
+    fn timer() -> SleepTimer {
+        SleepTimer {
+            coordinator: PlayerId("RINCON_ANNOUNCE_TEST".into()),
+            room: "Sleep room".into(),
+            ends: DateTime::parse_from_rfc3339("2026-10-07T22:00:00Z")
+                .unwrap()
+                .to_utc(),
+            fading: false,
+        }
+    }
+
+    #[test]
+    fn a_future_sleep_is_neither_a_checkpoint_candidate_nor_interrupted() {
+        let timers = SleepTimers::new();
+        let timer = timer();
+        assert!(timers.adopt(timer.clone()));
+        assert!(
+            timers
+                .announcement_interruption(&timer.coordinator)
+                .is_none()
+        );
+        assert!(
+            timers
+                .interrupt_for_announcement_matching(&Fader::default(), &timer.coordinator, None)
+                .unwrap()
+                .is_none()
+        );
+        assert_eq!(timers.get(&timer.coordinator), Some(timer));
+    }
+
+    #[test]
+    fn a_durable_sleep_identity_authorizes_only_one_matching_interruption() {
+        let timers = SleepTimers::new();
+        let timer = timer();
+        assert!(timers.adopt(timer.clone()));
+        assert_eq!(timers.due(timer.ends).len(), 1);
+        let expected = timers
+            .announcement_interruption(&timer.coordinator)
+            .unwrap();
+        let fader = Fader::default();
+        let receipt = timers
+            .interrupt_for_announcement_matching(&fader, &timer.coordinator, Some(&expected))
+            .unwrap()
+            .unwrap();
+        assert_eq!(receipt.coordinator(), &timer.coordinator);
+        assert!(
+            timers
+                .announcement_interruption(&timer.coordinator)
+                .is_none()
+        );
+        assert!(
+            timers
+                .interrupt_for_announcement_matching(&fader, &timer.coordinator, Some(&expected))
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn an_unrecorded_or_replaced_due_sleep_keeps_its_newer_intent() {
+        let timers = SleepTimers::new();
+        let original = timer();
+        let mut newer = original.clone();
+        newer.ends += chrono::TimeDelta::seconds(1);
+        assert!(timers.adopt(newer.clone()));
+        assert_eq!(timers.due(newer.ends).len(), 1);
+        let fader = Fader::default();
+        for expected in [None, Some(&original)] {
+            assert!(
+                timers
+                    .interrupt_for_announcement_matching(&fader, &newer.coordinator, expected)
+                    .is_err()
+            );
+            assert_eq!(
+                timers
+                    .announcement_interruption(&newer.coordinator)
+                    .unwrap()
+                    .ends,
+                newer.ends
+            );
+        }
+        assert!(
+            timers
+                .interrupt_for_announcement_matching(&fader, &newer.coordinator, Some(&newer))
+                .unwrap()
+                .is_some()
+        );
+    }
+}
+
 impl SleepResume {
     #[must_use]
     pub fn coordinator(&self) -> &PlayerId {
@@ -89,6 +183,19 @@ impl Resumes {
 }
 
 impl SleepTimers {
+    /// Observe the exact due fade an announcement may suspend, before its
+    /// durable checkpoint. A future timer is independent listener intent.
+    #[must_use]
+    pub fn announcement_interruption(&self, coordinator: &PlayerId) -> Option<SleepTimer> {
+        self.lock()
+            .get(coordinator)
+            .filter(|entry| {
+                (entry.timer.fading || entry.fade_deadline.is_some() || entry.recovery.is_some())
+                    && !entry.interrupted
+            })
+            .map(|entry| entry.timer.clone())
+    }
+
     /// A newly accepted playback or grouping command supersedes an
     /// announcement's continuation, without changing an ordinary sleep timer.
     /// Call before speaker I/O so an ambiguous command failure cannot revive
@@ -120,6 +227,40 @@ impl SleepTimers {
             claims.stop(fader, false);
         }
         Some(receipt)
+    }
+
+    /// Suspend only the exact fade recorded before an announcement's first
+    /// durable checkpoint. A newly due/replaced timer cannot be interrupted
+    /// without being represented in that proof. The comparison and admission
+    /// share the timer-map lock, including with timer replacement.
+    pub fn interrupt_for_announcement_matching(
+        &self,
+        fader: &Fader,
+        coordinator: &PlayerId,
+        expected: Option<&SleepTimer>,
+    ) -> Result<Option<SleepResume>, CoreError> {
+        let (receipt, claims) = {
+            let mut armed = self.lock();
+            let Some(entry) = armed.get_mut(coordinator).filter(|entry| {
+                (entry.timer.fading || entry.fade_deadline.is_some() || entry.recovery.is_some())
+                    && !entry.interrupted
+            }) else {
+                return Ok(None);
+            };
+            if expected.is_none_or(|expected| {
+                expected.coordinator != entry.timer.coordinator || expected.ends != entry.timer.ends
+            }) {
+                return Err(CoreError::Store(
+                    "a newer sleep fade appeared after the announcement checkpoint; nothing was interrupted".into(),
+                ));
+            }
+            entry.interrupted = true;
+            (self.resumes.issue(coordinator), entry.fade_claims.clone())
+        };
+        if let Some(claims) = claims {
+            claims.stop(fader, false);
+        }
+        Ok(Some(receipt))
     }
 
     /// Rearm an announcement's interrupted fade only while its receipt is

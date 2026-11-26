@@ -26,22 +26,23 @@ fn same_ids(a: &[PlayerId], b: &[PlayerId]) -> bool {
     a.len() == b.len() && a.iter().all(|id| b.contains(id))
 }
 
-#[derive(Clone)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 struct Identity {
     player: PlayerId,
     host: IpAddr,
     boot: Option<u32>,
 }
 
-#[derive(Clone)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub(super) struct Binding {
     identities: Vec<Identity>,
+    #[serde(with = "crate::announce::journal::room_vector")]
     rooms: Vec<Room>,
 }
 
 /// Every affected physical player, including bonded halves, belongs to
 /// exactly one expected group. Group IDs may change while regrouping.
-#[derive(Clone)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub(super) struct Layout(pub(super) Vec<(PlayerId, Vec<PlayerId>)>);
 
 impl Layout {
@@ -83,6 +84,45 @@ impl Layout {
 }
 
 impl Binding {
+    pub(super) fn durable_valid(
+        &self,
+        household: &HouseholdState,
+        coordinator: &PlayerId,
+        layout: &Layout,
+    ) -> bool {
+        let rooms: Vec<_> = household
+            .rooms
+            .iter()
+            .filter(|room| room.coordinator == *coordinator)
+            .collect();
+        let members: Vec<_> = rooms.iter().flat_map(|room| room.players.clone()).collect();
+        let bound: Vec<_> = self
+            .identities
+            .iter()
+            .map(|identity| identity.player.clone())
+            .collect();
+        let laid_out: Vec<_> = layout
+            .0
+            .iter()
+            .flat_map(|(_, members)| members.clone())
+            .collect();
+        same_ids(&members, &bound)
+            && same_ids(&members, &laid_out)
+            && bound.iter().collect::<HashSet<_>>().len() == bound.len()
+            && laid_out.iter().collect::<HashSet<_>>().len() == laid_out.len()
+            && self.rooms.len() == rooms.len()
+            && self.rooms.iter().all(|room| rooms.contains(&room))
+            && self.identities.iter().all(|identity| {
+                household
+                    .player(&identity.player)
+                    .is_some_and(|player| player.ip == identity.host)
+            })
+            && layout
+                .0
+                .iter()
+                .all(|(coordinator, members)| members.contains(coordinator))
+    }
+
     pub(super) fn capture<T: Transport + ?Sized>(
         t: &T,
         household: &HouseholdState,

@@ -34,6 +34,7 @@
 mod cancellation;
 pub mod clip;
 mod continuity;
+mod journal;
 mod recovery;
 pub mod speech;
 mod topology;
@@ -41,6 +42,7 @@ mod turns;
 mod watch;
 
 pub use cancellation::{AnnouncementControl, AnnouncementPhase, AnnouncementProgress};
+pub use journal::{AnnouncementCheckpoint, AnnouncementRecovery};
 use recovery::Effects;
 use topology::refreshed;
 
@@ -104,7 +106,7 @@ impl Clip {
 }
 
 /// How the clip's playback ended.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum Ending {
     /// The player played it and stopped by itself.
     Finished,
@@ -118,7 +120,7 @@ pub enum Ending {
 }
 
 /// How one household's target rooms are grouped for an announcement.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct GroupPlan {
     /// The room (primary) that plays the clip for all of them.
     pub lead: PlayerId,
@@ -179,7 +181,7 @@ pub fn plan_group(household: &HouseholdState, rooms: &[&Room]) -> Option<GroupPl
 }
 
 /// What an announcement did in one household.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct HouseholdAnnouncement {
     /// The room that played the clip.
     pub lead: PlayerId,
@@ -234,7 +236,7 @@ pub struct AnnouncementCallbacks<'a> {
 }
 
 /// What an announcement did, per household.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct AnnounceReport {
     pub households: Vec<HouseholdAnnouncement>,
 }
@@ -390,7 +392,7 @@ impl Announcer {
         live: Option<&Live>,
         callbacks: &AnnouncementCallbacks<'_>,
     ) -> Result<AnnounceReport, AnnounceError> {
-        self.run(t, targets, clip, volume, live, callbacks, None)
+        self.run(t, targets, clip, volume, live, callbacks, None, None)
     }
 
     /// The existing announcement lifecycle with process-local cancellation
@@ -408,7 +410,43 @@ impl Announcer {
         callbacks: &AnnouncementCallbacks<'_>,
         control: &AnnouncementControl,
     ) -> Result<AnnounceReport, AnnounceError> {
-        self.run(t, targets, clip, volume, live, callbacks, Some(control))
+        self.run(
+            t,
+            targets,
+            clip,
+            volume,
+            live,
+            callbacks,
+            Some(control),
+            None,
+        )
+    }
+
+    /// Persist each household's original state and attempted effects before
+    /// speaker writes. Cleanup claims its journal once before restoring; an
+    /// interrupted cleanup can never be replayed by a subsequent process.
+    #[allow(clippy::too_many_arguments)]
+    pub fn announce_controlled_with_checkpoint<T: Transport + Sync + ?Sized>(
+        &self,
+        t: &T,
+        targets: &[ControlTarget<'_>],
+        clip: &Clip,
+        volume: u8,
+        live: Option<&Live>,
+        callbacks: &AnnouncementCallbacks<'_>,
+        control: &AnnouncementControl,
+        checkpoint: &dyn AnnouncementCheckpoint,
+    ) -> Result<AnnounceReport, AnnounceError> {
+        self.run(
+            t,
+            targets,
+            clip,
+            volume,
+            live,
+            callbacks,
+            Some(control),
+            Some(checkpoint),
+        )
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -421,6 +459,7 @@ impl Announcer {
         live: Option<&Live>,
         callbacks: &AnnouncementCallbacks<'_>,
         control: Option<&AnnouncementControl>,
+        checkpoint: Option<&dyn AnnouncementCheckpoint>,
     ) -> Result<AnnounceReport, AnnounceError> {
         let mut by_household: Vec<(&HouseholdState, Vec<&Room>)> = Vec::new();
         for target in targets {
@@ -465,8 +504,9 @@ impl Announcer {
                             return cancelled_report(rooms);
                         };
                         playback.phase(AnnouncementPhase::Preparing);
-                        let report =
-                            self.announce_in(t, household, rooms, &playback, volume, callbacks);
+                        let report = self.announce_in(
+                            t, household, rooms, &playback, volume, callbacks, checkpoint,
+                        );
                         (callbacks.completed)(household, &report);
                         playback.phase(AnnouncementPhase::Complete);
                         report
@@ -482,7 +522,7 @@ impl Announcer {
     }
 
     /// One household's announcement, start to finish.
-    #[allow(clippy::too_many_lines)] // Keep preparation and restoration visible in execution order.
+    #[allow(clippy::too_many_lines, clippy::too_many_arguments)] // Keep lifecycle boundaries visible.
     fn announce_in<T: Transport + ?Sized>(
         &self,
         t: &T,
@@ -491,6 +531,7 @@ impl Announcer {
         playback: &Playback<'_>,
         volume: u8,
         callbacks: &AnnouncementCallbacks<'_>,
+        checkpoint: Option<&dyn AnnouncementCheckpoint>,
     ) -> HouseholdAnnouncement {
         if playback.cancelled() {
             return cancelled_report(rooms);
@@ -581,6 +622,22 @@ impl Announcer {
             report.outcome = Err(why);
             return report;
         }
+        // The first checkpoint precedes even cap callbacks: those callbacks
+        // may suspend an existing fade or sleep continuation.
+        let mut journal = match checkpoint
+            .map(|checkpoint| {
+                journal::Session::begin(t, household, &plan, rooms, &clip, checkpoint)
+            })
+            .transpose()
+        {
+            Ok(journal) => journal,
+            Err(error) => {
+                report.outcome = Err(format!(
+                    "could not checkpoint the announcement; nothing was changed: {error}"
+                ));
+                return report;
+            }
+        };
         report.levels = rooms
             .iter()
             .map(|r| (r.name.clone(), volume.min((callbacks.cap)(r))))
@@ -611,29 +668,52 @@ impl Announcer {
             },
             Err,
         );
+        let admission = admission.and_then(|()| {
+            journal::snapshots(&mut journal, &snaps, &report.levels)
+                .map_err(|error| error.to_string())
+        });
         let (outcome, effects) = match admission {
-            Ok(()) => self.play(t, hs, &plan, rooms, &report.levels, playback),
+            Ok(()) => self.play(t, hs, &plan, rooms, &report.levels, playback, &mut journal),
             Err(why) => (Err(why), Effects::default()),
         };
         report.outcome = outcome;
         playback.phase(AnnouncementPhase::Restoring);
         let give_up = std::time::Instant::now() + self.patience;
-        recovery::put_back(
-            t,
-            household,
-            &plan,
-            &snaps,
-            &effects,
-            &origins,
-            capture_started,
-            give_up,
-            callbacks.restore_cap,
-            &mut report,
-        );
+        if let Some(journal) = journal {
+            journal.finish(&effects, &mut report, |guard, report| {
+                let guarded = guard.transport(t);
+                recovery::put_back(
+                    &guarded,
+                    household,
+                    &plan,
+                    &snaps,
+                    &effects,
+                    &origins,
+                    capture_started,
+                    give_up,
+                    callbacks.restore_cap,
+                    report,
+                );
+            });
+        } else {
+            recovery::put_back(
+                t,
+                household,
+                &plan,
+                &snaps,
+                &effects,
+                &origins,
+                capture_started,
+                give_up,
+                callbacks.restore_cap,
+                &mut report,
+            );
+        }
         report
     }
 
     /// Steps 2–4. Record attempted writes too: a lost reply may have applied.
+    #[allow(clippy::too_many_arguments, clippy::too_many_lines)] // Attempted effects precede each dispatch.
     fn play<T: Transport + ?Sized>(
         &self,
         t: &T,
@@ -642,6 +722,7 @@ impl Announcer {
         rooms: &[&Room],
         levels: &[(String, u8)],
         playback: &Playback<'_>,
+        journal: &mut Option<journal::Session<'_>>,
     ) -> (Result<Ending, String>, Effects) {
         let clip = playback.clip;
         let mut effects = Effects::default();
@@ -652,37 +733,52 @@ impl Announcer {
             for (room, (_, level)) in rooms.iter().zip(levels) {
                 cancellation::check(playback.control())?;
                 effects.volumes.push((room.primary.clone(), *level));
-                control::set_volume(t, hs, &room.primary, *level)?;
+                journal::effects(journal, &effects)?;
+                control::set_volume(&journal::recording(t, journal), hs, &room.primary, *level)?;
             }
             cancellation::check(playback.control())?;
-            continuity::prepare(t, &hs[0], rooms, &mut effects)?;
+            continuity::prepare(t, &hs[0], rooms, &mut effects, journal)?;
             if plan.lead_leaves && !effects.groups.contains(&plan.lead) {
                 cancellation::check(playback.control())?;
                 effects.groups.push(plan.lead.clone());
                 effects.sources.push(plan.lead.clone());
+                journal::effects(journal, &effects)?;
                 let now = refreshed(t, &hs[0])?;
-                control::leave(t, std::slice::from_ref(&now), &plan.lead)?;
+                control::leave(
+                    &journal::recording(t, journal),
+                    std::slice::from_ref(&now),
+                    &plan.lead,
+                )?;
             }
             for room in &plan.joins {
                 cancellation::check(playback.control())?;
                 effects.groups.push(room.clone());
                 effects.sources.push(room.clone());
+                journal::effects(journal, &effects)?;
                 let now = refreshed(t, &hs[0])?;
-                control::join(t, std::slice::from_ref(&now), room, &plan.lead)?;
+                control::join(
+                    &journal::recording(t, journal),
+                    std::slice::from_ref(&now),
+                    room,
+                    &plan.lead,
+                )?;
             }
             recovery::wait_for_group(t, &hs[0], plan)?;
             for room in rooms {
                 cancellation::check(playback.control())?;
                 effects.mutes.push(room.primary.clone());
-                control::set_mute(t, hs, &room.primary, false)?;
+                journal::effects(journal, &effects)?;
+                control::set_mute(&journal::recording(t, journal), hs, &room.primary, false)?;
             }
             cancellation::check(playback.control())?;
             let host = control::locate(hs, &plan.lead)?.ip;
             effects.before_clip = Some(soap::get_media_info(t, host)?.uri);
             effects.sources.push(plan.lead.clone());
             effects.clip = Some(clip.url.clone());
+            journal::effects(journal, &effects)?;
             events = playback.live.map(Live::subscribe);
-            let starting = cancellation::Starting::new(t, playback.control());
+            let recorded = journal::recording(t, journal);
+            let starting = cancellation::Starting::new(&recorded, playback.control());
             starting.finish(control::play_uri(
                 &starting,
                 hs,
@@ -691,6 +787,7 @@ impl Announcer {
                 &clip.didl(),
             ))?;
             effects.installed = true;
+            journal::established(journal, t, &mut effects)?;
             playback.phase(AnnouncementPhase::Playing);
             Ok(())
         })();
@@ -698,7 +795,7 @@ impl Announcer {
             Err(error) if cancellation::requested(&error) => Ok(Ending::Cancelled),
             Err(error) => Err(error.to_string()),
             Ok(()) => watch::wait(
-                t,
+                &journal::recording(t, journal),
                 &hs[0],
                 plan,
                 clip,

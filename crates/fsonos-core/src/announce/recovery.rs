@@ -56,7 +56,7 @@ pub(super) fn wait_for_group<T: Transport + ?Sized>(
 }
 
 /// Recorded before dispatch, since a failed reply does not prove no effect.
-#[derive(Clone, Default)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub(super) struct Effects {
     pub groups: Vec<PlayerId>,
     pub sources: Vec<PlayerId>,

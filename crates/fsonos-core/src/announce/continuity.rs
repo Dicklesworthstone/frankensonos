@@ -9,7 +9,7 @@ use fsonos_proto::{ProtoError, Transport, control as soap};
 use fsonos_types::PlayerId;
 use proof::{Binding, Layout, Playback, changed};
 
-#[derive(Clone)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub(super) struct Continuation {
     pub(super) coordinator: PlayerId,
     survivor: PlayerId,
@@ -81,6 +81,7 @@ pub(super) fn prepare<T: Transport + ?Sized>(
     household: &HouseholdState,
     targets: &[&Room],
     effects: &mut Effects,
+    journal: &mut Option<super::journal::Session<'_>>,
 ) -> Result<(), CoreError> {
     let targeted = |room: &Room| targets.iter().any(|r| r.primary == room.primary);
     for room in targets.iter().filter(|r| r.is_group_coordinator()) {
@@ -115,18 +116,38 @@ pub(super) fn prepare<T: Transport + ?Sized>(
         // Record before the first mutation: even an uncertain departure must
         // never fall back to replaying this coordinator's now-displaced queue.
         effects.continuations.push(entry);
-        let entry = effects.continuations.last_mut().expect("just inserted");
+        let index = effects.continuations.len() - 1;
         for player in departing {
             effects.groups.push(player.clone());
             effects.sources.push(player.clone());
-            entry.depart(t, &player)?;
+            super::journal::effects(journal, effects)?;
+            effects.continuations[index].depart(&super::journal::recording(t, journal), &player)?;
         }
-        entry.ready = true;
+        effects.continuations[index].ready = true;
+        super::journal::effects(journal, effects)?;
     }
     Ok(())
 }
 
 impl Continuation {
+    pub(super) fn survivor(&self) -> Option<&PlayerId> {
+        self.ready.then_some(&self.survivor)
+    }
+
+    pub(super) fn durable_valid(&self, household: &HouseholdState, selected: &[PlayerId]) -> bool {
+        selected.contains(&self.coordinator)
+            && self.targets.contains(&self.coordinator)
+            && self.targets.iter().all(|id| selected.contains(id))
+            && !selected.contains(&self.survivor)
+            && household
+                .rooms
+                .iter()
+                .any(|room| room.primary == self.survivor && room.coordinator == self.coordinator)
+            && self
+                .binding
+                .durable_valid(household, &self.coordinator, &self.separated)
+    }
+
     fn depart<T: Transport + ?Sized>(&mut self, t: &T, player: &PlayerId) -> Result<(), CoreError> {
         let now = self.binding.check(t, &self.separated, &self.coordinator)?;
         let host = self.binding.host(&self.coordinator)?;
