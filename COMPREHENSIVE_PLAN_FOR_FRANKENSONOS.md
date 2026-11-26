@@ -1941,9 +1941,11 @@ expires after 24 hours, keeps unavailable households pending, and retains bounde
 receipts under the original job and caller identities. Interrupted sleep fades
 are retired by their exact old coordinator and deadline; a newer timer survives.
 Direct clients without the daemon journal retain process-local recovery.
-Startup crash coverage includes both applied source selection and applied Play
-on S1/S2, original groups/queues/levels/mutes, live survivor handback, newer
-listener intent, unreadable devices, expiry and one-time cleanup claims.
+Startup regressions cover applied source selection and Play on S1/S2,
+including queue and level restoration, partial-group survivor handback, and a
+checkpoint written before any clip dispatch. The broader recovery suite covers
+original groups, queues, levels and mutes, newer listener intent, unreadable
+devices and one-time cleanup claims.
 The new Rust integration tests still require an executable workspace build;
 no Rust toolchain is installed in the current environment, and storage checks
 alone do not establish Sonos or complete daemon acceptance.

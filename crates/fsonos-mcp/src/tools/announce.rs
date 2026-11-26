@@ -141,7 +141,7 @@ async fn announce(
 }
 
 #[tool(
-    description = "Start an announcement in the daemon without holding this call through playback. Give the same one source and room/volume fields as announce. Returns a job id immediately after bounded admission; accepted does not mean heard or restored. Inspect get_announcement or list_announcements, and use cancel_announcement to cancel queued or active delivery. Existing per-client/global limits and quiet-hour caps apply. Never repeat an uncertain start: inspect the job list first. Jobs and recent receipts are process-local and expire after daemon restart or bounded retention."
+    description = "Start an announcement in the daemon without holding this call through playback. Give the same one source and room/volume fields as announce. Returns a job id immediately after bounded admission; accepted does not mean heard or restored. Inspect get_announcement or list_announcements, and use cancel_announcement to cancel queued or active delivery. Existing per-client/global limits and quiet-hour caps apply. Never repeat an uncertain start: inspect the job list first. Queued jobs without a playback checkpoint are process-local. Checkpointed playback retains durable recovery and terminal receipts across daemon restart under bounded retention; restart never repeats delivery. After a lost reply or restart, inspect retained jobs before starting another clip."
 )]
 async fn announce_start(
     ctx: &McpContext,
@@ -164,7 +164,7 @@ async fn announce_start(
 }
 
 #[tool(
-    description = "Read up to 64 active/recent announcement jobs visible to this caller, newest first. Includes queued/preparing/playing/restoring stages, cancellation intent and final restoration receipts; no speech text or uploaded audio. Ordinary callers see their own jobs; the local CLI and configured owner may inspect all. Process-local ids retire after restart. Read-only; never starts or repeats playback.",
+    description = "Read up to 64 active/recent announcement jobs visible to this caller, newest first. Includes queued/preparing/playing/restoring stages, cancellation intent and final restoration receipts; no speech text or uploaded audio. Ordinary callers see their own jobs; the local CLI and configured owner may inspect all. Includes retained interrupted recovery after daemon restart: recovery=true identifies those jobs and can_abandon_recovery reports whether abandonment may currently be available. Read-only; never starts, restores or repeats playback.",
     annotations(read_only, idempotent)
 )]
 async fn list_announcements(ctx: &McpContext) -> McpResult<CompleteResult<FinalCallToolResult>> {
@@ -172,7 +172,7 @@ async fn list_announcements(ctx: &McpContext) -> McpResult<CompleteResult<FinalC
 }
 
 #[tool(
-    description = "Read one retained announcement by its exact returned id. Cancellation requested is not completion: continue reading until completed, cancelled or failed and inspect the final restoration report. Read-only; unknown/expired or another caller's job returns NO_MATCH.",
+    description = "Read one retained announcement by its exact returned id, including durable recovery receipts after daemon restart. Cancellation requested is not completion: continue reading until completed, cancelled or failed and inspect the final restoration report. For recovery=true, failed delivery can still include successful restoration; read result and not_restored. can_abandon_recovery is advisory: abandon_announcement_recovery rechecks authority and requires explicit confirmation to leave current playback unrestored. Read-only; unknown/expired or another caller's job returns NO_MATCH.",
     annotations(read_only, idempotent)
 )]
 async fn get_announcement(
@@ -183,7 +183,7 @@ async fn get_announcement(
 }
 
 #[tool(
-    description = "Request cancellation of your exact announcement job, or any job when acting as the owner. Waiting work is released without speaker writes. Active playback is stopped only while the daemon still owns its announcement source/group, then normal restoration continues; manual changes are preserved. The returned status may still be playing/restoring. Read get_announcement until terminal and inspect not_restored. Repeating cancellation or cancelling a finished job never repeats Stop or playback."
+    description = "Request cancellation of your exact announcement job, or any job when acting as the owner. Waiting work is released without speaker writes. Active playback is stopped only while the daemon still owns its announcement source/group, then normal restoration continues; manual changes are preserved. The returned status may still be playing/restoring. Read get_announcement until terminal and inspect not_restored. Repeating cancellation or cancelling a finished job never repeats Stop or playback. Imported recovery has no original delivery worker to cancel: inspect get_announcement and use abandon_announcement_recovery only when deliberately leaving current playback unrestored."
 )]
 async fn cancel_announcement(
     ctx: &McpContext,
