@@ -167,6 +167,8 @@ fn full_context_and_exact_record_survive_a_new_journal_owner() {
     let dir = directory();
     let journal = Journal::new(dir.path()).unwrap();
     let mut ctx = context(1);
+    // Human room labels may repeat; the core record binds the physical audience.
+    ctx.rooms.push(ctx.rooms[0].clone());
     ctx.interrupted_sleeps
         .push(PlayerId("sleeping-room".into()));
     ctx.interrupted_sleep_deadlines
@@ -206,7 +208,7 @@ fn invalid_context_cannot_poison_a_missing_or_existing_journal() {
     c.rooms.clear();
     invalid.push(c);
     let mut c = context(2);
-    c.rooms.push(c.rooms[0].clone());
+    c.rooms[0].push('\n');
     invalid.push(c);
     let mut c = context(2);
     c.interrupted_sleeps.push(PlayerId("sleeping-room".into()));
