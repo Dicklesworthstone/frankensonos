@@ -734,7 +734,12 @@ impl Announcer {
                 cancellation::check(playback.control())?;
                 effects.volumes.push((room.primary.clone(), *level));
                 journal::effects(journal, &effects)?;
-                control::set_volume(&journal::recording(t, journal), hs, &room.primary, *level)?;
+                control::set_volume(
+                    &journal::recording(t, journal.as_ref()),
+                    hs,
+                    &room.primary,
+                    *level,
+                )?;
             }
             cancellation::check(playback.control())?;
             continuity::prepare(t, &hs[0], rooms, &mut effects, journal)?;
@@ -745,7 +750,7 @@ impl Announcer {
                 journal::effects(journal, &effects)?;
                 let now = refreshed(t, &hs[0])?;
                 control::leave(
-                    &journal::recording(t, journal),
+                    &journal::recording(t, journal.as_ref()),
                     std::slice::from_ref(&now),
                     &plan.lead,
                 )?;
@@ -757,7 +762,7 @@ impl Announcer {
                 journal::effects(journal, &effects)?;
                 let now = refreshed(t, &hs[0])?;
                 control::join(
-                    &journal::recording(t, journal),
+                    &journal::recording(t, journal.as_ref()),
                     std::slice::from_ref(&now),
                     room,
                     &plan.lead,
@@ -768,7 +773,12 @@ impl Announcer {
                 cancellation::check(playback.control())?;
                 effects.mutes.push(room.primary.clone());
                 journal::effects(journal, &effects)?;
-                control::set_mute(&journal::recording(t, journal), hs, &room.primary, false)?;
+                control::set_mute(
+                    &journal::recording(t, journal.as_ref()),
+                    hs,
+                    &room.primary,
+                    false,
+                )?;
             }
             cancellation::check(playback.control())?;
             let host = control::locate(hs, &plan.lead)?.ip;
@@ -777,7 +787,7 @@ impl Announcer {
             effects.clip = Some(clip.url.clone());
             journal::effects(journal, &effects)?;
             events = playback.live.map(Live::subscribe);
-            let recorded = journal::recording(t, journal);
+            let recorded = journal::recording(t, journal.as_ref());
             let starting = cancellation::Starting::new(&recorded, playback.control());
             starting.finish(control::play_uri(
                 &starting,
@@ -795,7 +805,7 @@ impl Announcer {
             Err(error) if cancellation::requested(&error) => Ok(Ending::Cancelled),
             Err(error) => Err(error.to_string()),
             Ok(()) => watch::wait(
-                &journal::recording(t, journal),
+                &journal::recording(t, journal.as_ref()),
                 &hs[0],
                 plan,
                 clip,

@@ -749,7 +749,15 @@ fn a_lost_restart_mutation_is_never_replayed_by_the_live_cleanup_retry_loop() {
     };
     let report = fast().recover(&lost, &record, &journal, None);
     assert_eq!(lost.attempts.load(Ordering::SeqCst), 1, "{report:#?}");
-    assert!(!report.restore_failed.is_empty(), "{report:#?}");
+    assert!(
+        report.restored.iter().any(|(_, restored)| {
+            restored.skipped.iter().any(|(aspect, why)| {
+                *aspect == fsonos_core::snapshot::Aspect::Source
+                    && why.contains("source write lost; application is unknown")
+            })
+        }),
+        "{report:#?}"
+    );
     assert!(journal.completed());
     let from = sim.soap_log().len();
     let report = fast().recover(&lan, &record, &journal, None);
@@ -883,6 +891,145 @@ fn source_replacement_or_pause_during_cleanup_revokes_every_remaining_write() {
                 }
                 _ => assert_eq!(
                     soap::get_transport_info(&lan, lead).unwrap().state,
+                    TransportState::Paused
+                ),
+            }
+            assert!(journal.completed());
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+enum ReturningChange {
+    Source,
+    Metadata,
+    Pause,
+}
+
+struct AfterRelease<'a> {
+    sim: &'a SimHandle,
+    lan: &'a SimLan,
+    change: ReturningChange,
+    changed: AtomicBool,
+    after: AtomicUsize,
+}
+
+impl Transport for AfterRelease<'_> {
+    fn soap_post(
+        &self,
+        address: IpAddr,
+        path: &str,
+        action: &str,
+        body: &str,
+    ) -> Result<String, ProtoError> {
+        let result = self.lan.soap_post(address, path, action, body);
+        let returning = host(self.sim, "Gamma");
+        let own = format!(
+            "<CurrentURI>x-rincon:{}</CurrentURI>",
+            id(self.sim, "Gamma").0
+        );
+        if address == returning
+            && action.contains("#SetAVTransportURI")
+            && body.contains(&own)
+            && !self.changed.swap(true, Ordering::SeqCst)
+        {
+            // Self-leave can answer 402 after applying. The listener changes
+            // this independent zone while the other original group recovers.
+            match self.change {
+                ReturningChange::Source => {
+                    let uri = "http://example.invalid/new-listener.mp3";
+                    soap::set_av_transport_uri(self.lan, returning, uri, &metadata(uri))?;
+                    soap::play(self.lan, returning)?;
+                }
+                ReturningChange::Metadata => {
+                    let changed = metadata(NEW).replace("audio/mpeg", "audio/mp4");
+                    soap::set_av_transport_uri(self.lan, returning, NEW, &changed)?;
+                    soap::play(self.lan, returning)?;
+                }
+                ReturningChange::Pause => {
+                    soap::play(self.lan, returning)?;
+                    soap::pause(self.lan, returning)?;
+                }
+            }
+            self.after
+                .store(self.sim.soap_log().len(), Ordering::SeqCst);
+        }
+        result
+    }
+}
+
+#[test]
+fn a_returning_original_zone_preserves_its_new_source_metadata_or_pause_independently() {
+    for s2 in [false, true] {
+        for change in [
+            ReturningChange::Source,
+            ReturningChange::Metadata,
+            ReturningChange::Pause,
+        ] {
+            let sim = sim(s2, true);
+            let lan = sim.lan();
+            queue(&sim, &lan, "Alpha");
+            soap::set_av_transport_uri(&lan, host(&sim, "Gamma"), NEW, &metadata(NEW)).unwrap();
+            soap::play(&lan, host(&sim, "Gamma")).unwrap();
+            soap::set_volume(&lan, host(&sim, "Alpha"), 18).unwrap();
+            soap::set_volume(&lan, host(&sim, "Gamma"), 9).unwrap();
+            let journal = interrupted(&sim, &lan, &["Alpha", "Gamma"]);
+            let during = AfterRelease {
+                sim: &sim,
+                lan: &lan,
+                change,
+                changed: AtomicBool::new(false),
+                after: AtomicUsize::new(0),
+            };
+            let report = fast().recover(&during, &journal.record(), &journal, None);
+            assert!(
+                during.changed.load(Ordering::SeqCst),
+                "{change:?}: {report:#?}"
+            );
+            let log = sim.soap_log();
+            assert!(
+                mutations(&log[during.after.load(Ordering::SeqCst)..])
+                    .iter()
+                    .all(|entry| entry.room != "Gamma"),
+                "{change:?}: {report:#?}"
+            );
+            assert_eq!(
+                soap::get_volume(&lan, host(&sim, "Gamma")).unwrap(),
+                35,
+                "new playback retains its current level"
+            );
+            assert!(
+                report
+                    .restored
+                    .iter()
+                    .any(|(zone, restored)| *zone == id(&sim, "Gamma")
+                        && !restored.skipped.is_empty()),
+                "{change:?}: {report:#?}"
+            );
+            // A changed independent room does not strand the owned group.
+            assert_eq!(soap::get_volume(&lan, host(&sim, "Alpha")).unwrap(), 18);
+            assert_eq!(
+                soap::get_position_info(&lan, host(&sim, "Alpha"))
+                    .unwrap()
+                    .track,
+                2
+            );
+            assert_eq!(
+                soap::get_transport_info(&lan, host(&sim, "Alpha"))
+                    .unwrap()
+                    .state,
+                TransportState::Playing
+            );
+            let current = soap::get_media_info(&lan, host(&sim, "Gamma")).unwrap();
+            match change {
+                ReturningChange::Source => {
+                    assert_eq!(current.uri, "http://example.invalid/new-listener.mp3")
+                }
+                ReturningChange::Metadata => assert!(current.uri_metadata.contains("audio/mp4")),
+                ReturningChange::Pause => assert_eq!(
+                    soap::get_transport_info(&lan, host(&sim, "Gamma"))
+                        .unwrap()
+                        .state,
                     TransportState::Paused
                 ),
             }

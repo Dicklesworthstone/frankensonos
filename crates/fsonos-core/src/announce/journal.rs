@@ -352,12 +352,9 @@ pub(super) struct Recording<'a, T: Transport + ?Sized> {
 
 pub(super) fn recording<'a, T: Transport + ?Sized>(
     inner: &'a T,
-    session: &'a Option<Session<'a>>,
+    session: Option<&'a Session<'a>>,
 ) -> Recording<'a, T> {
-    Recording {
-        inner,
-        session: session.as_ref(),
-    }
+    Recording { inner, session }
 }
 
 fn mutation(action: &str) -> bool {

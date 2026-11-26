@@ -121,7 +121,8 @@ pub(super) fn prepare<T: Transport + ?Sized>(
             effects.groups.push(player.clone());
             effects.sources.push(player.clone());
             super::journal::effects(journal, effects)?;
-            effects.continuations[index].depart(&super::journal::recording(t, journal), &player)?;
+            effects.continuations[index]
+                .depart(&super::journal::recording(t, journal.as_ref()), &player)?;
         }
         effects.continuations[index].ready = true;
         super::journal::effects(journal, effects)?;

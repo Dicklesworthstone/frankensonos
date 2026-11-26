@@ -39,7 +39,7 @@ impl From<SavedRoom> for Room {
 }
 
 pub(in crate::announce) mod room_vector {
-    use super::*;
+    use super::{Deserialize, Deserializer, Room, SavedRoom, Serialize, Serializer};
 
     pub(in crate::announce) fn serialize<S: Serializer>(
         rooms: &[Room],
@@ -71,7 +71,7 @@ struct SavedHousehold {
 }
 
 pub(super) mod household {
-    use super::*;
+    use super::{Deserialize, Deserializer, HouseholdState, SavedHousehold, Serialize, Serializer};
 
     pub(in crate::announce) fn serialize<S: Serializer>(
         household: &HouseholdState,

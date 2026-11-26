@@ -84,7 +84,7 @@ pub fn parse_device_description(doc_text: &str) -> Result<DeviceDescription, Pro
     }
     let udn: String = identity
         .children()
-        .filter(|child| child.is_text())
+        .filter(roxmltree::Node::is_text)
         .filter_map(|child| child.text())
         .collect();
     let udn = udn.trim();

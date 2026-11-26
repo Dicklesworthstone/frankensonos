@@ -3,10 +3,10 @@
 //! that claim. Ambiguous writes remain attempted and can only be read back.
 
 use super::AnnouncementRecovery;
-use crate::snapshot::SnapshotSource;
+use crate::snapshot::{SnapshotSource, ZoneSnapshot};
 use fsonos_proto::didl::{equivalent_metadata, xml_escape};
 use fsonos_proto::{ProtoError, Transport, control as soap};
-use fsonos_types::TransportState;
+use fsonos_types::{PlayerId, TransportState};
 use std::collections::HashSet;
 use std::net::IpAddr;
 use std::sync::Mutex;
@@ -29,6 +29,13 @@ struct Source {
 
 struct State {
     attempted: HashSet<Dispatch>,
+    /// The temporary lead is first. Other entries are original coordinators
+    /// whose retained sources reappear when they leave the temporary group.
+    sources: Vec<OwnedSource>,
+}
+
+struct OwnedSource {
+    player: PlayerId,
     expected: Source,
     revoked: Option<String>,
 }
@@ -70,16 +77,64 @@ impl Source {
     }
 }
 
+impl OwnedSource {
+    fn check<T: Transport + ?Sized>(
+        &mut self,
+        t: &T,
+        record: &AnnouncementRecovery,
+    ) -> Result<(), ProtoError> {
+        if let Some(why) = &self.revoked {
+            return Err(refused(why.clone()));
+        }
+        let host = record
+            .proof
+            .host(&self.player)
+            .map_err(|error| refused(error.to_string()))?;
+        if let Err(error) = self.expected.check(t, host) {
+            self.revoked = Some(error.to_string());
+            return Err(error);
+        }
+        Ok(())
+    }
+}
+
 impl Fence {
     pub(super) fn new(record: &AnnouncementRecovery) -> Self {
-        Self(Mutex::new(State {
-            attempted: HashSet::new(),
+        let mut sources = vec![OwnedSource {
+            player: record.plan.lead.clone(),
             expected: Source {
                 uri: record.clip_url.clone(),
                 metadata: Some(record.clip_metadata.clone()),
                 allow_paused: false,
             },
             revoked: None,
+        }];
+        for snapshot in &record.snapshots {
+            if snapshot.coordinator != record.plan.lead
+                && record.selected.contains(&snapshot.coordinator)
+                && !record
+                    .effects
+                    .continuations
+                    .iter()
+                    .any(|entry| entry.coordinator == snapshot.coordinator)
+            {
+                // Native partial-group handbacks retain their own stronger
+                // live Playback proofs. Ordinary returning coordinators need
+                // a separate guard: the temporary lead cannot speak for them.
+                sources.push(OwnedSource {
+                    player: snapshot.coordinator.clone(),
+                    expected: Source {
+                        uri: format!("x-rincon:{}", record.plan.lead.0),
+                        metadata: None,
+                        allow_paused: true,
+                    },
+                    revoked: None,
+                });
+            }
+        }
+        Self(Mutex::new(State {
+            attempted: HashSet::new(),
+            sources,
         }))
     }
 
@@ -97,16 +152,30 @@ impl Fence {
             .0
             .lock()
             .map_err(|_| refused("announcement recovery's dispatch fence is unavailable"))?;
-        if let Some(why) = &state.revoked {
-            return Err(refused(why.clone()));
-        }
         let lead = record
             .proof
             .host(&record.plan.lead)
             .map_err(|error| refused(error.to_string()))?;
-        if let Err(error) = state.expected.check(t, lead) {
-            state.revoked = Some(error.to_string());
-            return Err(error);
+        state.sources[0].check(t, record)?;
+        let player = record
+            .before
+            .players
+            .iter()
+            .find(|player| player.ip == host)
+            .ok_or_else(|| refused("announcement recovery cannot identify the requested room"))?;
+        let zone = record
+            .before
+            .rooms
+            .iter()
+            .find(|room| room.players.contains(&player.id))
+            .map(|room| &room.coordinator);
+        if let Some(owner) = state
+            .sources
+            .iter_mut()
+            .skip(1)
+            .find(|owner| Some(&owner.player) == zone)
+        {
+            owner.check(t, record)?;
         }
         if !state.attempted.insert(Dispatch {
             host,
@@ -129,21 +198,37 @@ impl Fence {
         }
         // Advance only to the source described by our impending dispatch,
         // never to whichever source happens to answer a later fresh read.
-        if host == lead && action.contains("#SetAVTransportURI") {
-            let next = next_source(record, body)?;
-            if let Some(next) = next {
-                state.expected = next;
+        if action.contains("#SetAVTransportURI") {
+            if let Some(owner) = state
+                .sources
+                .iter_mut()
+                .find(|owner| owner.player == player.id)
+                && let Some(next) = next_source(record, &player.id, body)?
+            {
+                owner.expected = next;
             }
         } else if action.contains("#DelegateGroupCoordinationTo") {
-            if let Some(next) = delegated_source(t, record, host, body, &state.expected)? {
-                state.expected = next;
+            if let Some(next) = delegated_source(t, record, host, body, &state.sources[0].expected)?
+            {
+                state.sources[0].expected = next;
             }
-        } else if host == lead && action.contains("#Pause") {
+        } else if action.contains("#Pause") {
             // Silent snapshot restoration can explicitly pause before or
             // after source selection. Only that issued write grants this.
-            state.expected.allow_paused = true;
-        } else if host == lead && action.contains("#Play\"") {
-            state.expected.allow_paused = false;
+            if let Some(owner) = state
+                .sources
+                .iter_mut()
+                .find(|owner| owner.player == player.id)
+            {
+                owner.expected.allow_paused = true;
+            }
+        } else if action.contains("#Play\"")
+            && let Some(owner) = state
+                .sources
+                .iter_mut()
+                .find(|owner| owner.player == player.id)
+        {
+            owner.expected.allow_paused = false;
         }
         Ok(true)
     }
@@ -203,9 +288,13 @@ fn delegated_source<T: Transport + ?Sized>(
     Ok(None)
 }
 
-fn next_source(record: &AnnouncementRecovery, body: &str) -> Result<Option<Source>, ProtoError> {
+fn next_source(
+    record: &AnnouncementRecovery,
+    player: &PlayerId,
+    body: &str,
+) -> Result<Option<Source>, ProtoError> {
     for snapshot in &record.snapshots {
-        if snapshot.coordinator != record.plan.lead {
+        if snapshot.coordinator != *player {
             continue;
         }
         let (uri, metadata) = match &snapshot.source {
@@ -228,12 +317,22 @@ fn next_source(record: &AnnouncementRecovery, body: &str) -> Result<Option<Sourc
             }));
         }
     }
-    for player in &record.before.players {
-        let uri = format!("x-rincon:{}", player.id.0);
+    for destination in &record.before.players {
+        let uri = format!("x-rincon:{}", destination.id.0);
         if argument(body, "CurrentURI", &uri) && argument(body, "CurrentURIMetaData", "") {
             // A self-join leaves a group but retains the renderer's own source.
-            if player.id == record.plan.lead {
-                return Ok(None);
+            if destination.id == *player {
+                if player == &record.plan.lead {
+                    return Ok(None);
+                }
+                let snapshot = record
+                    .snapshots
+                    .iter()
+                    .find(|snapshot| snapshot.coordinator == *player)
+                    .ok_or_else(|| {
+                        refused("a returning coordinator has no retained source evidence")
+                    })?;
+                return Ok(Some(retained_source(snapshot)));
             }
             return Ok(Some(Source {
                 uri,
@@ -245,4 +344,19 @@ fn next_source(record: &AnnouncementRecovery, body: &str) -> Result<Option<Sourc
     Err(refused(
         "announcement recovery refused a source transition outside its saved restoration",
     ))
+}
+
+fn retained_source(snapshot: &ZoneSnapshot) -> Source {
+    let (uri, metadata) = match &snapshot.source {
+        SnapshotSource::Queue { .. } => {
+            (format!("x-rincon-queue:{}#0", snapshot.coordinator.0), None)
+        }
+        SnapshotSource::Uri { uri, metadata, .. } => (uri.clone(), Some(metadata.clone())),
+        SnapshotSource::Nothing => (String::new(), Some(String::new())),
+    };
+    Source {
+        uri,
+        metadata,
+        allow_paused: snapshot.transport_state == TransportState::Paused,
+    }
 }
