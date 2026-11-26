@@ -426,7 +426,9 @@ fn lost_control_acknowledgements_preserve_confirmed_or_uncertain_outcomes_withou
             let host = house.sim.player("Room0").unwrap().ip;
             if verb == "Pause" {
                 assert_eq!(
-                    soap::get_transport_info(&house.sim.lan(), host).unwrap().state,
+                    soap::get_transport_info(&house.sim.lan(), host)
+                        .unwrap()
+                        .state,
                     TransportState::Paused
                 );
             } else {

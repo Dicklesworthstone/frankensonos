@@ -61,8 +61,10 @@ fn startup_refuses_a_single_strong_peak_when_one_excerpt_is_missing_or_shifted()
         let shifted = pcm_window(14 * SAMPLE_RATE, 36_000, 101);
         let range = 4 * (33_000 + 24_000)..4 * (36_000 + 48_000);
         for (frame, other) in first[range.clone()]
-            .chunks_exact_mut(4)
-            .zip(shifted[range].chunks_exact(4))
+            .as_chunks_mut::<4>()
+            .0
+            .iter_mut()
+            .zip(shifted[range].as_chunks::<4>().0)
         {
             if missing {
                 frame[2..].fill(0);

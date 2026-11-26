@@ -30,8 +30,7 @@ fn queued(s2: bool, state: TransportState) -> Rig {
         _ => unreachable!(),
     }
     soap::seek_position(&rig.lan, rig.host, 37).unwrap();
-    rig.before =
-        snapshot::capture(&rig.lan, &rig.houses, &rig.before.coordinator, 3_000).unwrap();
+    rig.before = snapshot::capture(&rig.lan, &rig.houses, &rig.before.coordinator, 3_000).unwrap();
     rig
 }
 
@@ -262,7 +261,10 @@ fn unconfirmed_queue_selection_never_authorizes_mode_seek_or_resume() {
             assert!(report.skipped.iter().any(|(failed, _)| *failed == aspect));
         }
         assert_eq!(transport.selections.get(), 1);
-        assert_eq!(soap::get_media_info(&rig.lan, rig.host).unwrap().uri, STREAM);
+        assert_eq!(
+            soap::get_media_info(&rig.lan, rig.host).unwrap().uri,
+            STREAM
+        );
         rig.readonly_since(first);
     }
 }
@@ -301,7 +303,11 @@ impl Changed<'_> {
             }
             Change::Group => {
                 let gamma = &resolve_room(&self.rig.houses, "Gamma").unwrap().player.id;
-                soap::join_group(&self.rig.lan, self.rig.sim.player("Beta").unwrap().ip, gamma)?;
+                soap::join_group(
+                    &self.rig.lan,
+                    self.rig.sim.player("Beta").unwrap().ip,
+                    gamma,
+                )?;
             }
         }
         self.changed.set(true);
@@ -364,7 +370,10 @@ fn independent_queue_selection_never_counts_as_our_cleanup_write() {
         assert!(!transport.selected.get(), "cleanup sent no source write");
         assert!(report.restored.is_empty(), "{report:?}");
         rig.readonly_since(transport.after.get());
-        assert_eq!(soap::get_position_info(&rig.lan, rig.host).unwrap().track, 1);
+        assert_eq!(
+            soap::get_position_info(&rig.lan, rig.host).unwrap().track,
+            1
+        );
         assert_eq!(get_play_mode(&rig.lan, rig.host).unwrap(), PlayMode::Normal);
     }
 }

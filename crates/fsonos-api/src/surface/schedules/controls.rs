@@ -143,21 +143,18 @@ impl<'a> Audience<'a> {
         {
             return Err(failure);
         }
-        let result = self
-            .targets
-            .iter()
-            .find(|(ip, _)| *ip == host)
-            .map_or_else(
-                || {
-                    Err(Failure::new(
-                        ErrorCode::Internal,
-                        "write outside the admitted schedule audience",
-                    ))
-                },
-                |(_, coordinator)| {
-                    self.surface.confirm_reviewed_group(self.households, coordinator)
-                },
-            );
+        let result = self.targets.iter().find(|(ip, _)| *ip == host).map_or_else(
+            || {
+                Err(Failure::new(
+                    ErrorCode::Internal,
+                    "write outside the admitted schedule audience",
+                ))
+            },
+            |(_, coordinator)| {
+                self.surface
+                    .confirm_reviewed_group(self.households, coordinator)
+            },
+        );
         if let Err(failure) = &result {
             *self.refused.lock().unwrap_or_else(PoisonError::into_inner) = Some(failure.clone());
         }

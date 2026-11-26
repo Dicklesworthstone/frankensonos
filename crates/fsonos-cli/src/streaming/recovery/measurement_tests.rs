@@ -143,9 +143,7 @@ impl Transport for Observe<'_> {
         if status && matches!(self.change, Change::Transitioning) {
             response = response.replace("PLAYING", "TRANSITIONING");
         }
-        if status
-            && let Change::TransportStatus(value, transitioning) = self.change
-        {
+        if status && let Change::TransportStatus(value, transitioning) = self.change {
             let normal = "<CurrentTransportStatus>OK</CurrentTransportStatus>";
             assert!(response.contains(normal));
             let replacement = if value.is_empty() {

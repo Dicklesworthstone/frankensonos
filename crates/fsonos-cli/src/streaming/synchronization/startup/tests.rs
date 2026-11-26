@@ -208,12 +208,52 @@ fn first_probe_can_correct_a_multi_second_lag_only_while_the_stream_is_still_own
 }
 
 #[test]
+fn first_probe_cannot_overwrite_a_seek_or_a_manual_delay_after_estimation() {
+    for manual_delay in [false, true] {
+        with_player(|controller, state| {
+            let mut capture = Some(delayed_pcm(14 * 8_000, 33_000));
+            let mut checks = 0;
+            let result = with_capture(
+                controller,
+                5_000,
+                &stop(),
+                probe(),
+                |_| {
+                    checks += 1;
+                    if checks == 3 {
+                        let mut player = state.lock().unwrap();
+                        if manual_delay {
+                            player.delay = 0.7;
+                        } else {
+                            player.events.push(json!({"event": "seek"}));
+                        }
+                    }
+                    Ok(true)
+                },
+                |_, _, _| Ok(Some(capture.take().expect("only one probe was authorized"))),
+            );
+            assert!(result.is_err());
+            assert_eq!(checks, 3);
+            let player = state.lock().unwrap();
+            assert!(player.writes.is_empty());
+            assert_eq!(
+                player.delay.to_bits(),
+                if manual_delay { 0.7_f64 } else { 0.1_f64 }.to_bits()
+            );
+        });
+    }
+}
+
+#[test]
 fn incomplete_first_probe_evidence_uses_the_original_three_capture_budget() {
     with_player(|controller, state| {
         let mut first = delayed_pcm(14 * 8_000, 33_000);
         // Remove the microphone's middle excerpt. The entire recording still
         // correlates strongly, but the isolated evidence cannot be confirmed.
-        for frame in first[4 * (33_000 + 24_000)..4 * (33_000 + 48_000)].chunks_exact_mut(4) {
+        for frame in first[4 * (33_000 + 24_000)..4 * (33_000 + 48_000)]
+            .as_chunks_mut::<4>()
+            .0
+        {
             frame[2..].fill(0);
         }
         let clean = delayed_pcm(14 * 8_000, 33_000);

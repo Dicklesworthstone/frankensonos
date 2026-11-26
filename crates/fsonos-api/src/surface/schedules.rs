@@ -1810,12 +1810,8 @@ impl Surface {
                 }
             }
         }
-        let (snaps, missed) = fsonos_core::actions::capture_zones(
-            transport,
-            &households,
-            &targets,
-            self.now(),
-        );
+        let (snaps, missed) =
+            fsonos_core::actions::capture_zones(transport, &households, &targets, self.now());
         let before = super::level_undo::scope(
             fsonos_core::actions::before_state_with(&snaps, &[]),
             &households,
@@ -1831,7 +1827,9 @@ impl Surface {
             &own
         };
         // Each room's target, bounded as an immediate change would be.
-        let checked = audience.as_ref().map_or(Ok(()), controls::Audience::check_all);
+        let checked = audience
+            .as_ref()
+            .map_or(Ok(()), controls::Audience::check_all);
         let bounded = checked.and_then(|()| {
             planned
                 .into_iter()
@@ -1868,8 +1866,8 @@ impl Surface {
                     format!("ramped {room}'s volume to {level} {pace}"),
                 )
             } else {
-                let (left, secs) = ramp_each(fader, transport, &households, &lanes)
-                    .map_err(Failure::from)?;
+                let (left, secs) =
+                    ramp_each(fader, transport, &households, &lanes).map_err(Failure::from)?;
                 ramping = lanes
                     .iter()
                     .filter(|(player, _)| !left.contains(player))
