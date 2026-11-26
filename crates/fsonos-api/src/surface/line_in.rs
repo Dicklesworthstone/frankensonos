@@ -8,6 +8,7 @@ use serde::{Deserialize, Serialize};
 use std::fmt::Write as _;
 
 use super::{Surface, resolve, room_view};
+use crate::plan::resolve_set;
 use crate::request::zone_name;
 use crate::{Command, Failure, OutcomeDto};
 
@@ -98,7 +99,8 @@ impl LineInSourcesDto {
     }
 }
 
-/// Select a native input for one destination group, retaining its queue.
+/// Select one native input for each destination group, retaining their queues.
+/// Every selected group must belong to the input's own Sonos household.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct PlayLineInRequest {
@@ -147,16 +149,17 @@ impl Surface {
         Ok(catalog.into())
     }
 
-    /// Resolve and prepare the input before snapshots, fades or volume writes.
-    /// The retained source and destination are rechecked at execution.
+    /// Resolve one exact input and prepare every distinct destination before
+    /// snapshots, fades or volume writes. Sources and audiences are rechecked
+    /// at execution; groups remain independent and share one action/undo.
     pub fn play_line_in(
         &self,
         client: &Client,
         request: &PlayLineInRequest,
     ) -> Result<OutcomeDto, Failure> {
         request.validate()?;
-        self.control_io(client, "play", |transport, rooms| {
-            let target = resolve(rooms, request.zone.trim())?;
+        self.control_set_io(client, "play", |transport, rooms| {
+            let targets = resolve_set(rooms, request.zone.trim())?;
             let selected = request.source.trim();
             // Room resolution normally maps bonded players to their primary.
             // A catalog UUID identifies the actual input and must retain it.
@@ -170,13 +173,26 @@ impl Surface {
                 (None, None) => resolve(rooms, selected)?.player.id.clone(),
                 _ => return Err(Failure::invalid("the input player identity is ambiguous")),
             };
-            let coordinator = target.coordinator.id.clone();
-            let prepared =
-                audio_inputs::prepare(transport, rooms.households, &coordinator, &source)?;
-            Ok(Command::PlayLineIn {
-                coordinator,
-                prepared,
-            })
+            let mut commands = Vec::new();
+            for target in targets {
+                if commands
+                    .iter()
+                    .any(|command: &Command| command.addressed() == Some(&target.coordinator.id))
+                {
+                    continue;
+                }
+                let coordinator = target.coordinator.id.clone();
+                // Prepare every destination before the set executor can apply
+                // caps or change playback. A foreign household rejects the
+                // complete request; aliases never choose a different input.
+                let prepared =
+                    audio_inputs::prepare(transport, rooms.households, &coordinator, &source)?;
+                commands.push(Command::PlayLineIn {
+                    coordinator,
+                    prepared,
+                });
+            }
+            Ok(commands)
         })
     }
 }

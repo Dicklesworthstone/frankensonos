@@ -1,9 +1,10 @@
 # Play a speaker's native line-in
 
 FrankenSonos can discover physical line-in inputs on your Sonos household and
-play one through a room's current group. A turntable or other audio source can
-remain connected to one speaker while another group in the same household
-listens. The source player and the destination coordinator are independent.
+play one through a room's current group or a saved set of rooms. A turntable or
+other audio source can remain connected to one speaker while several independent
+groups in the same household listen. The source player and the destination
+coordinators are independent.
 
 The controller reads each discovered player's own device description and
 AudioIn attributes. It does not infer support from a model-name list or require
@@ -21,12 +22,22 @@ fsonos play Study --line-in "Music Room"
 
 # Use the exact player id returned by discovery to select a particular jack.
 fsonos play Study --line-in RINCON_SYNTHETIC01400
+
+# One input, every distinct group selected by a saved alias or household.
+fsonos play downstairs --line-in "Music Room"
+fsonos play all@S1 --line-in RINCON_SYNTHETIC01400
 ```
 
 Use qualified room names such as `Study@S1` when households have duplicate
 names. A room or single-room alias selects its primary player. An exact id
 from discovery selects that physical player's input, including the secondary
 player of a stereo pair; it is not silently replaced with the primary's id.
+
+The destination accepts a room, a multi-room alias, `all` / `everywhere`, or
+`all@S1` / `all@S2`. Grouped rooms act once. Every selected group must belong
+to the input's household; a selection spanning S1 and S2 fails before any
+playback or volume changes. The source remains one exact input. Room sets keep
+their current grouping and do not promise synchronized starts.
 
 The ordinary daemon selection applies: a running daemon, including one reached
 through Tailscale, handles the request; `--direct` talks to the LAN through the
@@ -39,7 +50,8 @@ Start the external source device yourself after selecting its input.
 
 ## Phone browser and dashboard
 
-In the source selector, choose **Line-in**, choose the destination, then
+The browser selector continues to choose one destination group. In the source
+selector, choose **Line-in**, choose the destination, then
 **Read line-in sources**. Select an input and review **Play now**. The review
 shows the source room and destination group. Sending it rereads the selected
 input and destination; a removed or changed selection requires a new review.
@@ -96,8 +108,15 @@ evidence that the household has no inputs.
 }
 ```
 
-It returns the standard `OutcomeDto`, including any volume-cap notes. The
-caller supplies no renderer URI or metadata. MCP exposes the same operations
+The destination `zone` accepts the same room sets as the CLI. It returns the
+standard `OutcomeDto`, including any volume-cap notes. A single distinct group
+retains the existing response shape. Multiple groups include `batch.complete`
+and one result for each original destination, including failures. An incomplete
+CLI batch prints that receipt and exits nonzero; MCP marks it as an error while
+retaining the receipt. Inspect partial or uncertain results before requesting
+another action; the controller never replays the batch automatically.
+
+The caller supplies no renderer URI or metadata. MCP exposes the same operations
 as `list_line_in(zone)` and `play_line_in(zone, source)`, including structured
 results and the same error contract. Reading uses the existing `list_players`
 permission; playback uses `play`.
@@ -111,6 +130,13 @@ It does not regroup rooms. A source room outside the destination group keeps
 its playback and volume. Existing caps and quiet hours apply to every room
 that will sound in the destination group, including the input's room when it
 is a member; the CLI retains its configured policy behavior.
+
+Every distinct destination is prepared before snapshots, fade cancellation,
+volume reductions or playback changes. A failure in any preparation leaves all
+destinations unchanged. The shared executor then retains each original audience,
+applies its current caps, and records one action with every result. A later
+speaker failure can leave earlier groups playing; the response preserves those
+successes and the failure.
 
 Preparation checks the source's current advertised capability and identity,
 same-household membership, destination source and audience, and available boot
@@ -141,7 +167,8 @@ does not configure input gain, autoplay, TV input or device firmware.
 Coverage includes protocol argument/parsing tests, S1/S2 simulator discovery
 and playback, exact stereo-pair source identity, household isolation, retained
 queues, caps, undo, changed sources, interrupted replies, CLI direct/daemon
-routing, HTTP validation, MCP forwarding, phone/dashboard review state, and
+routing, room-set deduplication, cross-household set refusal before writes,
+partial group results, HTTP validation, MCP forwarding, phone/dashboard review state, and
 native Apple catalog, command and screen lifecycle contracts.
 The simulator uses real localhost sockets. Physical line-in audio still needs
 an opt-in check on the owner's speakers; simulator behavior does not establish

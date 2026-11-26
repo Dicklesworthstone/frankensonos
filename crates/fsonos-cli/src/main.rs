@@ -283,14 +283,14 @@ enum Command {
         #[command(subcommand)]
         action: policy_cmd::PolicyAction,
     },
-    /// Play a source URI, favorite or saved Sonos playlist in the selected
-    /// groups. Native line-in and search select one room's group.
+    /// Play a source URI, favorite, saved Sonos playlist or native line-in
+    /// in the selected groups. Search selects one room's group.
     // What --next and --queue add: one source URI, favorite or saved playlist.
     #[command(group(clap::ArgGroup::new("item").args(["source_uri", "favorite", "playlist", "line_in"])))]
     Play {
         /// Room, multi-room alias, all or everywhere. `all@S1` / `all@S2`
         /// selects one household. Existing groups are not regrouped or synchronized.
-        /// Line-in and search modes require one room.
+        /// Line-in destinations must share the input's household; search requires one room.
         zone: String,
         /// Source URI, or a Spotify track, album or playlist (an
         /// open.spotify.com link will do); an album or playlist replaces the

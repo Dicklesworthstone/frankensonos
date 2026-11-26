@@ -153,3 +153,132 @@ fn native_input_playback_uses_the_daemons_inventory_control_and_undo() {
     drop(daemon);
     scenario.finish();
 }
+
+#[test]
+fn line_in_room_sets_reach_the_selected_groups_through_direct_and_daemon_cli() {
+    for route in ["--direct", "--daemon"] {
+        let mut scenario = Scenario::start(&format!("line-in-sets{route}"));
+        scenario.sim(SimHousehold::standard());
+        std::fs::write(
+            scenario.dir().join("data/aliases.toml"),
+            "[aliases]\nlistening = ['Kitchen', 'Office']\n",
+        )
+        .unwrap();
+        let source = scenario
+            .sim_handle()
+            .unwrap()
+            .player("Office")
+            .unwrap()
+            .uuid
+            .clone();
+        for room in ["Kitchen", "Office"] {
+            let host = scenario.ip(room);
+            soap::add_uri_to_queue(
+                &scenario.lan(),
+                host,
+                "http://media.example.org/retained.mp3",
+                "",
+                false,
+            )
+            .unwrap();
+            soap::set_av_transport_uri(&scenario.lan(), host, RADIO, "").unwrap();
+            soap::play(&scenario.lan(), host).unwrap();
+        }
+        let daemon = if route == "--daemon" {
+            let mut daemon = scenario.spawn("serve", &["serve", "--http", "127.0.0.1:0"]);
+            assert!(
+                daemon
+                    .wait_line("fsonos serve: live", Duration::from_secs(20))
+                    .is_some()
+            );
+            Some(daemon)
+        } else {
+            None
+        };
+        let before = scenario.sim_handle().unwrap().soap_log().len();
+        let played = call(
+            &mut scenario,
+            route,
+            "line-in-set-play",
+            &["play", "listening", "--line-in", &source],
+        );
+        assert!(played.ok(), "{played:?}");
+        let outcome: OutcomeDto = serde_json::from_str(&played.stdout).unwrap();
+        assert!(outcome.complete());
+        assert_eq!(outcome.batch.unwrap().results.len(), 2);
+        let mut started: Vec<_> = scenario.sim_handle().unwrap().soap_log()[before..]
+            .iter()
+            .filter(|entry| entry.action == "Play")
+            .map(|entry| entry.room.clone())
+            .collect();
+        started.sort();
+        assert_eq!(started, ["Kitchen", "Office"]);
+        for room in ["Kitchen", "Office"] {
+            let host = scenario.ip(room);
+            assert_eq!(
+                soap::get_media_info(&scenario.lan(), host).unwrap().uri,
+                format!("x-rincon-stream:{source}")
+            );
+            assert_eq!(browse_all(&scenario.lan(), host, QUEUE).unwrap().len(), 1);
+        }
+        let restored = call(&mut scenario, route, "line-in-set-undo", &["undo"]);
+        assert!(restored.ok(), "{restored:?}");
+        for room in ["Kitchen", "Office"] {
+            assert_eq!(
+                soap::get_media_info(&scenario.lan(), scenario.ip(room))
+                    .unwrap()
+                    .uri,
+                RADIO
+            );
+        }
+
+        let before = scenario.sim_handle().unwrap().soap_log().len();
+        let refused = call(
+            &mut scenario,
+            route,
+            "line-in-all-households",
+            &["play", "all", "--line-in", &source],
+        );
+        assert!(!refused.ok(), "{refused:?}");
+        assert!(
+            scenario.sim_handle().unwrap().soap_log()[before..]
+                .iter()
+                .all(|entry| entry.action.starts_with("Get") || entry.action == "Browse")
+        );
+
+        scenario
+            .sim_handle()
+            .unwrap()
+            .upnp_fault("Office", "SetAVTransportURI", 701)
+            .unwrap();
+        let before = scenario.sim_handle().unwrap().soap_log().len();
+        let partial = call(
+            &mut scenario,
+            route,
+            "line-in-partial",
+            &["play", "all@S1", "--line-in", &source],
+        );
+        assert!(!partial.ok(), "{partial:?}");
+        assert!(partial.stderr.contains("incomplete"), "{partial:?}");
+        let outcome: OutcomeDto = serde_json::from_str(&partial.stdout).unwrap();
+        assert_eq!(outcome.incomplete_targets(), 1);
+        assert_eq!(outcome.batch.unwrap().results.len(), 2);
+        assert_eq!(
+            scenario.sim_handle().unwrap().soap_log()[before..]
+                .iter()
+                .filter(|entry| entry.room == "Office" && entry.action == "SetAVTransportURI")
+                .count(),
+            1
+        );
+        for room in ["Living Room", "Bedroom"] {
+            assert_eq!(
+                soap::get_transport_info(&scenario.lan(), scenario.ip(room))
+                    .unwrap()
+                    .state,
+                TransportState::Stopped
+            );
+        }
+        drop(daemon);
+        scenario.finish();
+    }
+}

@@ -1522,6 +1522,14 @@ capability is distinct from a failed read, and name/icon attributes never imply
 that a cable is connected or audio is arriving. See [`docs/LINE_IN.md`](docs/LINE_IN.md)
 for the control and validation contract.
 
+Native line-in playback now accepts saved room sets and household-qualified
+all/everywhere targets through CLI, HTTP and MCP. One exact physical input
+serves each distinct existing group in its own household, preserving native
+queues and grouping. Every destination is prepared and rechecked before caps
+or playback changes. Batch receipts retain partial failures and one shared
+action/undo boundary; CLI and MCP surface incomplete delivery as an error.
+Browser and Apple input selectors retain their one-group review.
+
 ### 12.7 Scenes
 
 [`b-scenes`, `d-scenes-surface`] Named, declarative house states: group layout,
@@ -2062,7 +2070,10 @@ replacement proof. Ordered queue additions use the same retained-target
 insertion path, preserving next/append behavior and per-group receipts. Both
 browser baskets use the reviewed source endpoint for all three ordered-track
 modes, binding the exact selection to the resolver's whole-audience revision.
-Search picks and line-in keep their single-group contracts.
+Search picks keep their single-group contract. Native line-in playback accepts
+room sets within its exact input's household, with all destinations prepared
+before changes, one result per group and one action/undo boundary. A target
+spanning S1 and S2 is rejected before writes.
 See [Multi-room playback](docs/MULTI_ROOM_PLAYBACK.md)
 for the interface, restoration limits and validation status.
 

@@ -222,3 +222,45 @@ fn line_in_tools_register_required_identity_and_read_write_annotations() {
         assert_eq!(value["annotations"]["idempotentHint"] == true, read_only);
     }
 }
+
+#[test]
+fn room_sets_preserve_every_group_result_and_mark_partial_delivery_as_an_error() {
+    for zone in ["downstairs", "all@S1", "everywhere@S2"] {
+        for complete in [false, true] {
+            let failed = json!({
+                "status": "failed",
+                "error": Failure::new(ErrorCode::OutcomeUncertain, "speaker reply lost").body()
+            });
+            let succeeded = json!({
+                "status": "succeeded", "done": "playing the input", "changed": true
+            });
+            let receipt = json!({
+                "done": "line-in playback", "changed": true,
+                "batch": {
+                    "complete": complete,
+                    "results": [
+                        {"household":"S1", "target":"RINCON_FIRST", "zone":"First",
+                         "result":succeeded.clone()},
+                        {"household":"S1", "target":"RINCON_SECOND", "zone":"Second",
+                         "result":if complete { succeeded } else { failed }}
+                    ]
+                }
+            });
+            let reply = Arc::new(Reply {
+                calls: Mutex::default(),
+                answer: Some(Ok(receipt.clone())),
+            });
+            let request = PlayLineInRequest {
+                zone: zone.into(),
+                ..request()
+            };
+            let result = backend(&reply).play_line_in(&request).unwrap();
+            assert_eq!(result.is_error, !complete);
+            assert_eq!(result.structured_content, Some(receipt));
+            assert_eq!(
+                *reply.calls.lock().unwrap(),
+                [json!(["POST", "/line-in/play", request])]
+            );
+        }
+    }
+}
