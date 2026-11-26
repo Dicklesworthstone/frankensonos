@@ -99,6 +99,7 @@ enum Change {
     Source,
     Group,
     Transitioning,
+    TransportStatus(&'static str, bool),
     ReadFailure,
 }
 
@@ -141,6 +142,21 @@ impl Transport for Observe<'_> {
         let mut response = self.rig.lan.soap_post(host, path, action, body)?;
         if status && matches!(self.change, Change::Transitioning) {
             response = response.replace("PLAYING", "TRANSITIONING");
+        }
+        if status
+            && let Change::TransportStatus(value, transitioning) = self.change
+        {
+            let normal = "<CurrentTransportStatus>OK</CurrentTransportStatus>";
+            assert!(response.contains(normal));
+            let replacement = if value.is_empty() {
+                String::new()
+            } else {
+                format!("<CurrentTransportStatus>{value}</CurrentTransportStatus>")
+            };
+            response = response.replace(normal, &replacement);
+            if transitioning {
+                response = response.replace("PLAYING", "TRANSITIONING");
+            }
         }
         if action.contains("#GetMediaInfo") {
             if matches!(self.change, Change::Alias) {
@@ -268,5 +284,40 @@ fn successful_measurement_checks_leave_the_existing_restoration_path_usable() {
             soap::get_transport_info(&rig.lan, rig.host).unwrap().state,
             TransportState::Playing
         );
+    }
+}
+
+#[test]
+fn playback_errors_invalidate_playing_and_buffering_measurements() {
+    for s2 in [false, true] {
+        let rig = Rig::new(s2);
+        let first = rig.sim.soap_log().len();
+        for transitioning in [false, true] {
+            let observer = Observe::new(
+                &rig,
+                Change::TransportStatus(" ERROR_OCCURRED ", transitioning),
+            );
+            for settled in [false, true] {
+                let error = rig.verify(&observer, settled).unwrap_err();
+                assert!(error.contains("playback error"), "{error}");
+            }
+            assert_eq!(observer.status_reads.get(), 2);
+        }
+        rig.readonly_since(first);
+    }
+}
+
+#[test]
+fn missing_and_vendor_transport_statuses_keep_measurement_compatibility() {
+    for s2 in [false, true] {
+        let rig = Rig::new(s2);
+        let first = rig.sim.soap_log().len();
+        for status in ["", "VENDOR_PLAYING"] {
+            let observer = Observe::new(&rig, Change::TransportStatus(status, false));
+            rig.verify(&observer, false).unwrap();
+            rig.verify(&observer, true).unwrap();
+            assert_eq!(observer.status_reads.get(), 2);
+        }
+        rig.readonly_since(first);
     }
 }

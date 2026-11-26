@@ -5,10 +5,95 @@ use fsonos_core::snapshot::{self, Aspect, RestoreOp, RestoreReport, SnapshotSour
 use fsonos_core::{CoreError, HouseholdState};
 use fsonos_proto::content::{self, BrowseFlag};
 use fsonos_proto::topology::get_zone_group_state;
-use fsonos_proto::{Transport, control as soap};
+use fsonos_proto::{ProtoError, Transport, control as soap};
 use fsonos_types::TransportState;
+use std::cell::Cell;
+use std::net::IpAddr;
+use std::time::Duration;
 
 const PLAYBACK: [Aspect; 3] = [Aspect::Source, Aspect::Position, Aspect::Transport];
+
+/// The shared restorer vets PlayQueue both before selecting the queue and
+/// afterward, before restoring its mode. Only our own dispatched selection can
+/// advance that ownership check. Read-back in the shared restorer must still
+/// confirm the original queue, revision and group before its later writes.
+struct QueueSelection<'a, T: ?Sized> {
+    inner: &'a T,
+    host: IpAddr,
+    argument: Option<String>,
+    dispatched: Cell<bool>,
+}
+
+impl<T: Transport + ?Sized> Transport for QueueSelection<'_, T> {
+    fn soap_post(
+        &self,
+        host: IpAddr,
+        path: &str,
+        action: &str,
+        body: &str,
+    ) -> Result<String, ProtoError> {
+        let selection = host == self.host
+            && path == fsonos_proto::soap::AV_TRANSPORT.control_path
+            && action
+                == fsonos_proto::soap::soap_action_header(
+                    &fsonos_proto::soap::AV_TRANSPORT,
+                    "SetAVTransportURI",
+                )
+            && self
+                .argument
+                .as_ref()
+                .is_some_and(|argument| body.contains(argument));
+        let reply = self.inner.soap_post(host, path, action, body);
+        if selection {
+            let dispatched = match &reply {
+                Ok(body) => !fsonos_proto::soap::parse_response(body, "SetAVTransportURI")
+                    .is_err_and(|error| matches!(error, ProtoError::SoapFault { .. })),
+                Err(ProtoError::Network { .. } | ProtoError::Malformed(_)) => true,
+                Err(_) => false,
+            };
+            // A definite refusal retains temporary-source ownership for the
+            // shared helper's bounded 402 retry. Ambiguous writes advance only
+            // this phase marker; they still need the helper's effect proof.
+            self.dispatched.set(dispatched);
+        }
+        reply
+    }
+
+    fn http_get(&self, url: &str) -> Result<String, ProtoError> {
+        self.inner.http_get(url)
+    }
+
+    fn http_get_many(
+        &self,
+        urls: &[String],
+        cancelled: &(dyn Fn() -> bool + Sync),
+    ) -> Vec<Result<String, ProtoError>> {
+        self.inner.http_get_many(urls, cancelled)
+    }
+
+    fn http_get_bytes(&self, url: &str) -> Result<fsonos_proto::HttpBody, ProtoError> {
+        self.inner.http_get_bytes(url)
+    }
+
+    fn ssdp_search(
+        &self,
+        mx_secs: u8,
+        wait: Duration,
+    ) -> Result<Vec<fsonos_proto::ssdp::Advert>, ProtoError> {
+        self.inner.ssdp_search(mx_secs, wait)
+    }
+
+    fn mdns_search(
+        &self,
+        wait: Duration,
+    ) -> Result<Vec<fsonos_proto::mdns::SonosAdvert>, ProtoError> {
+        self.inner.mdns_search(wait)
+    }
+
+    fn discover(&self, mx_secs: u8, wait: Duration) -> fsonos_proto::Discovered {
+        self.inner.discover(mx_secs, wait)
+    }
+}
 
 fn preserve(why: &str) -> RestoreReport {
     RestoreReport {
@@ -124,9 +209,11 @@ pub(super) fn verify_measurement<T: Transport + ?Sized>(
     if !same_source(source, &media.uri) {
         return Err("stream source changed; live latency measurement stopped".into());
     }
-    let state = soap::get_transport_info(transport, host)
-        .map_err(|error| error.to_string())?
-        .state;
+    let info = soap::get_transport_info(transport, host).map_err(|error| error.to_string())?;
+    if info.status == "ERROR_OCCURRED" {
+        return Err("stream renderer reported a playback error; measurement stopped".into());
+    }
+    let state = info.state;
     if state != TransportState::Playing
         && (require_playing || state != TransportState::Transitioning)
     {
@@ -207,8 +294,15 @@ pub(super) fn restore<T: Transport + ?Sized>(
         previous.transport_state = state;
     }
     let original = original_uri(&previous);
+    let selecting = QueueSelection {
+        inner: transport,
+        host,
+        argument: matches!(&previous.source, SnapshotSource::Queue { .. })
+            .then(|| fsonos_proto::soap::args_xml(&[("CurrentURI", &original)])),
+        dispatched: Cell::new(false),
+    };
     let mut report = snapshot::restore_vetted(
-        transport,
+        &selecting,
         std::slice::from_ref(&now),
         &previous,
         &PLAYBACK,
@@ -220,6 +314,7 @@ pub(super) fn restore<T: Transport + ?Sized>(
                 .ok_or_else(|| "stream coordinator disappeared".to_owned())?
                 .ip;
             let expected = match operation {
+                RestoreOp::PlayQueue if selecting.dispatched.get() => &original,
                 RestoreOp::SetUri { .. } | RestoreOp::PlayQueue | RestoreOp::Stop => temporary,
                 RestoreOp::SeekTrack(_) | RestoreOp::SeekPosition(_) | RestoreOp::Play => &original,
                 _ => return Err("stream cleanup cannot change grouping, volume or mute".into()),

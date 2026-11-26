@@ -64,6 +64,13 @@ writes. Source/group ownership and the queue revision are checked again before
 each playback restoration step. A paused or stopped, previously acknowledged
 stream does not cause the old source to be automatically resumed.
 
+For an unchanged saved queue, cleanup restores the selected occurrence,
+elapsed position and known shuffle/repeat mode before resuming. Selecting that
+queue is a completed restoration step: later mode and position checks retain
+the restored queue as their expected source. Paused or stopped queues stay
+silent, and a later source, queue or group change still prevents dependent
+writes.
+
 Cleanup also runs after an attempted Play fails: a failed reply does not prove
 that the stream URI was not installed. It restores only when read-back still
 identifies this session's source. The encoder is then killed and reaped, and

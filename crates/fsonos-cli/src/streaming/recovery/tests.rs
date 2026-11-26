@@ -325,3 +325,6 @@ fn an_unreadable_owner_never_authorizes_a_restore_write() {
         rig.readonly_since(after);
     }
 }
+
+#[path = "queue_tests.rs"]
+mod queue_tests;
