@@ -16,6 +16,9 @@ use std::cell::{Cell, RefCell};
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::time::Duration;
 
+#[path = "endpoint_readdressing_sim/wrapped_commands.rs"]
+mod wrapped_commands;
+
 const ORIGINAL: &str = "x-rincon-mp3radio://example.invalid/original";
 const WANTED: &str = "x-rincon-mp3radio://example.invalid/requested";
 const TRACKS: [&str; 2] = [
@@ -77,7 +80,7 @@ impl Fixture {
         } else {
             builder.s2([
                 SimPlayerSpec::new("Target", SimModel::One),
-                SimPlayerSpec::new("Peer", SimModel::One),
+                SimPlayerSpec::new("Peer", SimModel::Play5Gen2),
             ])
         }
         .spawn()

@@ -334,6 +334,10 @@ struct PlaybackTransport<'a, T: ?Sized> {
 }
 
 impl<T: Transport + ?Sized> Transport for PlaybackTransport<'_, T> {
+    fn http_get(&self, url: &str) -> Result<String, ProtoError> {
+        self.transport.http_get(url)
+    }
+
     fn soap_post(
         &self,
         host: IpAddr,

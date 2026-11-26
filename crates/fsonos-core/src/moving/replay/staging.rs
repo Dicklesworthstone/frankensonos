@@ -48,6 +48,10 @@ struct Fenced<'a, T: ?Sized> {
 }
 
 impl<T: Transport + ?Sized> Transport for Fenced<'_, T> {
+    fn http_get(&self, url: &str) -> Result<String, ProtoError> {
+        self.inner.http_get(url)
+    }
+
     fn soap_post(
         &self,
         host: IpAddr,

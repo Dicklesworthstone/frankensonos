@@ -19,6 +19,15 @@ struct Reads<'a, T: ?Sized> {
 }
 
 impl<T: Transport + ?Sized> Transport for Reads<'_, T> {
+    fn http_get(&self, url: &str) -> Result<String, ProtoError> {
+        if Instant::now() >= self.until {
+            return Err(ProtoError::NotWired(
+                "sleep timer observation budget elapsed",
+            ));
+        }
+        self.inner.http_get(url)
+    }
+
     fn soap_post(
         &self,
         host: IpAddr,

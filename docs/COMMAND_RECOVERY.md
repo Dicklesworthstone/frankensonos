@@ -170,6 +170,14 @@ paired grouping checks remain unchanged; identifying a group member never
 promotes it to coordinator. Peer-witness reads retain their existing checks.
 Repair adds no retry budget and cannot replay a possibly completed write.
 
+Guarded command adapters retain these description reads too. Line-in playback,
+announcement startup, saved-queue recall and reconstruction, queue restoration
+and undo, and lost-reply navigation, seek and native sleep-timer confirmation
+can therefore verify a healthy moved player while its advertised Location is
+still old. Observation adapters apply their existing time budget to description
+GETs. Cancellation and audience checks still gate every mutation; a failed or
+changed description cannot authorize another write.
+
 The S1/S2 regressions in `endpoint_readdressing_sim` cover DHCP recovery,
 direct and ordered queue starts, stale Location catch-up, unavailable or
 ambiguous descriptions, reused addresses, conflicting members, coordinator
@@ -179,6 +187,7 @@ speaker control or description request.
 
 ~~~bash
 cargo test --locked -p fsonos-core --test endpoint_readdressing_sim
+cargo test --locked -p fsonos-api --test queue_add_sim endpoint::
 cargo test --locked -p fsonos-proto --lib net::redirect_tests
 cargo test --locked -p fsonos-proto --lib description::tests
 ~~~

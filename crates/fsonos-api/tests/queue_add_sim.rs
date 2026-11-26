@@ -21,6 +21,9 @@ use std::time::Duration;
 
 const ROOM: &str = "Living Room";
 
+#[path = "queue_add_sim/endpoint.rs"]
+mod endpoint;
+
 fn surface(sim: &SimHandle) -> Surface {
     let survey: Survey = Box::new(|t| {
         Ok(fsonos_core::inventory::survey(t, &[], Duration::from_millis(500))?.households)

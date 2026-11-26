@@ -452,6 +452,10 @@ impl<'a, T: Transport + ?Sized> Guarded<'a, T> {
 }
 
 impl<T: Transport + ?Sized> Transport for Guarded<'_, T> {
+    fn http_get(&self, url: &str) -> Result<String, ProtoError> {
+        self.t.http_get(url)
+    }
+
     fn soap_post(
         &self,
         host: IpAddr,

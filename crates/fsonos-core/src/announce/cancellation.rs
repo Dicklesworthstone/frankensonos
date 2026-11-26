@@ -195,6 +195,12 @@ impl<'a, T: Transport + ?Sized> Starting<'a, T> {
 }
 
 impl<T: Transport + ?Sized> Transport for Starting<'_, T> {
+    fn http_get(&self, url: &str) -> Result<String, ProtoError> {
+        // Identity reads, like SOAP reads below, remain available after
+        // cancellation so an already dispatched source can be reconciled.
+        self.transport.http_get(url)
+    }
+
     fn soap_post(
         &self,
         host: IpAddr,
