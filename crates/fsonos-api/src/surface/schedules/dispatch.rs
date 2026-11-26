@@ -214,7 +214,9 @@ fn ready(surface: &Surface, schedule: &Schedule) -> Result<Option<PreparedRun>, 
     match &schedule.action {
         ScheduleAction::Announce { rooms: names, .. } => {
             surface.announcement_ready()?;
-            announcements::targets_ready(&rooms, names)
+            announcements::targets_ready(&rooms, names)?;
+            return surface.reminder_audience(&rooms, names)
+                .map(|audience| Some(PreparedRun::Announcement(audience)));
         }
         ScheduleAction::ApplyScene { name } => {
             let row = surface

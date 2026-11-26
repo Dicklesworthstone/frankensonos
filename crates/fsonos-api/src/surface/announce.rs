@@ -22,7 +22,7 @@ use fsonos_core::announce::{
 use fsonos_core::policy::Client;
 use fsonos_core::rooms::{ControlTarget, ResolveContext, resolve_targets};
 use fsonos_core::{HouseholdState, Room};
-use fsonos_types::PlayerId;
+use fsonos_types::{HouseholdId, PlayerId};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fmt::Write as _;
@@ -80,7 +80,56 @@ struct Turn {
 
 /// A scheduler reserves capacity before claiming an occurrence; delivery
 /// consumes this same lease so another caller cannot take its place.
-pub(super) struct AnnouncementPermit(Turn);
+pub(super) struct AnnouncementPermit {
+    turn: Turn,
+    audience: Option<ReminderAudience>,
+}
+
+impl AnnouncementPermit {
+    pub(super) fn for_audience(mut self, audience: ReminderAudience) -> Self {
+        self.audience = Some(audience);
+        self
+    }
+}
+
+/// A scheduled reminder addresses these physical rooms even if its alias,
+/// caller default, or the expansion of "all" changes after admission.
+#[derive(Debug)]
+pub(super) struct ReminderAudience(Vec<(Option<HouseholdId>, Room)>);
+
+impl ReminderAudience {
+    fn current<'a>(&self, houses: &'a [HouseholdState]) -> Result<Vec<ControlTarget<'a>>, Failure> {
+        let changed = || {
+            Failure::new(
+                ErrorCode::NotReady,
+                "a scheduled announcement room is missing, ambiguous or has different bonded players; no clip was sent",
+            )
+        };
+        let mut players = Vec::with_capacity(self.0.len());
+        for (household, admitted) in &self.0 {
+            let mut matches = houses
+                .iter()
+                .enumerate()
+                .filter(|(_, house)| household.is_none() || house.id == *household)
+                .flat_map(|(index, house)| {
+                    house.rooms.iter()
+                        .filter(move |room| room.primary == admitted.primary)
+                        .map(move |room| (index, room))
+                });
+            let (index, room) = matches.next().ok_or_else(changed)?;
+            if matches.next().is_some()
+                || room.players.len() != admitted.players.len()
+                || !room.players.iter().all(|id| admitted.players.contains(id))
+                || room.missing.len() != admitted.missing.len()
+                || !room.missing.iter().all(|id| admitted.missing.contains(id))
+            {
+                return Err(changed());
+            }
+            players.push((index, room.primary.clone()));
+        }
+        admitted_targets(houses, &players)
+    }
+}
 
 impl Turns {
     fn held(&self) -> std::sync::MutexGuard<'_, HashMap<String, usize>> {
@@ -384,7 +433,26 @@ impl Surface {
         self.announcement_ready()?;
         let with = self.announcements.as_ref().expect("readiness checked");
         let _admission = with.admitting()?;
-        with.turns.take(client).map(AnnouncementPermit)
+        with.turns.take(client).map(|turn| AnnouncementPermit {
+            turn,
+            audience: None,
+        })
+    }
+
+    pub(super) fn reminder_audience(
+        &self,
+        rooms: &Rooms<'_>,
+        names: &[String],
+    ) -> Result<ReminderAudience, Failure> {
+        let targets = targets(rooms, names)?;
+        self.announcement_recovery_ready(
+            &targets.iter().map(|target| target.household).collect::<Vec<_>>(),
+        )?;
+        Ok(ReminderAudience(
+            targets.into_iter()
+                .map(|target| (target.household.id.clone(), target.room.clone()))
+                .collect(),
+        ))
     }
 
     /// Play the clip in the rooms `req` names (every room by default) for
@@ -455,22 +523,25 @@ impl Surface {
         let volume = req.volume()?;
         self.announcement_ready()?;
         let with = self.announcements.as_ref().expect("readiness checked");
-        let turn = match permit {
-            Some(AnnouncementPermit(turn)) => {
+        let (turn, audience) = match permit {
+            Some(AnnouncementPermit { turn, audience }) => {
                 if !Arc::ptr_eq(&turn.turns, &with.turns) || turn.client != client.key() {
                     return Err(Failure::new(
                         ErrorCode::Internal,
                         "announcement reservation belongs to another caller or surface",
                     ));
                 }
-                turn
+                (turn, audience)
             }
-            None => with.turns.take(client)?,
+            None => (with.turns.take(client)?, None),
         };
         let households = self.households()?;
         let aliases = self.aliases();
         let rooms = room_view(&households, aliases.as_ref(), client);
-        let selected = targets(&rooms, &req.rooms).map_err(|f| self.explain(f))?;
+        let selected = match audience {
+            Some(audience) => audience.current(&households)?,
+            None => targets(&rooms, &req.rooms).map_err(|f| self.explain(f))?,
+        };
         self.announcement_recovery_ready(
             &selected
                 .iter()
@@ -989,7 +1060,14 @@ mod tests {
         ));
         assert_eq!(targets[0].room.name, "Kitchen");
         assert_eq!(targets[0].player.id, id);
-        assert!(admitted_targets(&houses, &[(2, other)]).is_err());
+        assert!(admitted_targets(&houses, &[(2, other.clone())]).is_err());
+        let audience = ReminderAudience(vec![(None, houses[1].rooms[0].clone())]);
+        assert!(audience.current(&houses).is_err(), "ambiguous room identity");
+        let mut house = houses[1].clone();
+        house.rooms[0].name = "Renamed room".into();
+        assert_eq!(audience.current(std::slice::from_ref(&house)).unwrap()[0].player.id, id);
+        house.rooms[0].players.push(other);
+        assert!(audience.current(&[house]).is_err(), "changed bonded room");
     }
 
     fn req(text: Option<&str>, chime: Option<&str>) -> AnnounceRequest {

@@ -39,7 +39,7 @@ use std::sync::{Arc, Mutex, PoisonError};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
-use super::announce::{AnnounceRequest, AnnouncementPermit};
+use super::announce::{AnnounceRequest, AnnouncementPermit, ReminderAudience};
 use super::dj_targets::PreparedDj;
 use super::{Surface, room_view};
 use crate::dj::DjDirectionDto;
@@ -2021,6 +2021,7 @@ enum PreparedRun {
     Dj(PreparedDj),
     Fade(bedtime::PreparedBedtime),
     Scene(fsonos_core::store::StoredScene),
+    Announcement(ReminderAudience),
 }
 
 /// Carry `schedule` out as its creator through the surface's one control path.
@@ -2091,13 +2092,25 @@ fn fire(
             source,
             rooms,
             volume,
-        } => surface
-            .announce_admitted(
+        } => {
+            let (Some(permit), Some(PreparedRun::Announcement(audience))) = (announcement, prepared) else {
+                return Err(Failure::new(
+                    ErrorCode::Internal,
+                    "scheduled announcement dispatch has no admitted audience or reservation",
+                ));
+            };
+            let result = surface.announce_admitted(
                 &client,
                 &announcements::request(source, rooms, *volume),
-                announcement,
-            )
-            .map(|announced| announced.done),
+                Some(permit.for_audience(audience)),
+            )?;
+            if result.clean {
+                Ok(result.done)
+            } else {
+                Err(Failure::new(ErrorCode::OutcomeUncertain, result.done)
+                    .with_hint("Inspect the affected rooms. This occurrence will not be retried."))
+            }
+        }
         ScheduleAction::ApplyScene { .. } => {
             let Some(PreparedRun::Scene(row)) = prepared else {
                 return Err(Failure::new(

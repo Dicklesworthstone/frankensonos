@@ -76,6 +76,12 @@ after saving are applied when the reminder runs.
 
 Before consuming an occurrence, the scheduler waits for its media listener,
 target rooms, every named alias member, and an available announcement slot.
+A reminder also waits for interrupted announcement recovery in its target households.
+It retains each selected physical room through the claim. Later edits to aliases,
+caller defaults, or the rooms covered by `all` apply to future runs. Delivery
+checks those same rooms against the current inventory before making the clip.
+A missing room or changed stereo pairing stops delivery.
+
 A busy announcement queue leaves the occurrence due while it remains inside
 the scheduler's ten-minute grace period. Paused schedules stay quiet; an
 occurrence missed beyond that grace period is recorded as skipped.

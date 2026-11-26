@@ -200,6 +200,14 @@ impl House {
     }
 
     fn surface(&self, store: Box<dyn Store + Send>) -> Arc<Surface> {
+        self.with_listener(store, || {})
+    }
+
+    fn with_listener(
+        &self,
+        store: Box<dyn Store + Send>,
+        observe: impl Fn() + Send + Sync + 'static,
+    ) -> Arc<Surface> {
         let inventory = Arc::clone(&self.inventory);
         let survey: Survey = Box::new(move |_| Ok(inventory.lock().unwrap().clone()));
         let ready = Arc::clone(&self.ready);
@@ -218,7 +226,10 @@ impl House {
             .with_aliases_file(self.dir.path().join("aliases.toml"))
             .with_announcements(Announcements::new(
                 self.media.clone(),
-                Box::new(move || ready.load(Ordering::Acquire).then(|| base.clone())),
+                Box::new(move || {
+                    observe();
+                    ready.load(Ordering::Acquire).then(|| base.clone())
+                }),
             )),
         )
     }
@@ -460,4 +471,48 @@ fn busy_announcement_capacity_defers_claim_and_delivery_reuses_its_reservation()
             .is_empty()
     );
     drop(second);
+}
+
+#[test]
+fn editing_the_alias_after_the_claim_cannot_redirect_a_spoken_reminder_or_chime() {
+    let house = House::new(true);
+    let path = house.dir.path().join("schedules.db");
+    let writer = SqliteStore::open(&path).unwrap();
+    let observer = Mutex::new(SqliteStore::open(&path).unwrap());
+    let alias = house.dir.path().join("aliases.toml");
+    std::fs::write(&alias, "[aliases]\nreminder = ['Room0']\n").unwrap();
+    let edited = Arc::new(AtomicBool::new(false));
+    let did_edit = Arc::clone(&edited);
+    // The media listener is checked on both sides of the durable claim.
+    // An independent reader changes the alias only after it sees the receipt.
+    let surface = house.with_listener(Box::new(writer), move || {
+        if !did_edit.load(Ordering::Acquire)
+            && observer
+                .lock()
+                .unwrap()
+                .schedules()
+                .unwrap()
+                .iter()
+                .any(|schedule| schedule.last_fired.is_some())
+        {
+            std::fs::write(&alias, "[aliases]\nreminder = ['Room1']\n").unwrap();
+            did_edit.store(true, Ordering::Release);
+        }
+    });
+    surface
+        .add_schedule(&creator(), &chime(&["reminder"]))
+        .unwrap();
+    let scheduler = Scheduler::new(&surface);
+    let at = house.clock.now().to_utc() + TimeDelta::minutes(1);
+    house.run(&scheduler, at);
+    assert!(edited.load(Ordering::Acquire));
+    let fetches = house.sim.fetch_log();
+    assert_eq!(fetches.len(), 1);
+    assert_eq!(fetches[0].room, "Room0");
+    assert_eq!(fetches[0].result, Ok(200));
+    house.run(&scheduler, at + TimeDelta::days(1));
+    let fetches = house.sim.fetch_log();
+    assert_eq!(fetches.len(), 2);
+    assert_eq!(fetches[1].room, "Room1");
+    assert_eq!(fetches[1].result, Ok(200));
 }
