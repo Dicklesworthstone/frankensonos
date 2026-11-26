@@ -2,7 +2,10 @@
 //! and destination is prepared before any mutation, and the shared executor
 //! preserves per-group results, caps, native queues and one undo boundary.
 
-use fsonos_api::{ControlResultDto, PlayLineInRequest, Surface};
+use fsonos_api::surface::source_control::{
+    ReviewedSource, ReviewedSourceMode, ReviewedSourceOutcome, ReviewedSourceRequest,
+};
+use fsonos_api::{ControlResultDto, ErrorCode, PlayLineInRequest, Surface};
 use fsonos_core::actions::BeforeState;
 use fsonos_core::clock::SystemClock;
 use fsonos_core::policy::{Client, Policy};
@@ -435,4 +438,277 @@ fn a_refused_group_retains_the_successful_groups_receipt_and_one_action() {
             .len(),
         1
     );
+}
+
+fn reviewed(surface: &Surface, zone: &str, source: &str) -> ReviewedSourceRequest {
+    ReviewedSourceRequest {
+        zone: zone.into(),
+        expected_revision: surface
+            .resolve_rooms(&Client::McpStdio, zone)
+            .unwrap()
+            .revision,
+        mode: ReviewedSourceMode::Play,
+        source: ReviewedSource::LineIn {
+            source: source.into(),
+        },
+    }
+}
+
+#[test]
+fn reviewed_line_in_preserves_bonded_identity_queues_caps_and_shared_undo() {
+    for generation in [1, 2] {
+        let house = House::new();
+        house.aliases(generation);
+        let surface = house.surface();
+        let input = house.target("Turntable", generation);
+        let secondary = input
+            .room
+            .players
+            .iter()
+            .find(|id| **id != input.player.id)
+            .unwrap()
+            .clone();
+        let request = reviewed(&surface, "selected", &secondary.0.to_ascii_lowercase());
+        let start = house.sim.soap_log().len();
+        let ReviewedSourceOutcome::Play(outcome) = surface
+            .control_reviewed_source(&Client::McpStdio, &request)
+            .unwrap()
+        else {
+            panic!("line-in playback returned a queue-insertion receipt");
+        };
+        assert!(outcome.changed && outcome.complete());
+        let batch = outcome.batch.unwrap();
+        assert_eq!(batch.results.len(), 2);
+        for room in ["Lead", "Guest"] {
+            let target = house.target(room, generation);
+            assert!(batch.results.iter().any(|result| {
+                result.target == target.coordinator.id.0 && result.result.complete()
+            }));
+            house.playing(room, generation, &secondary);
+        }
+        for room in ["Lead", "Member", "Guest"] {
+            assert_eq!(
+                soap::get_volume(&house.sim.lan(), house.target(room, generation).player.ip)
+                    .unwrap(),
+                CAP
+            );
+        }
+        house.original("Turntable", generation);
+        for room in ["Lead", "Guest", "Turntable"] {
+            house.original(room, 3 - generation);
+        }
+        let writes = house.writes_since(start);
+        for verb in ["SetAVTransportURI", "Play"] {
+            assert_eq!(writes.iter().filter(|call| call.action == verb).count(), 2);
+        }
+        assert!(!writes.iter().any(|call| call.action.contains("Queue")));
+        let actions = surface
+            .recent_actions(&Client::McpStdio, &ActionFilter::default())
+            .unwrap();
+        assert_eq!(actions.len(), 1);
+        let before =
+            BeforeState::parse(actions[0].action.before_state.as_deref().unwrap()).unwrap();
+        assert!(before.not_undoable.is_none());
+        let restored = surface.undo(&Client::McpStdio, true).unwrap().unwrap();
+        assert!(restored.failures.is_empty(), "{restored:?}");
+        for room in ["Lead", "Guest"] {
+            house.original(room, generation);
+        }
+    }
+}
+
+#[test]
+fn reviewed_line_in_refuses_expanded_aliases_and_foreign_households_before_writes() {
+    let house = House::new();
+    house.aliases(1);
+    let surface = house.surface();
+    let source = &house.target("Turntable", 1).player.id;
+    let request = reviewed(&surface, "selected", &source.0);
+    std::fs::write(
+        house.directory.path().join("aliases.toml"),
+        "[aliases]\nselected = ['Lead@S1', 'Guest@S1', 'Turntable@S1']\n",
+    )
+    .unwrap();
+    let start = house.sim.soap_log().len();
+    assert_eq!(
+        surface
+            .control_reviewed_source(&Client::McpStdio, &request)
+            .unwrap_err()
+            .code,
+        ErrorCode::NotCoordinator
+    );
+    assert_eq!(house.sim.soap_log().len(), start);
+    let cross_household = reviewed(&surface, "all", &source.0);
+    assert!(
+        surface
+            .control_reviewed_source(&Client::McpStdio, &cross_household)
+            .is_err()
+    );
+    assert!(house.writes_since(start).is_empty());
+    for generation in [1, 2] {
+        for room in ["Lead", "Guest", "Turntable"] {
+            house.original(room, generation);
+        }
+        for room in ["Lead", "Member", "Guest", "Turntable"] {
+            assert_eq!(
+                soap::get_volume(&house.sim.lan(), house.target(room, generation).player.ip)
+                    .unwrap(),
+                80
+            );
+        }
+    }
+}
+
+#[test]
+fn reviewed_input_preparation_rechecks_all_destinations_before_caps() {
+    let house = House::new();
+    house.aliases(1);
+    let lead = house.target("Lead", 1).coordinator.ip;
+    let changed = Arc::new(AtomicBool::new(false));
+    let surface = house.surface_over(Box::new(DuringPreparation {
+        lan: house.sim.lan(),
+        trigger: house.target("Guest", 1).coordinator.ip,
+        changed_player: lead,
+        changed: Arc::clone(&changed),
+    }));
+    let source = &house.target("Turntable", 1).player.id;
+    let request = reviewed(&surface, "selected", &source.0);
+    let start = house.sim.soap_log().len();
+    assert!(
+        surface
+            .control_reviewed_source(&Client::McpStdio, &request)
+            .is_err()
+    );
+    assert!(changed.load(Ordering::SeqCst));
+    let writes = house.writes_since(start);
+    assert_eq!(writes.len(), 1, "only the other owner's change may write");
+    assert_eq!(writes[0].action, "SetAVTransportURI");
+    assert_eq!(
+        soap::get_media_info(&house.sim.lan(), lead).unwrap().uri,
+        EXTERNAL
+    );
+    house.original("Guest", 1);
+    for room in ["Lead", "Member", "Guest", "Turntable"] {
+        assert_eq!(
+            soap::get_volume(&house.sim.lan(), house.target(room, 1).player.ip).unwrap(),
+            80
+        );
+    }
+}
+
+struct LostLineInReply {
+    lan: SimLan,
+    target: IpAddr,
+    lost: Arc<AtomicBool>,
+}
+
+impl Transport for LostLineInReply {
+    fn soap_post(
+        &self,
+        host: IpAddr,
+        path: &str,
+        action: &str,
+        body: &str,
+    ) -> Result<String, ProtoError> {
+        let verb = action.trim_matches('"').rsplit('#').next().unwrap_or("");
+        let missing = || ProtoError::Network {
+            target: host.to_string(),
+            detail: "accepted input source but lost its reply and confirmation".into(),
+        };
+        if host == self.target
+            && self.lost.load(Ordering::SeqCst)
+            && matches!(verb, "GetMediaInfo" | "GetTransportInfo")
+        {
+            return Err(missing());
+        }
+        let reply = self.lan.soap_post(host, path, action, body)?;
+        if host == self.target && verb == "SetAVTransportURI" {
+            self.lost.store(true, Ordering::SeqCst);
+            return Err(missing());
+        }
+        Ok(reply)
+    }
+
+    fn http_get(&self, url: &str) -> Result<String, ProtoError> {
+        self.lan.http_get(url)
+    }
+}
+
+#[test]
+fn reviewed_line_in_retains_partial_and_uncertain_receipts_without_replay() {
+    for uncertain in [false, true] {
+        let house = House::new();
+        house.aliases(1);
+        let failed = house.target("Guest", 1).coordinator;
+        let lost = Arc::new(AtomicBool::new(false));
+        let surface = if uncertain {
+            house.surface_over(Box::new(LostLineInReply {
+                lan: house.sim.lan(),
+                target: failed.ip,
+                lost: Arc::clone(&lost),
+            }))
+        } else {
+            house
+                .sim
+                .upnp_fault(&failed.id.0, "SetAVTransportURI", 701)
+                .unwrap();
+            house.surface()
+        };
+        let source = &house.target("Turntable", 1).player.id;
+        let request = reviewed(&surface, "selected", &source.0);
+        let start = house.sim.soap_log().len();
+        let ReviewedSourceOutcome::Play(outcome) = surface
+            .control_reviewed_source(&Client::McpStdio, &request)
+            .unwrap()
+        else {
+            panic!("line-in playback returned a queue-insertion receipt");
+        };
+        assert!(outcome.changed && !outcome.complete());
+        let batch = outcome.batch.unwrap();
+        assert_eq!(batch.results.len(), 2);
+        let failed_receipt = batch
+            .results
+            .iter()
+            .find(|result| result.target == failed.id.0)
+            .unwrap();
+        let ControlResultDto::Failed { error } = &failed_receipt.result else {
+            panic!("the refused or uncertain group needs its own failure");
+        };
+        assert_eq!(
+            error.code,
+            ErrorCode::OutcomeUncertain,
+            "volume caps may already have changed even when the input write is refused"
+        );
+        house.playing("Lead", 1, source);
+        assert_eq!(house.queue("Guest", 1), ORIGINAL);
+        if uncertain {
+            assert!(lost.load(Ordering::SeqCst));
+            assert_eq!(
+                soap::get_media_info(&house.sim.lan(), failed.ip).unwrap().uri,
+                format!("x-rincon-stream:{}", source.0)
+            );
+        } else {
+            house.original("Guest", 1);
+        }
+        let writes = house.writes_since(start);
+        assert_eq!(
+            writes
+                .iter()
+                .filter(|call| call.player == failed.id.0 && call.action == "SetAVTransportURI")
+                .count(),
+            1
+        );
+        assert!(
+            !writes
+                .iter()
+                .any(|call| call.player == failed.id.0 && call.action == "Play")
+        );
+        let actions = surface
+            .recent_actions(&Client::McpStdio, &ActionFilter::default())
+            .unwrap();
+        assert_eq!(actions.len(), 1);
+        let before =
+            BeforeState::parse(actions[0].action.before_state.as_deref().unwrap()).unwrap();
+        assert!(before.not_undoable.is_some());
+    }
 }

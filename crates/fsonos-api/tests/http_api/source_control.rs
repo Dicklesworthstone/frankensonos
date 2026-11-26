@@ -85,7 +85,7 @@ fn reviewed_source_http_requires_a_revision_and_a_typed_exclusive_source() {
     for source in [
         json!({"kind":"favorite","favorite":"Morning","source_uri":"untrusted"}),
         json!({"kind":"playlist","playlist":"Evening","metadata":"untrusted"}),
-        json!({"kind":"line_in","source":"unreviewed"}),
+        json!({"kind":"line_in","source":"RINCON_INPUT","source_uri":"untrusted"}),
     ] {
         let (status, failure) = api.post(
             "/sources/control",
@@ -125,10 +125,111 @@ fn reviewed_source_openapi_documents_modes_target_revision_and_both_receipts() {
                 .contains(&json!(field))
         );
     }
+    let sources = &schema["properties"]["source"];
+    let sources = sources["$ref"]
+        .as_str()
+        .and_then(|reference| reference.rsplit('/').next())
+        .map_or(sources, |name| &doc["components"]["schemas"][name]);
+    let line_in = sources["oneOf"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|variant| variant["properties"]["kind"]["enum"] == json!(["line_in"]))
+        .unwrap();
+    assert_eq!(line_in["required"], json!(["kind", "source"]));
+    assert_eq!(line_in["additionalProperties"], false);
+    assert_eq!(line_in["properties"]["source"]["type"], "string");
     let response = &op["responses"]["200"]["content"]["application/json"]["schema"];
     let response = response["$ref"]
         .as_str()
         .and_then(|reference| reference.rsplit('/').next())
         .map_or(response, |name| &doc["components"]["schemas"][name]);
     assert_eq!(response["oneOf"].as_array().unwrap().len(), 2);
+}
+
+#[test]
+fn reviewed_line_in_http_delivers_to_each_group_and_fences_stale_reviews() {
+    for s2 in [false, true] {
+        let model = if s2 {
+            SimModel::Play5Gen2
+        } else {
+            SimModel::Play5Gen1
+        };
+        let players = ["Living Room", "Kitchen"].map(|name| SimPlayerSpec::new(name, model));
+        let builder = SimHousehold::builder();
+        let sim = if s2 {
+            builder.s2(players)
+        } else {
+            builder.s1(players)
+        }
+        .spawn()
+        .unwrap();
+        let houses = fsonos_core::inventory::survey(&sim.lan(), &[], Duration::from_millis(500))
+            .unwrap()
+            .households;
+        let surface = Arc::new(Surface::new(
+            Box::new(sim.lan()),
+            Box::new(move |_| Ok(houses.clone())),
+            Policy::default(),
+            Box::new(SystemClock),
+        ));
+        let web = WebPolicy::for_listener("127.0.0.1:0".parse().unwrap(), &[]);
+        let app = fsonos_api::app(
+            &surface,
+            &fsonos_api::Identity::fixed(Client::LoopbackHttp),
+            &web,
+        );
+        let api = Api::serve(app, Arc::new(Mutex::new(Vec::new())), &web);
+        let (status, resolved) = api.get("/rooms/resolve?target=all");
+        assert_eq!(status, 200, "{resolved}");
+        let source = &sim.player("Living Room").unwrap().uuid;
+        let mut request = json!({
+            "zone": "all",
+            "expected_revision": resolved["revision"],
+            "mode": "play",
+            "source": {"kind": "line_in", "source": source}
+        });
+        for mode in ["next", "append"] {
+            request["mode"] = json!(mode);
+            let start = sim.soap_log().len();
+            let (status, failure) = api.post("/sources/control", &request);
+            assert_eq!(status, 422, "{failure}");
+            assert_eq!(failure["code"], "INVALID_ARGUMENT");
+            assert_eq!(sim.soap_log().len(), start);
+        }
+        request["mode"] = json!("play");
+        request["expected_revision"] = json!("0".repeat(64));
+        let start = sim.soap_log().len();
+        let (status, failure) = api.post("/sources/control", &request);
+        assert_eq!(status, 409, "{failure}");
+        assert_eq!(failure["code"], "NOT_COORDINATOR");
+        assert_eq!(sim.soap_log().len(), start);
+        request["expected_revision"] = resolved["revision"].clone();
+        let (status, played) = api.post("/sources/control", &request);
+        assert_eq!(status, 200, "{played}");
+        assert_eq!(played["changed"], true);
+        assert_eq!(played["batch"]["complete"], true);
+        assert_eq!(played["batch"]["results"].as_array().unwrap().len(), 2);
+        let calls = sim.soap_log();
+        for action in ["SetAVTransportURI", "Play"] {
+            assert_eq!(
+                calls[start..]
+                    .iter()
+                    .filter(|call| call.action == action)
+                    .count(),
+                2
+            );
+        }
+        for room in ["Living Room", "Kitchen"] {
+            let player = sim.player(room).unwrap();
+            assert_eq!(
+                soap::get_media_info(&sim.lan(), player.ip).unwrap().uri,
+                format!("x-rincon-stream:{source}")
+            );
+            assert_eq!(
+                soap::get_transport_info(&sim.lan(), player.ip).unwrap().state,
+                TransportState::Playing
+            );
+        }
+    }
 }

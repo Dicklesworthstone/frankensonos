@@ -1535,7 +1535,14 @@ serves each distinct existing group in its own household, preserving native
 queues and grouping. Every destination is prepared and rechecked before caps
 or playback changes. Batch receipts retain partial failures and one shared
 action/undo boundary; CLI and MCP surface incomplete delivery as an error.
-Browser and Apple input selectors retain their one-group review.
+Both browser input selectors now support those room sets through the reviewed
+`/sources/control` endpoint. Discovery resolves one household before reading
+inputs and rechecks the audience afterward; review and confirmation bind the
+exact input UUID and all destination observations to the resolver revision.
+Partial results retain each group's outcome without replay. The native Apple
+input selector retains its one-group review. The 144 Node source-control
+regressions passed; new Rust unit, HTTP and S1/S2 simulator coverage is included
+but has not been executed in this environment.
 
 ### 12.7 Scenes
 

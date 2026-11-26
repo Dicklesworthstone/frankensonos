@@ -71,30 +71,55 @@ const SourceTargetsRemote = (() => {
     if (failure) throw failure;
     return result;
   }
-  async function inspect({ call, player, target, item, mode, signal, valid = () => {} }) {
-    target = query(target);
-    if (!['play', 'next', 'end'].includes(mode) || !item || ['line_in', 'sonos_playlist_track', 'sonos_playlist'].includes(item.kind)) {
-      fail('Choose a source link or a complete household source title for this room set.');
+  async function resolveTarget(read, target) {
+    const value = await read('sourceTargetResolve', { query: { target } });
+    const view = R.resolutionOf(value, target);
+    if (typeof value.revision !== 'string' || !/^[a-f0-9]{64}$/.test(value.revision)) {
+      fail('This daemon cannot bind a source command to the reviewed room identities. Update the daemon before using source controls across rooms.');
     }
-    if (mode !== 'play' && item.kind === 'stream') fail('Live streams can play now but cannot join a queue.');
+    return Object.freeze({ ...view, revision: value.revision,
+      signature: JSON.stringify([view.signature, value.revision]) });
+  }
+  const targetGroups = resolution => Object.freeze(resolution.groups.map(g => Object.freeze({
+    target: `${g.coordinator_room}@${g.household}`, household: g.household, coordinator: g.coordinator_room,
+    coordinator_id: g.coordinator, label: `${g.members.map(r => r.room).join(' + ')} (${g.household})`,
+    signature: g.shape, shape: g.shape, members: g.members,
+  })));
+  function lineInHousehold(groups) {
+    if (!groups.length || new Set(groups.map(g => g.household)).size !== 1) {
+      fail('A physical line-in can play only within its own household. Choose a room set in one household, or all@household.');
+    }
+    return groups[0];
+  }
+  async function lineInCatalog({ call, player, target, signal, valid = () => {} }) {
+    target = query(target);
     const read = async (route, options = {}) => {
       valid(); const value = await call(route, { ...options, ...(signal ? { signal } : {}) }); valid(); return value;
     };
-    const resolve = async () => {
-      const value = await read('sourceTargetResolve', { query: { target } });
-      const view = R.resolutionOf(value, target);
-      if (typeof value.revision !== 'string' || !/^[a-f0-9]{64}$/.test(value.revision)) {
-        fail('This daemon cannot bind a source command to the reviewed room identities. Update the daemon before using source controls across rooms.');
-      }
-      return Object.freeze({ ...view, revision: value.revision,
-        signature: JSON.stringify([view.signature, value.revision]) });
+    const resolution = await resolveTarget(read, target);
+    const group = lineInHousehold(targetGroups(resolution));
+    const catalog = player.lineInSources(await read('sourceLineInSources', { query: { zone: group.target } }));
+    if ((await resolveTarget(read, target)).signature !== resolution.signature) {
+      fail('The resolved room set changed while reading inputs. Read its current line-in sources again.');
+    }
+    return catalog;
+  }
+
+  async function inspect({ call, player, target, item, mode, signal, valid = () => {} }) {
+    target = query(target);
+    if (!['play', 'next', 'end'].includes(mode) || !item || ['sonos_playlist_track', 'sonos_playlist'].includes(item.kind)) {
+      fail('Choose a source link or a complete household source title for this room set.');
+    }
+    if (mode !== 'play' && ['stream', 'line_in'].includes(item.kind)) fail('Live sources can play now but cannot join a queue.');
+    const read = async (route, options = {}) => {
+      valid(); const value = await call(route, { ...options, ...(signal ? { signal } : {}) }); valid(); return value;
     };
-    const resolution = await resolve();
-    const groups = Object.freeze(resolution.groups.map(g => Object.freeze({
-      target: `${g.coordinator_room}@${g.household}`, household: g.household, coordinator: g.coordinator_room,
-      coordinator_id: g.coordinator, label: `${g.members.map(r => r.room).join(' + ')} (${g.household})`,
-      signature: g.shape, shape: g.shape, members: g.members,
-    })));
+    const resolve = () => resolveTarget(read, target);
+    const resolution = await resolve(), groups = targetGroups(resolution);
+    if (item.kind === 'line_in') {
+      const group = lineInHousehold(groups);
+      player.verifyLineIn(await read('sourceLineInSources', { query: { zone: group.target } }), item);
+    }
     const sources = new Map();
     if (native(item)) {
       const homes = [...new Map(groups.map(g => [g.household, g])).values()];
@@ -118,7 +143,8 @@ const SourceTargetsRemote = (() => {
       }
       return Object.freeze({ group, item: selected, before,
         sourceLabel: selected.kind === 'tracks' ? `${selected.tracks.length} ordered track(s)`
-          : selected.id ? `${selected.title} (${selected.id})` : selected.uri });
+          : selected.kind === 'line_in' ? player.lineInLabel(selected)
+            : selected.id ? `${selected.title} (${selected.id})` : selected.uri });
     }, valid));
     if ((await resolve()).signature !== resolution.signature) fail('The resolved room set changed during review. Review its current groups again.');
     return Object.freeze({ target, item, mode, resolution, groups, entries, signature: JSON.stringify([
@@ -134,7 +160,14 @@ const SourceTargetsRemote = (() => {
       fail('Review this source action and its exact room set again before sending it.');
     }
     let source;
-    if (choice.item.kind === 'tracks') {
+    if (choice.item.kind === 'line_in') {
+      lineInHousehold(reviewed.groups);
+      if (choice.mode !== 'play' || reviewed.item.kind !== 'line_in' || reviewed.item.player !== choice.item.player
+          || !reviewed.entries.length || reviewed.entries.some(entry => entry.item.player !== choice.item.player)) {
+        fail('Review this exact line-in source and its destination groups again.');
+      }
+      source = { kind: 'line_in', source: player.commandBody(choice, target).source };
+    } else if (choice.item.kind === 'tracks') {
       source = { kind: 'tracks', tracks: prepareTracks(choice.item.tracks, choice.mode).item.tracks };
     } else if (native(choice.item)) {
       const kind = choice.item.kind === 'favorite_query' ? 'favorite' : 'playlist';
@@ -271,6 +304,6 @@ const SourceTargetsRemote = (() => {
     return Object.freeze({ status: 'accepted', detail: details.join('\n'), partial: !value.complete, complete: value.complete,
       logged: value.logged, undoable: value.undoable });
   }
-  return { routes, query, nameKey, prepareNative, prepareTracks, reviewGroups, inspect, request, result, failure, suggestions: R.suggestionsOf };
+  return { routes, query, nameKey, prepareNative, prepareTracks, reviewGroups, lineInCatalog, inspect, request, result, failure, suggestions: R.suggestionsOf };
 })();
 if (typeof module !== 'undefined' && module.exports) module.exports = SourceTargetsRemote;

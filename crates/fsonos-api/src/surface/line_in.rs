@@ -4,11 +4,12 @@
 use fastapi::{JsonSchema, fastapi_openapi};
 use fsonos_core::audio_inputs;
 use fsonos_core::policy::Client;
+use fsonos_proto::Transport;
 use serde::{Deserialize, Serialize};
 use std::fmt::Write as _;
 
 use super::{Surface, resolve, room_view};
-use crate::plan::resolve_set;
+use crate::plan::{Rooms, resolve_set};
 use crate::request::zone_name;
 use crate::{Command, Failure, OutcomeDto};
 
@@ -159,42 +160,58 @@ impl Surface {
     ) -> Result<OutcomeDto, Failure> {
         request.validate()?;
         self.control_set_io(client, "play", |transport, rooms| {
-            let targets = resolve_set(rooms, request.zone.trim())?;
-            let selected = request.source.trim();
-            // Room resolution normally maps bonded players to their primary.
-            // A catalog UUID identifies the actual input and must retain it.
-            let mut exact = rooms
-                .households
-                .iter()
-                .flat_map(|house| &house.players)
-                .filter(|player| player.id.0.eq_ignore_ascii_case(selected));
-            let source = match (exact.next(), exact.next()) {
-                (Some(player), None) => player.id.clone(),
-                (None, None) => resolve(rooms, selected)?.player.id.clone(),
-                _ => return Err(Failure::invalid("the input player identity is ambiguous")),
-            };
-            let mut commands = Vec::new();
-            for target in targets {
-                if commands
-                    .iter()
-                    .any(|command: &Command| command.addressed() == Some(&target.coordinator.id))
-                {
-                    continue;
-                }
-                let coordinator = target.coordinator.id.clone();
-                // Prepare every destination before the set executor can apply
-                // caps or change playback. A foreign household rejects the
-                // complete request; aliases never choose a different input.
-                let prepared =
-                    audio_inputs::prepare(transport, rooms.households, &coordinator, &source)?;
-                commands.push(Command::PlayLineIn {
-                    coordinator,
-                    prepared,
-                });
-            }
-            Ok(commands)
+            plan_line_in(transport, rooms, &request.zone, &request.source, false)
         })
     }
+}
+
+/// Prepare one exact physical input for every distinct resolved group. Reviewed
+/// callers require the advertised UUID; direct callers retain room/alias lookup.
+pub(super) fn plan_line_in(
+    transport: &dyn Transport,
+    rooms: &Rooms<'_>,
+    zone: &str,
+    source: &str,
+    exact_source: bool,
+) -> Result<Vec<Command>, Failure> {
+    let targets = resolve_set(rooms, zone.trim())?;
+    let selected = source.trim();
+    // Room resolution normally maps bonded players to their primary.
+    // A catalog UUID identifies the actual input and must retain it.
+    let mut exact = rooms
+        .households
+        .iter()
+        .flat_map(|house| &house.players)
+        .filter(|player| player.id.0.eq_ignore_ascii_case(selected));
+    let source = match (exact.next(), exact.next()) {
+        (Some(player), None) => player.id.clone(),
+        (None, None) if exact_source => {
+            return Err(Failure::invalid(
+                "reviewed line-in playback needs an exact input player UUID from /line-in",
+            ));
+        }
+        (None, None) => resolve(rooms, selected)?.player.id.clone(),
+        _ => return Err(Failure::invalid("the input player identity is ambiguous")),
+    };
+    let mut commands = Vec::new();
+    for target in targets {
+        if commands
+            .iter()
+            .any(|command: &Command| command.addressed() == Some(&target.coordinator.id))
+        {
+            continue;
+        }
+        let coordinator = target.coordinator.id.clone();
+        // Prepare every destination before the set executor can apply
+        // caps or change playback. A foreign household rejects the
+        // complete request; aliases never choose a different input.
+        let prepared = audio_inputs::prepare(transport, rooms.households, &coordinator, &source)?;
+        commands.push(Command::PlayLineIn {
+            coordinator,
+            prepared,
+        });
+    }
+    Ok(commands)
 }
 
 #[cfg(test)]

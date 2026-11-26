@@ -19,6 +19,7 @@ const DashboardSource = (() => {
   function effect(review) {
     if (review.targets) {
       const count = review.targets.groups.length;
+      if (review.item.kind === 'line_in') return `Play the analog input from ${review.item.room} in ${count} existing group(s) within one household. Each current source is replaced; queues and group membership remain available. Cable and signal state are not reported; start your source device yourself.`;
       if (review.mode !== 'play') return `Add this source to ${count} existing group(s) without starting or resuming playback. Each group uses its own queue and current occurrence, shown below.`;
       const native = ['playlist_query', 'favorite_query'].includes(review.item.kind);
       return `Start this source in ${count} existing group(s). ${native
@@ -68,6 +69,7 @@ const DashboardSource = (() => {
     const matching = () => state.target === target() && state.scope === scope();
     const editable = () => !!(live() && !state.writing && !manager.busy() && !controller.state.busy);
     const targetSet = () => state.destinationMode === 'set';
+    const lineInTarget = () => targetSet() ? state.destinationInput.trim() : state.target;
     const nativeQuery = () => state.sourceType === 'favorite' || targetSet() && state.sourceType === 'playlist';
     const expanded = () => targetSet() || state.sourceType === 'favorite';
     const targetCall = (name, args = {}) => {
@@ -141,14 +143,10 @@ const DashboardSource = (() => {
           || (field === 'mode' && (!Object.hasOwn(P.modes, value) || state.sourceType === 'line_in' && value !== 'play'))) return false;
       if (field === 'destinationMode' && !['selected', 'set'].includes(value)) return false;
       if (field === 'sourceType' && !['link', 'playlist', 'catalog', 'line_in', 'favorite'].includes(value)) return false;
-      if ((field === 'destinationMode' && value === 'set' && state.sourceType === 'line_in')
-          || (field === 'sourceType' && value === 'line_in' && targetSet())) {
-        state.message = 'Choose the selected listening group to play a physical line-in source.'; publish(); return false;
-      }
       if (!T && (field === 'destinationMode' && value === 'set' || field === 'sourceType' && value === 'favorite')) return false;
       if (field === 'playlist' && (state.playlistStatus !== 'ready' || state.playlistTarget !== state.target
           || !state.playlists.some(item => item.id === value))) return false;
-      if (field === 'lineIn' && (state.lineInStatus !== 'ready' || state.lineInTarget !== state.target
+      if (field === 'lineIn' && (state.lineInStatus !== 'ready' || state.lineInTarget !== lineInTarget()
           || !state.lineInSources.some(item => item.player === value))) return false;
       retire(); if (field === 'sourceType' || field === 'destinationMode' || field === 'destinationInput') { clearPlaylists(); clearLineIn(); }
       if (field === 'sourceType' && value === 'line_in') state.mode = 'play';
@@ -199,14 +197,19 @@ const DashboardSource = (() => {
     }
 
     async function loadLineInSources() {
-      if (!ready() || targetSet() || state.sourceType !== 'line_in') return false;
+      if (!ready() || !lineInTarget() || state.sourceType !== 'line_in') return false;
+      const selected = lineInTarget(), set = targetSet();
       retire(); clearLineIn();
-      const v = version, selected = state.target, abort = new AbortController();
+      const v = version, abort = new AbortController();
       reading = abort; state.loading = true; state.lineInStatus = 'loading'; state.message = 'Reading line-in sources…'; publish();
       try {
-        const value = await call('/line-in?zone=' + encodeURIComponent(selected), undefined, { signal: abort.signal });
+        const catalog = set ? await T.lineInCatalog({ call: targetCall, player: P, target: selected,
+          signal: abort.signal, valid: () => {
+            if (!live() || v !== version || abort.signal.aborted || !matching()) {
+              fail('The destination changed. Read its line-in sources again.');
+            }
+          } }) : P.lineInSources(await call('/line-in?zone=' + encodeURIComponent(selected), undefined, { signal: abort.signal }));
         if (!live() || v !== version || abort.signal.aborted || !matching()) return false;
-        const catalog = P.lineInSources(value);
         state.lineInSources = catalog.sources; state.lineInUnavailable = catalog.unavailable;
         state.lineInTarget = selected; state.lineInStatus = 'ready'; state.message = ''; return true;
       } catch (error) {
@@ -279,7 +282,7 @@ const DashboardSource = (() => {
     const canReview = () => !!(ready() && !manager.state.cached && state.sourceType !== 'catalog' && (!targetSet() || state.destinationInput.trim()) && (nativeQuery()
       ? state.nativeQuery.trim() : state.sourceType === 'playlist'
       ? state.playlist && state.playlistStatus === 'ready' && state.playlistTarget === state.target
-      : state.sourceType === 'line_in' ? state.lineIn && state.lineInStatus === 'ready' && state.lineInTarget === state.target : state.input.trim()));
+      : state.sourceType === 'line_in' ? state.lineIn && state.lineInStatus === 'ready' && state.lineInTarget === lineInTarget() : state.input.trim()));
     async function review(prepared = null) {
       if (!canReview()) return null;
       retire();
@@ -499,7 +502,7 @@ const DashboardSource = (() => {
       const set = s.destinationMode === 'set', native = s.sourceType === 'favorite' || set && saved;
       managerPanel.render(saved && !native && !!s.playlist && s.playlistStatus === 'ready');
       $('source-destination-mode').value = s.destinationMode;
-      $('source-destination-mode').disabled = !control.editable() || analog;
+      $('source-destination-mode').disabled = !control.editable();
       $('source-target-fields').hidden = !set;
       for (const [id, value] of [['source-destination-input', s.destinationInput], ['source-native-query', s.nativeQuery]]) {
         if ($(id).value !== value) $(id).value = value;
@@ -575,7 +578,7 @@ const DashboardSource = (() => {
       }
       $('source-line-in').value = s.lineIn;
       $('source-line-in').disabled = !control.editable() || s.loading || s.lineInStatus !== 'ready' || !s.lineInSources.length;
-      $('source-line-in-refresh').disabled = !control.editable() || s.loading || !s.group || !controller.canControl();
+      $('source-line-in-refresh').disabled = !control.editable() || s.loading || !s.group || !controller.canControl() || set && !s.destinationInput.trim();
       $('source-line-in-refresh').textContent = s.lineInStatus === 'ready' ? 'Refresh line-in sources' : 'Read line-in sources';
       $('source-line-in-help').textContent = P.lineInHelp(s);
       $('source-contents').hidden = !saved || native || !s.playlist || s.playlistStatus !== 'ready';

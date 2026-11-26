@@ -10,6 +10,7 @@ use serde::{Deserialize, Serialize};
 use std::sync::PoisonError;
 
 use super::audience::AudienceTransport;
+use super::line_in::{PlayLineInRequest, plan_line_in};
 use super::players::targets::resolve_view;
 use super::queue::{
     PlayTracksRequest, QueueAddOutcome, QueueRequest, QueueTrackInput, QueueTracksRequest,
@@ -65,6 +66,10 @@ pub enum ReviewedSource {
     Playlist {
         playlist: String,
     },
+    /// One exact physical input from the destination household's /line-in read.
+    LineIn {
+        source: String,
+    },
 }
 
 // The pinned derive ignores serde's enum names and discriminator. Describe
@@ -110,6 +115,11 @@ impl fastapi_openapi::JsonSchema for ReviewedSource {
                 "playlist",
                 &["kind", "playlist"],
                 vec![("playlist", String::schema())],
+            ),
+            variant(
+                "line_in",
+                &["kind", "source"],
+                vec![("source", String::schema())],
             ),
         ])
     }
@@ -186,6 +196,16 @@ impl ReviewedSourceRequest {
     pub fn validate(&self) -> Result<(), Failure> {
         zone_name("zone", &self.zone)?;
         validate_revision(&self.expected_revision)?;
+        if let ReviewedSource::LineIn { source } = &self.source {
+            if self.mode != ReviewedSourceMode::Play {
+                return Err(Failure::invalid("physical line-in inputs support play only"));
+            }
+            return PlayLineInRequest {
+                zone: self.zone.clone(),
+                source: source.clone(),
+            }
+            .validate();
+        }
         if let Some(request) = self.tracks_request() {
             return request.validate();
         }
@@ -207,7 +227,9 @@ impl ReviewedSourceRequest {
         match (&self.mode, &self.source) {
             (
                 ReviewedSourceMode::Play,
-                ReviewedSource::Uri { .. } | ReviewedSource::Tracks { .. },
+                ReviewedSource::Uri { .. }
+                | ReviewedSource::Tracks { .. }
+                | ReviewedSource::LineIn { .. },
             ) => "play",
             (ReviewedSourceMode::Play, _) => "play_favorite",
             _ => super::queue::ADD,
@@ -241,6 +263,9 @@ impl ReviewedSourceRequest {
             }
             ReviewedSource::Favorite { favorite } => request.favorite = Some(favorite.clone()),
             ReviewedSource::Playlist { playlist } => request.playlist = Some(playlist.clone()),
+            ReviewedSource::LineIn { .. } => {
+                return Err(Failure::invalid("physical line-in inputs support play only"));
+            }
             ReviewedSource::Tracks { .. } => {
                 return Err(Failure::new(
                     ErrorCode::Internal,
@@ -285,6 +310,9 @@ impl ReviewedSourceRequest {
                 target,
                 NativeSource::Playlist(playlist.trim()),
             ),
+            ReviewedSource::LineIn { source } => {
+                plan_line_in(transport, rooms, target, source, true)
+            }
         }
     }
 }

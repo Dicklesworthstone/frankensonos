@@ -50,15 +50,29 @@ Start the external source device yourself after selecting its input.
 
 ## Phone browser and dashboard
 
-The browser selector continues to choose one destination group. In the source
-selector, choose **Line-in**, choose the destination, then
-**Read line-in sources**. Select an input and review **Play now**. The review
-shows the source room and destination group. Sending it rereads the selected
-input and destination; a removed or changed selection requires a new review.
+In either source selector, choose **Line-in** and a destination group or
+**Choose rooms or a room set**. A saved alias, `all@S1` or `all@S2` can select
+several existing groups within one household. Choose **Read line-in sources**,
+select the physical input, and review **Play now**. The review names every
+affected group, its current source, and the input that will replace it. Existing
+queues and group membership remain intact.
+
+Input discovery resolves the actual room set before reading its household's
+inputs. A mixed-household selection is refused before any input or playback
+read. The room set is resolved again after discovery; an alias or physical
+identity change discards the catalog. The displayed dashboard listening card
+does not decide which household supplies the set's inputs.
+
+Review and confirmation reread the exact input and every destination. Room-set
+playback sends one `/sources/control` request bound to the reviewed audience
+revision and exact input player UUID, including a stereo secondary's jack.
+There are no browser-generated per-group playback calls. Single-group selection
+continues to use `/line-in/play`.
 
 Changing the destination retires its previous input catalog. Selecting an input
-never starts playback by itself, and an uncertain write is retained for
-inspection rather than automatically sent again.
+never starts playback by itself. Partial results identify each confirmed,
+failed or uncertain group, and a lost reply consumes the review without replay.
+Line-in offers only **Play now**; it cannot be added to a queue.
 
 ## Native Apple app
 
@@ -116,6 +130,26 @@ CLI batch prints that receipt and exits nonzero; MCP marks it as an error while
 retaining the receipt. Inspect partial or uncertain results before requesting
 another action; the controller never replays the batch automatically.
 
+For a reviewed room set, first read `GET /rooms/resolve?target=<selection>`,
+then pass its complete audience revision to `POST /sources/control`:
+
+```json
+{
+  "zone": "downstairs",
+  "expected_revision": "<64-character revision from /rooms/resolve>",
+  "mode": "play",
+  "source": {
+    "kind": "line_in",
+    "source": "RINCON_SYNTHETIC01400"
+  }
+}
+```
+
+This variant requires the exact player UUID returned by line-in discovery;
+a source room or alias is not substituted. It accepts only `play`, uses the
+same whole-set preparation and per-group receipts, and rejects an obsolete
+audience revision before speaker reads.
+
 The caller supplies no renderer URI or metadata. MCP exposes the same operations
 as `list_line_in(zone)` and `play_line_in(zone, source)`, including structured
 results and the same error contract. Reading uses the existing `list_players`
@@ -168,7 +202,8 @@ Coverage includes protocol argument/parsing tests, S1/S2 simulator discovery
 and playback, exact stereo-pair source identity, household isolation, retained
 queues, caps, undo, changed sources, interrupted replies, CLI direct/daemon
 routing, room-set deduplication, cross-household set refusal before writes,
-partial group results, HTTP validation, MCP forwarding, phone/dashboard review state, and
+partial group results, revision-bound HTTP validation, MCP forwarding,
+phone/dashboard room-set discovery and review, stale catalog retirement, and
 native Apple catalog, command and screen lifecycle contracts.
 The simulator uses real localhost sockets. Physical line-in audio still needs
 an opt-in check on the owner's speakers; simulator behavior does not establish

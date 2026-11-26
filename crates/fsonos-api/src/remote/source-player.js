@@ -324,8 +324,11 @@ const SourcePlayerRemote = (() => {
 
   const lineInLabel = item => `${item.name || 'Line-in'} · ${item.room}`;
   function lineInHelp(state) {
-    if (state.lineInStatus !== 'ready') return state.target
-      ? 'Read the line-in sources in this destination’s household.' : 'Choose a destination group first.';
+    const destination = state.targetMode === 'set' ? state.targetQuery.trim()
+      : state.destinationMode === 'set' ? state.destinationInput.trim() : state.target;
+    if (state.lineInStatus !== 'ready') return destination
+      ? 'Read the line-in sources in this destination’s household. All selected rooms must belong to that household.'
+      : 'Choose a destination group or a room set in one household first.';
     const available = state.lineInSources.length
       ? 'Choose the player supplying analog audio. Cable and signal state are not reported; start your source device yourself.'
       : state.lineInUnavailable.length ? 'No line-in source could be read. Refresh to retry unavailable players.'
@@ -1106,6 +1109,7 @@ const SourcePlayerRemote = (() => {
     state.catalog = catalog.state;
     const selected = () => state.groups.find((group) => group.target === state.target);
     const collective = () => state.targetMode === 'set' || state.sourceType === 'favorite';
+    const lineInTarget = () => state.targetMode === 'set' ? state.targetQuery.trim() : state.target;
     const manager = playlistManager({ call,
       catalog: () => state.playlists,
       selection: () => {
@@ -1156,11 +1160,11 @@ const SourcePlayerRemote = (() => {
       if (disposed || blocked() || !['target', 'targetMode', 'targetQuery', 'nativeQuery', 'sourceType', 'playlist', 'lineIn', 'input', 'title', 'mode'].includes(field) || typeof value !== 'string') return false;
       if (manager.state.cached && field !== 'playlist') return false;
       if (field === 'target' && !state.groups.some((group) => group.target === value)) return false;
-      if (field === 'targetMode' && (!['group', 'set'].includes(value) || value === 'set' && state.sourceType === 'line_in')) return false;
+      if (field === 'targetMode' && !['group', 'set'].includes(value)) return false;
       if (field === 'mode' && (!Object.hasOwn(modes, value) || state.sourceType === 'line_in' && value !== 'play')) return false;
-      if (field === 'sourceType' && (!['link', 'playlist', 'favorite', 'catalog', 'line_in'].includes(value) || value === 'line_in' && state.targetMode === 'set')) return false;
+      if (field === 'sourceType' && !['link', 'playlist', 'favorite', 'catalog', 'line_in'].includes(value)) return false;
       if (field === 'playlist' && (state.playlistTarget !== state.target || !state.playlists.some(item => item.id === value))) return false;
-      if (field === 'lineIn' && (state.lineInStatus !== 'ready' || state.lineInTarget !== state.target
+      if (field === 'lineIn' && (state.lineInStatus !== 'ready' || state.lineInTarget !== lineInTarget()
           || !state.lineInSources.some(item => item.player === value))) return false;
       invalidate();
       if (['target', 'targetMode', 'targetQuery', 'sourceType'].includes(field)) { clearPlaylists(); clearLineIn(); }
@@ -1207,19 +1211,23 @@ const SourcePlayerRemote = (() => {
     }
 
     async function loadLineInSources() {
-      const group = selected();
-      if (disposed || !state.open || blocked() || state.reading || state.sourceType !== 'line_in' || !group) return false;
-      invalidate(); clearLineIn(); const version = epoch;
+      const group = selected(), destination = lineInTarget(), set = state.targetMode === 'set';
+      if (disposed || !state.open || blocked() || state.reading || state.sourceType !== 'line_in'
+          || !destination || !set && !group) return false;
+      invalidate(); clearLineIn(); const version = epoch, abort = new AbortController(); setReader = abort;
       state.reading = true; state.lineInStatus = 'loading'; state.message = 'Reading line-in sources…'; publish();
       try {
-        const catalog = lineInSources(await call('sourceLineInSources', { query: { zone: group.target } }));
-        if (!current(version)) return false;
+        const catalog = set ? await targets().lineInCatalog({ call, player: SourcePlayerRemote,
+          target: destination, signal: abort.signal, valid: () => {
+            if (!current(version) || abort.signal.aborted) throw new Error('The destination changed. Read its line-in sources again.');
+          } }) : lineInSources(await call('sourceLineInSources', { query: { zone: group.target }, signal: abort.signal }));
+        if (!current(version) || abort.signal.aborted) return false;
         state.lineInSources = catalog.sources; state.lineInUnavailable = catalog.unavailable;
-        state.lineInTarget = group.target; state.lineInStatus = 'ready'; state.message = ''; return true;
+        state.lineInTarget = destination; state.lineInStatus = 'ready'; state.message = ''; return true;
       } catch (error) {
         if (current(version)) { state.lineInStatus = 'error'; state.message = problem(error); }
         return false;
-      } finally { if (current(version)) { state.reading = false; publish(); } }
+      } finally { if (current(version)) { setReader = null; state.reading = false; publish(); } }
     }
 
     async function loadContents(direction = 'refresh') {
@@ -1359,10 +1367,14 @@ const SourcePlayerRemote = (() => {
       const version = epoch, group = selected(), mode = choice?.mode || state.mode;
       if (collective()) {
         try {
-          if (choice || state.sourceType === 'line_in') throw new Error('Choose one displayed group for line-in or an exact saved playlist occurrence.');
+          if (choice) throw new Error('Choose one displayed group for an exact saved playlist occurrence.');
           const destination = state.targetMode === 'set' ? state.targetQuery : group?.target;
-          const prepared = ['playlist', 'favorite'].includes(state.sourceType)
-            ? targets().prepareNative(state.sourceType, state.nativeQuery, mode) : prepare(state.input, state.title, mode);
+          if (state.sourceType === 'line_in' && (state.lineInStatus !== 'ready' || state.lineInTarget !== lineInTarget())) {
+            throw new Error('Read the line-in sources for this destination before reviewing playback.');
+          }
+          const prepared = state.sourceType === 'line_in' ? prepareLineIn(state.lineIn, state.lineInSources, mode)
+            : ['playlist', 'favorite'].includes(state.sourceType)
+              ? targets().prepareNative(state.sourceType, state.nativeQuery, mode) : prepare(state.input, state.title, mode);
           const abort = new AbortController(); setReader = abort;
           state.reading = true; state.message = ''; publish();
           const reviewed = await targets().inspect({ call, player: SourcePlayerRemote, target: destination,
@@ -1518,7 +1530,7 @@ const SourcePlayerRemote = (() => {
     const targetSetFields = el('div', { class: 'source-target-set', hidden: true },
       el('label', {}, 'Rooms or room set ', targetQuery),
       el('label', {}, 'Suggestions ', targetSuggestions), refreshTargets,
-      el('p', { class: 'source-help', text: 'Review every affected group before sending. Members already grouped together count once; groups stay independent, including across households.' }));
+      el('p', { class: 'source-help', text: 'Review every affected group before sending. Members already grouped together count once; groups stay independent. Physical line-in requires every destination to be in the input’s household.' }));
     const sourceType = el('select', { 'aria-label': 'Music source' },
       el('option', { value: 'link', text: 'Link or stream' }), el('option', { value: 'playlist', text: 'Saved Sonos playlist' }),
       el('option', { value: 'favorite', text: 'Sonos favorite by title' }),
@@ -1606,14 +1618,13 @@ const SourcePlayerRemote = (() => {
       targetMode.value = state.targetMode; targetField.hidden = set; targetSetFields.hidden = !set;
       if (targetQuery.value !== state.targetQuery) targetQuery.value = state.targetQuery;
       if (nativeQuery.value !== state.nativeQuery) nativeQuery.value = state.nativeQuery;
-      targetMode.disabled = writing || analog || !!state.managing.cached; targetQuery.disabled = writing || !!state.managing.cached;
+      targetMode.disabled = writing || !!state.managing.cached; targetQuery.disabled = writing || !!state.managing.cached;
       nativeQuery.disabled = writing; refreshTargets.disabled = busy; targetSuggestions.disabled = busy;
       if (shownSuggestions !== state.targetSuggestions) {
         shownSuggestions = state.targetSuggestions;
         targetSuggestions.replaceChildren(el('option', { value: '', text: 'Choose a suggestion…' }));
         for (const option of state.targetSuggestions) targetSuggestions.append(el('option', { value: option.query, text: option.label }));
       }
-      for (const option of sourceType.children) if (option.value === 'line_in') option.disabled = set;
       inputField.hidden = saved || favorite || online || analog; titleField.hidden = saved || favorite || online || analog;
       nativeFields.hidden = !nativeTitle; playlistFields.hidden = !saved || set; catalogFields.hidden = !online; lineInFields.hidden = !analog; modeField.hidden = analog || !!state.managing.cached;
       if (catalogInput.value !== state.catalog.query) catalogInput.value = state.catalog.query;
@@ -1654,7 +1665,7 @@ const SourcePlayerRemote = (() => {
       }
       lineIn.value = state.lineIn;
       lineIn.disabled = busy || state.lineInStatus !== 'ready' || !state.lineInSources.length;
-      refreshLineIn.disabled = busy || !state.target;
+      refreshLineIn.disabled = busy || !(set ? state.targetQuery.trim() : state.target);
       refreshLineIn.textContent = state.lineInStatus === 'ready' ? 'Refresh line-in sources' : 'Read line-in sources';
       lineInDescription.textContent = lineInHelp(state);
       contentsFields.hidden = !state.playlist || state.playlistStatus !== 'ready';
@@ -1679,7 +1690,7 @@ const SourcePlayerRemote = (() => {
       if (state.managing.cached) { target.disabled = true; sourceType.disabled = true; }
       refresh.disabled = busy; review.hidden = !!state.managing.cached; review.disabled = busy || !!state.managing.cached || online || !(set ? state.targetQuery.trim() : state.target)
         || (nativeTitle ? !state.nativeQuery.trim() : saved ? !state.playlist || state.playlistStatus !== 'ready'
-        : analog ? !state.lineIn || state.lineInStatus !== 'ready' : !state.input.trim());
+        : analog ? !state.lineIn || state.lineInStatus !== 'ready' || state.lineInTarget !== (set ? state.targetQuery.trim() : state.target) : !state.input.trim());
       message.textContent = state.message || (state.reading ? 'Reading the destination…' : '');
       result.textContent = state.result?.detail || '';
       if (shownReview !== state.pending) {
@@ -1706,6 +1717,7 @@ const SourcePlayerRemote = (() => {
                 el('span', { text: 'Current: ' + entry.before.label }), el('span', { text: effect })));
             }
             consent.append(affected,
+              ...(pending.item.kind === 'line_in' ? [el('p', { class: 'source-help', text: `Analog input from ${pending.item.room}, within one household. Existing queues and group membership remain available. Cable and signal state are not reported; start your source device yourself.` })] : []),
               ...(pending.item.kind === 'artist' || pending.item.kind === 'show' ? [el('p', { class: 'source-help', text: 'Spotify sign-in is required. One selection of up to 10 tracks or episodes is shared across the groups.' })] : []),
               el('p', { class: 'source-help', text: 'The whole room set and each source or queue are checked again before one request. A partial result lists each affected group; check failures before another action.' }),
               el('div', { class: 'row' }, confirmButton, cancel));

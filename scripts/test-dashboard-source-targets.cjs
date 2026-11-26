@@ -168,9 +168,11 @@ test('a changed group, source, queue or native catalog prevents every browser mu
   }
 });
 
-test('missing household source fails review before a command; line-in remains one group', async () => {
+test('missing household sources and mixed-household line-in fail before a command', async () => {
   const f = await fixture(); f.source.open(); f.source.edit('destinationMode', 'set'); f.source.edit('destinationInput', 'downstairs');
-  assert.equal(f.source.edit('sourceType', 'line_in'), false);
+  assert.equal(f.source.edit('sourceType', 'line_in'), true);
+  assert.equal(await f.source.loadLineInSources(), false); assert.match(f.source.state.message, /own household/);
+  assert.equal(f.calls.some(c => c.url.startsWith('/line-in?')), false);
   f.source.edit('sourceType', 'playlist'); f.source.edit('nativeQuery', 'Evening'); f.catalogs.set('Den@S1', []);
   assert.equal(await f.source.review(), null); assert.equal(f.writes().length, 0);
   assert.match(f.source.state.message, /S1/);

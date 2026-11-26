@@ -396,3 +396,119 @@ fn reviewed_tracks_validate_every_occurrence_and_use_play_or_queue_permission() 
         assert!(serde_json::from_value::<ReviewedSourceRequest>(invalid).is_err());
     }
 }
+
+#[test]
+fn reviewed_line_in_is_play_only_and_keeps_play_authorization() {
+    let h = households();
+    let request = ReviewedSourceRequest {
+        source: ReviewedSource::LineIn {
+            source: "RINCON_DEN".into(),
+        },
+        ..request(&Rooms::from(&h), "Den")
+    };
+    request.validate().unwrap();
+    assert_eq!(request.tool(), "play");
+    let (surface, surveys, reads) = surface(Policy::default());
+    for mode in [ReviewedSourceMode::Next, ReviewedSourceMode::Append] {
+        assert_eq!(
+            surface
+                .control_reviewed_source(
+                    &Client::LoopbackHttp,
+                    &ReviewedSourceRequest {
+                        mode,
+                        ..request.clone()
+                    },
+                )
+                .unwrap_err()
+                .code,
+            ErrorCode::InvalidArgument
+        );
+    }
+    for source in ["", " ", "RINCON_DEN\n"] {
+        let invalid = ReviewedSourceRequest {
+            source: ReviewedSource::LineIn {
+                source: source.into(),
+            },
+            ..request.clone()
+        };
+        assert_eq!(
+            surface
+                .control_reviewed_source(&Client::LoopbackHttp, &invalid)
+                .unwrap_err()
+                .code,
+            ErrorCode::InvalidArgument
+        );
+    }
+    assert_eq!(surveys.load(Ordering::SeqCst), 0);
+    assert_eq!(reads.load(Ordering::SeqCst), 0);
+    let policy = Policy::from_toml("[clients.'loopback-http']\ndeny = ['play']").unwrap();
+    let (denied, surveys, reads) = self::surface(policy);
+    assert_eq!(
+        denied
+            .control_reviewed_source(&Client::LoopbackHttp, &request)
+            .unwrap_err()
+            .code,
+        ErrorCode::PolicyDenied
+    );
+    assert_eq!(surveys.load(Ordering::SeqCst), 0);
+    assert_eq!(reads.load(Ordering::SeqCst), 0);
+}
+
+#[test]
+fn reviewed_line_in_never_substitutes_a_source_room_or_alias_for_its_uuid() {
+    let h = households();
+    let aliases = Aliases::parse("[aliases]\ninput = ['Den']").unwrap();
+    let rooms = Rooms {
+        households: &h,
+        aliases: Some(&aliases),
+        client: None,
+    };
+    let (surface, _, reads) = surface(Policy::default());
+    for source in ["Den", "input", "RINCON_MISSING"] {
+        let request = ReviewedSourceRequest {
+            source: ReviewedSource::LineIn {
+                source: source.into(),
+            },
+            ..request(&rooms, "Den")
+        };
+        let failure = request.plan(&surface, &rooms).unwrap_err();
+        assert_eq!(failure.code, ErrorCode::InvalidArgument);
+        assert!(failure.detail.contains("exact input player UUID"));
+    }
+    let stale = ReviewedSourceRequest {
+        source: ReviewedSource::LineIn {
+            source: "RINCON_DEN".into(),
+        },
+        expected_revision: "0".repeat(64),
+        ..request(&rooms, "Den")
+    };
+    assert_eq!(
+        stale.plan(&surface, &rooms).unwrap_err().code,
+        ErrorCode::NotCoordinator
+    );
+    assert_eq!(reads.load(Ordering::SeqCst), 0);
+}
+
+#[test]
+fn reviewed_line_in_json_accepts_only_its_exact_input_field() {
+    let value = json!({
+        "zone": "Den",
+        "expected_revision": "a".repeat(64),
+        "mode": "play",
+        "source": {"kind": "line_in", "source": "RINCON_INPUT"}
+    });
+    let request: ReviewedSourceRequest = serde_json::from_value(value.clone()).unwrap();
+    request.validate().unwrap();
+    assert_eq!(serde_json::to_value(request).unwrap(), value);
+    for source in [
+        json!({"kind": "line_in"}),
+        json!({"kind": "line_in", "source": 42}),
+        json!({"kind": "line_in", "source": "RINCON_INPUT", "source_uri": "untrusted"}),
+        json!({"kind": "line_in", "source": "RINCON_INPUT", "metadata": "untrusted"}),
+        json!({"kind": "line_in", "source": "RINCON_INPUT", "title": "invented"}),
+    ] {
+        let mut invalid = value.clone();
+        invalid["source"] = source;
+        assert!(serde_json::from_value::<ReviewedSourceRequest>(invalid).is_err());
+    }
+}
