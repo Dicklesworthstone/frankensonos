@@ -285,7 +285,7 @@ async fn attempts(
                 if response.status == 401 && !refreshed && attempt + 1 < MAX_ATTEMPTS {
                     refreshed = true;
                     // At most one reactive refresh; never retry a token POST.
-                    session.refresh(cx).await?;
+                    session.refresh(cx, Some(&token)).await?;
                     continue;
                 }
                 let delay = retry_delay(

@@ -182,7 +182,7 @@ impl Session {
         if current.is_fresh(unix_now(), REFRESH_MARGIN_SECS) {
             return Ok(current.access_token.clone());
         }
-        self.refresh(cx).await?;
+        self.refresh(cx, None).await?;
         Ok(self.current_grant()?.access_token.clone())
     }
 
@@ -281,37 +281,69 @@ impl Session {
         Ok(Artist::parse(&body)?.genres)
     }
 
-    /// Confirm the same credential identity used by refresh publication. This
-    /// session's refresh updates both copies; a new sign-in belongs to a new read.
-    fn current_grant(&self) -> Result<&CachedToken, SpotifyError> {
-        let current = self.token.as_ref().ok_or_else(not_authorized)?;
-        if !self.cache.load_grant()?.is_some_and(|(token, receipt)| {
-            token == *current && Some(receipt.as_str()) == self.authorization_id.as_deref()
-        }) {
+    /// Follow token rotation by another reader of this sign-in. The stable
+    /// receipt, rather than the expiring credentials, binds an in-flight read
+    /// to its authorization. A replacement or removed sign-in still stops it.
+    fn current_grant(&mut self) -> Result<&CachedToken, SpotifyError> {
+        if self.token.is_none() {
+            return Err(not_authorized());
+        }
+        let (token, receipt) = self.cache.load_grant()?.ok_or_else(sign_in_changed)?;
+        if Some(receipt.as_str()) != self.authorization_id.as_deref() {
             return Err(sign_in_changed());
         }
-        Ok(current)
+        Ok(self.token.insert(token))
     }
 
-    async fn refresh(&mut self, cx: &Cx) -> Result<(), SpotifyError> {
-        let current = self.current_grant()?;
+    async fn refresh(&mut self, cx: &Cx, rejected: Option<&str>) -> Result<(), SpotifyError> {
+        let current = self.current_grant()?.clone();
+        // A sibling may already have repaired the expired/rejected token.
+        // Retry its fresh credentials without another token POST.
+        if current.is_fresh(unix_now(), REFRESH_MARGIN_SECS)
+            && rejected.is_none_or(|token| token != current.access_token)
+        {
+            return Ok(());
+        }
         let body = self.config.refresh_body(&current.refresh_token);
-        let response = self.post_token(cx, body).await?;
-        let next = current.refreshed(response, unix_now())?;
+        let response = self.post_token(cx, body).await;
+        // A concurrent refresh can rotate the old refresh token while this
+        // POST is away, so even invalid_grant may belong to a losing request.
+        // The accepted cache wins; never publish a stale success over it.
+        if self.adopt_refresh(&current)? {
+            return Ok(());
+        }
+        let next = current.refreshed(response?, unix_now())?;
         // A new sign-in or another refresh may have completed during HTTP.
-        // Persist first, without replacing a changed or removed grant. Never
-        // adopt a different session's account midway through a library read.
+        // The file comparison and publication remain atomic. A lost race can
+        // adopt only refreshed credentials belonging to this same receipt.
         if !self.cache.store_if_current(
-            current,
+            &current,
             self.authorization_id
                 .as_deref()
                 .ok_or_else(not_authorized)?,
             &next,
         )? {
-            return Err(sign_in_changed());
+            return if self.adopt_refresh(&current)? {
+                Ok(())
+            } else {
+                Err(sign_in_changed())
+            };
         }
         self.token = Some(next);
         Ok(())
+    }
+
+    fn adopt_refresh(&mut self, previous: &CachedToken) -> Result<bool, SpotifyError> {
+        let current = self.current_grant()?;
+        if current == previous {
+            return Ok(false);
+        }
+        if !current.is_fresh(unix_now(), REFRESH_MARGIN_SECS) {
+            return Err(SpotifyError::Auth(
+                "a concurrent Spotify refresh left no fresh token; retry with a new session".into(),
+            ));
+        }
+        Ok(true)
     }
 
     async fn post_token(&self, cx: &Cx, body: String) -> Result<TokenResponse, SpotifyError> {

@@ -830,6 +830,173 @@ fn rewriting_the_same_grant_during_http_keeps_the_response_usable() {
     std::fs::remove_dir_all(directory).unwrap();
 }
 
+fn sibling_token() -> CachedToken {
+    CachedToken {
+        access_token: "sibling-access".into(),
+        refresh_token: "sibling-refresh".into(),
+        expires_at: unix_now() + 3600,
+        scope: SCOPE.into(),
+    }
+}
+
+fn rotate_grant(cache: &TokenCache, next: &CachedToken) {
+    let (current, authorization) = cache.load_grant().unwrap().unwrap();
+    assert!(
+        cache
+            .store_if_current(&current, &authorization, next)
+            .unwrap()
+    );
+}
+
+#[test]
+fn sibling_rotation_during_http_preserves_reads_and_repairs_a_stale_401() {
+    for status in [200, 401, 503] {
+        let (send_cache, receive_cache) = mpsc::sync_channel::<TokenCache>(1);
+        let next = sibling_token();
+        let rotated = next.clone();
+        let mut reply = Reply::status(status);
+        reply.before_response = Some(Box::new(move || {
+            let cache = receive_cache.recv_timeout(Duration::from_secs(2)).unwrap();
+            rotate_grant(&cache, &rotated);
+        }));
+        let server = Server::start(vec![reply, Reply::status(200), Reply::status(200)]);
+        let (mut session, directory) = server.session();
+        let cache = session.cache.clone();
+        let authorization = session.authorization_id().unwrap().to_owned();
+        send_cache.send(cache.clone()).unwrap();
+        runtime().block_on(async move {
+            let cx = Cx::current().unwrap();
+            for path in ["me/tracks", "me/albums"] {
+                let url = format!("{}/{path}", session.endpoints.api);
+                assert_eq!(
+                    session.get_brief(&cx, &url).await.unwrap(),
+                    b"{\"ok\":true}"
+                );
+            }
+            assert_eq!(session.authorization_id(), Some(authorization.as_str()));
+            assert_eq!(session.token.as_ref(), Some(&next));
+            assert_eq!(cache.load().unwrap(), Some(next));
+        });
+        let seen = server.seen.lock().unwrap();
+        assert_eq!(seen.len(), if status == 200 { 2 } else { 3 });
+        assert!(seen.iter().all(|request| request.method == "GET"));
+        assert_eq!(seen[0].authorization.as_deref(), Some("Bearer test-access"));
+        assert!(
+            seen[1..].iter().all(|request| {
+                request.authorization.as_deref() == Some("Bearer sibling-access")
+            })
+        );
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+}
+
+#[test]
+fn a_competing_refresh_adopts_the_same_grants_winner_without_replaying_the_post() {
+    for status in [200, 400, 503] {
+        let (send_cache, receive_cache) = mpsc::sync_channel::<TokenCache>(1);
+        let next = sibling_token();
+        let rotated = next.clone();
+        let mut reply = if status == 200 {
+            Reply::token()
+        } else {
+            Reply {
+                body: r#"{"error":"invalid_grant"}"#.into(),
+                ..Reply::status(status)
+            }
+        };
+        reply.before_response = Some(Box::new(move || {
+            let cache = receive_cache.recv_timeout(Duration::from_secs(2)).unwrap();
+            rotate_grant(&cache, &rotated);
+        }));
+        let server = Server::start(vec![
+            Reply::status(401),
+            reply,
+            Reply::status(200),
+            Reply::status(200),
+        ]);
+        let (mut session, directory) = server.session();
+        let cache = session.cache.clone();
+        let authorization = session.authorization_id().unwrap().to_owned();
+        send_cache.send(cache.clone()).unwrap();
+        runtime().block_on(async move {
+            let cx = Cx::current().unwrap();
+            for path in ["me/tracks", "me/albums"] {
+                let url = format!("{}/{path}", session.endpoints.api);
+                assert_eq!(
+                    session.get_brief(&cx, &url).await.unwrap(),
+                    b"{\"ok\":true}"
+                );
+            }
+            assert_eq!(session.authorization_id(), Some(authorization.as_str()));
+            assert_eq!(session.token.as_ref(), Some(&next));
+            assert_eq!(cache.load().unwrap(), Some(next));
+        });
+        let seen = server.seen.lock().unwrap();
+        assert_eq!(seen.len(), 4);
+        assert_eq!(seen[1].method, "POST");
+        assert_eq!(seen[1].target, "/api/token");
+        assert!(seen[2..].iter().all(|request| {
+            request.method == "GET"
+                && request.authorization.as_deref() == Some("Bearer sibling-access")
+        }));
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+}
+
+#[test]
+fn a_failed_refresh_without_a_sibling_still_returns_its_error() {
+    let server = Server::start(vec![
+        Reply::status(401),
+        Reply {
+            body: r#"{"error":"invalid_grant"}"#.into(),
+            ..Reply::status(400)
+        },
+        Reply::status(200),
+    ]);
+    let (mut session, directory) = server.session();
+    let cache = session.cache.clone();
+    let original = cache.load().unwrap();
+    runtime().block_on(async move {
+        let cx = Cx::current().unwrap();
+        let url = format!("{}/me/tracks", session.endpoints.api);
+        let error = session.get_brief(&cx, &url).await.unwrap_err();
+        assert!(matches!(error, SpotifyError::Auth(_)), "{error}");
+        assert!(error.to_string().contains("invalid_grant"), "{error}");
+    });
+    assert_eq!(cache.load().unwrap(), original);
+    assert_eq!(server.count(), 2, "the failed token POST is not replayed");
+    std::fs::remove_dir_all(directory).unwrap();
+}
+
+#[test]
+fn a_competing_refresh_cannot_accept_an_expired_winner() {
+    let (send_cache, receive_cache) = mpsc::sync_channel::<TokenCache>(1);
+    let next = CachedToken {
+        expires_at: 0,
+        ..sibling_token()
+    };
+    let expired = next.clone();
+    let mut reply = Reply::token();
+    reply.before_response = Some(Box::new(move || {
+        let cache = receive_cache.recv_timeout(Duration::from_secs(2)).unwrap();
+        rotate_grant(&cache, &expired);
+    }));
+    let server = Server::start(vec![Reply::status(401), reply, Reply::status(200)]);
+    let (mut session, directory) = server.session();
+    let cache = session.cache.clone();
+    send_cache.send(cache.clone()).unwrap();
+    runtime().block_on(async move {
+        let cx = Cx::current().unwrap();
+        let url = format!("{}/me/tracks", session.endpoints.api);
+        let error = session.get_brief(&cx, &url).await.unwrap_err();
+        assert!(matches!(error, SpotifyError::Auth(_)), "{error}");
+        assert!(error.to_string().contains("no fresh token"), "{error}");
+    });
+    assert_eq!(cache.load().unwrap(), Some(next));
+    assert_eq!(server.count(), 2, "no GET is sent with the expired winner");
+    std::fs::remove_dir_all(directory).unwrap();
+}
+
 #[test]
 fn own_proactive_and_reactive_refreshes_allow_subsequent_reads() {
     for proactive in [false, true] {

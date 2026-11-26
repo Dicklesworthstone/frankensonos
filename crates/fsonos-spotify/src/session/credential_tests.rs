@@ -120,6 +120,47 @@ fn a_rotating_http_refresh_preserves_the_library_authorization_receipt() {
 }
 
 #[test]
+fn sibling_sessions_share_a_rotating_grant_without_reauthorizing() {
+    let spotify = FakeSpotify::start();
+    let data_dir = scratch_dir("receipt-sibling-refresh");
+    let cache = TokenCache::in_data_dir(&data_dir);
+    cache
+        .store(&CachedToken {
+            access_token: "expired-access".into(),
+            refresh_token: "refresh-1".into(),
+            expires_at: unix_now() - 3600,
+            scope: SCOPE.into(),
+        })
+        .unwrap();
+    let authorization = cache.authorization_id().unwrap();
+    "refresh-1".clone_into(&mut spotify.state.lock().unwrap().refresh);
+    let endpoints = spotify.endpoints();
+    runtime().block_on(async move {
+        let cx = Cx::current().expect("ambient Cx");
+        let open = || {
+            Session::open(config(), cache.clone(), Client::default_for_runtime(&cx))
+                .unwrap()
+                .with_endpoints(endpoints.clone())
+        };
+        let mut reader = open();
+        let mut sibling = open();
+        sibling.check_grant(&cx).await.unwrap();
+        let rotated = cache.load().unwrap().unwrap();
+        assert_eq!(rotated.refresh_token, "refresh-r1");
+
+        reader.check_grant(&cx).await.unwrap();
+        assert_eq!(reader.token.as_ref(), Some(&rotated));
+        assert_eq!(reader.authorization_id(), authorization.as_deref());
+        assert_eq!(cache.authorization_id().unwrap(), authorization);
+        assert_eq!(cache.load().unwrap(), Some(rotated));
+    });
+    let fake = spotify.stop();
+    assert_eq!(fake.refreshes, 1, "the second reader reuses the rotation");
+    assert_eq!(fake.log.len(), 3, "one token POST and two library checks");
+    std::fs::remove_dir_all(data_dir).unwrap();
+}
+
+#[test]
 fn identical_tokens_from_new_authorization_still_retire_an_existing_session() {
     let spotify = FakeSpotify::start();
     let data_dir = scratch_dir("receipt-identical-reauthorization");

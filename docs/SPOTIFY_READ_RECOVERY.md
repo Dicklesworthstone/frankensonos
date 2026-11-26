@@ -41,11 +41,17 @@ an authentication error before it can become a search result or playback
 selection. Retry the catalog request with the current sign-in; each catalog
 request opens a new session.
 
-Automatic token refresh still works: a session can continue reading with the
-credentials it refreshed itself. The private token cache now keeps an opaque
-sign-in receipt beside the credentials. Refreshing or rotating a token preserves
-that receipt; completing a new authorization changes it, even if Spotify
-returns the same token strings. Existing token files remain readable, and their
+Automatic token refresh also works across sessions: a library reader adopts
+fresh credentials published by another reader of the same sign-in. The private
+token cache keeps an opaque sign-in receipt beside the credentials. Refreshing
+or rotating a token preserves that receipt; completing a new authorization
+changes it, even if Spotify returns the same token strings. A successful
+in-flight read survives ordinary same-sign-in rotation. An old token's 401
+reuses a sibling's fresh replacement without another refresh POST. A competing
+refresh preserves the already published winner, including when the old refresh
+token was rejected; an expired winner still returns an authentication error.
+Token publication retains its atomic comparison, so a late refresh cannot
+replace newer credentials or recreate a removed sign-in. Existing token files remain readable, and their
 receipt survives the first refresh without requiring another sign-in. An
 observed Spotify rate limit is retained even when the account changes before
 its response is accepted.
