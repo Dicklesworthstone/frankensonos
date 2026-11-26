@@ -247,30 +247,36 @@ fn room_volume_goes_to_the_room_player_and_group_volume_to_the_coordinator() {
 fn join_targets_the_member_and_names_the_coordinator() {
     let h = house();
     let t = Recorder::default();
-    control::join(&t, &h, &pid(3), &pid(2)).unwrap();
+    // The fixed topology already places this room in the destination, so
+    // the post-join confirmation observes the complete bonded room too.
+    control::join(&t, &h, &pid(5), &pid(2)).unwrap();
     let sent = t.sent.borrow();
-    assert_eq!(sent.len(), 3);
+    assert_eq!(sent.len(), 4);
     assert_eq!(
         (&sent[0].0, sent[0].1.as_str()),
         (&ip("192.0.2.13"), "GetZoneGroupState")
     );
     assert_eq!(
         (&sent[1].0, sent[1].1.as_str()),
-        (&ip("192.0.2.15"), "GetZoneGroupState")
+        (&ip("192.0.2.12"), "GetZoneGroupState")
     );
     assert_eq!(
         (&sent[2].0, sent[2].1.as_str()),
-        (&ip("192.0.2.15"), "SetAVTransportURI")
+        (&ip("192.0.2.12"), "SetAVTransportURI")
     );
     assert!(sent[2].2.contains("x-rincon:RINCON_000E58A0000201400"));
+    assert_eq!(
+        (&sent[3].0, sent[3].1.as_str()),
+        (&ip("192.0.2.13"), "GetZoneGroupState")
+    );
     drop(sent);
     // Leave uses a self-join (docs/PROTOCOL.md §6). This fixed fixture already
     // shows the S2 room alone, so its complete departure is observable too.
     control::leave(&t, &h, &pid(0x0A)).unwrap();
     let sent = t.sent.borrow();
-    assert_eq!(sent[3].1, "GetZoneGroupState");
-    assert_eq!(sent[4].1, "SetAVTransportURI");
-    assert!(sent[4].2.contains(&format!("x-rincon:{}", pid(0x0A).0)));
+    assert_eq!(sent[4].1, "GetZoneGroupState");
+    assert_eq!(sent[5].1, "SetAVTransportURI");
+    assert!(sent[5].2.contains(&format!("x-rincon:{}", pid(0x0A).0)));
 }
 
 #[test]

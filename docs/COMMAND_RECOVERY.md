@@ -193,11 +193,22 @@ known household cannot authorize a grouping write. Leaving likewise chooses
 its handoff from validated current topology without adopting a replacement
 player from the old address's reply.
 
-An uncertain join or leave is observed through the existing bounded household
-witness path, without repeating its write. Each witness must identify itself
-at the address contacted. Stereo-room cleanup retains the original bonded
-players, and checks their endpoints before reuniting them. S1's stale self-view
-can still be confirmed by another player in the household.
+Every join now requires fresh topology to confirm the complete original bonded
+room in the requested destination, with every original destination member still
+present. This applies to successful acknowledgements and lost or malformed
+replies. The shared household witness path repeats only reads, never the join.
+An unconfirmed dispatched join reports `OUTCOME_UNCERTAIN`, retaining a lost
+reply's cause, and does not suggest an automatically retryable network failure.
+Inspect the groups before requesting another change.
+
+Ordinary joins use a three-second observation budget. A move uses its supplied
+join budget (five seconds by default) in that same proof, rather than performing
+a second, weaker membership wait. An in-flight network request remains bounded
+by the transport's own timeout. Each witness must identify itself at the address
+contacted; S1's stale self-view can still be confirmed by another player in the
+household. Uncertain leaves use the same bounded witness path. Stereo-room
+cleanup retains the original bonded players and checks their endpoints before
+reuniting them.
 
 Acknowledged leaves now require the complete original room to be observed
 alone too. A coordinator handoff first proves that the remaining rooms moved
@@ -211,10 +222,13 @@ cannot turn that partial operation into a fresh, automatically repeated handoff.
 Pre-write identity failures retain the existing bounded address recovery.
 Regressions in `grouping_endpoint_sim` cover both S1 and S2, real address reuse
 followed by successful recovery, malformed and foreign topology, lost replies,
-and successful stereo joins and handoffs preserving queue position. Run
+and successful stereo joins and handoffs preserving queue position. Acknowledged
+join regressions also cover delayed visibility, ignored writes, incomplete bonded
+rooms or destinations, unavailable confirmation, and a move's shorter observation
+budget. Run
 `cargo test --locked -p fsonos-core --test grouping_endpoint_sim
 --test grouping_sim --test grouping_recovery_sim --test grouping_handoff_sim
---test sleep_leave_cleanup_sim`. The handoff cases use real simulator SOAP with
+--test moving_sim --test control --test sleep_leave_cleanup_sim`. The handoff cases use real simulator SOAP with
 a synthetic split-pair topology overlay and cover confirmed, lost, refused,
 ignored and unavailable follow-up replies. These additional regressions were
 authored but could not be executed in the session because the build runtime

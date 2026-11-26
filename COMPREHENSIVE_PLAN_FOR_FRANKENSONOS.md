@@ -1846,6 +1846,16 @@ behavior. An error on the old destination source does not block replacing it,
 and paused transfers remain silent. Commands are never repeated to clear a
 renderer error; inspect the destination before requesting another move.
 
+An acknowledged join now requires the same complete-room topology proof as a
+lost acknowledgement: the original bonded room and every retained destination
+member must appear under the intended coordinator. The controller observes
+coherent household witnesses without replaying the join. Unconfirmed dispatched
+joins report an uncertain outcome, including network or malformed-response
+failures whose effects cannot be established. Ordinary joins use a three-second
+observation budget; moves supply their existing five-second budget to the same
+proof, replacing their separate weaker membership wait. Network request timeouts
+still bound in-flight reads.
+
 A group departure now confirms the complete original bonded room before
 reporting success. Acknowledged and lost coordinator-handoff replies share the
 same bounded topology proof, retaining the remaining rooms on the chosen heir.

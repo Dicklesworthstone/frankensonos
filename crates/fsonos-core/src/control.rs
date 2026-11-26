@@ -893,28 +893,58 @@ fn confirm_tone_change(
     }
 }
 
-/// Move `member` into the group `coordinator` leads. A lost or malformed
-/// acknowledgement is confirmed by fresh topology for the whole bonded room;
-/// the join is never repeated to recover its reply. Both endpoints and the
-/// destination's coordination are checked before the moving room is changed.
+/// Move `member` into the group `coordinator` leads. Both acknowledged and
+/// uncertain replies need fresh topology confirming the whole bonded room and
+/// the destination's retained members. Only those reads repeat; an unconfirmed
+/// acknowledgement is an uncertain result, never a reason to send the join
+/// again. Both endpoints and the destination's coordination are checked before
+/// the moving room is changed.
 pub fn join<T: Transport + ?Sized>(
     t: &T,
     households: &[HouseholdState],
     member: &PlayerId,
     coordinator: &PlayerId,
 ) -> Result<(), CoreError> {
+    join_within(t, households, member, coordinator, LEAVE_WAIT)
+}
+
+/// A move supplies its own observation budget instead of waiting once here
+/// and a second time in the move orchestration.
+pub(crate) fn join_within<T: Transport + ?Sized>(
+    t: &T,
+    households: &[HouseholdState],
+    member: &PlayerId,
+    coordinator: &PlayerId,
+    wait: Duration,
+) -> Result<(), CoreError> {
     let current = grouping_state::prepare_join(t, households, member, coordinator)?;
     let households = std::slice::from_ref(&current);
     let result = soap::join_group(t, addr(households, member)?, coordinator);
     match result {
-        Err(cause)
-            if grouping_state::uncertain(&cause)
-                && grouping_state::joined(t, households, member, coordinator) =>
-        {
-            tracing::warn!(cause = %cause, "group join confirmed by topology; not repeated");
-            Ok(())
+        Ok(()) => {
+            if grouping_state::joined(t, households, member, coordinator, wait) {
+                Ok(())
+            } else {
+                Err(CoreError::Uncertain(
+                    "group join was acknowledged, but the complete room and destination \
+                     group could not be confirmed; inspect the groups before trying again"
+                        .into(),
+                ))
+            }
         }
-        other => Ok(other?),
+        Err(cause) if grouping_state::uncertain(&cause) => {
+            if grouping_state::joined(t, households, member, coordinator, wait) {
+                tracing::warn!(cause = %cause, "group join confirmed by topology; not repeated");
+                Ok(())
+            } else {
+                Err(CoreError::Uncertain(format!(
+                    "group join may have taken effect, but the complete room and destination \
+                     group could not be confirmed after {cause}; inspect the groups before \
+                     trying again"
+                )))
+            }
+        }
+        Err(cause) => Err(cause.into()),
     }
 }
 

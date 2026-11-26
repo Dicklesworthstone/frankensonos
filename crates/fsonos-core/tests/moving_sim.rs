@@ -129,6 +129,7 @@ fn a_slow_join_is_waited_for_and_one_that_never_lands_moves_nothing() {
     // The Den's join would land long after the deadline: Office keeps the
     // music and its group.
     sim.join_lag("Den", Duration::from_secs(60)).unwrap();
+    let waiting = Instant::now();
     let err = moving::move_playback_within(
         &lan,
         &h,
@@ -138,8 +139,13 @@ fn a_slow_join_is_waited_for_and_one_that_never_lands_moves_nothing() {
     )
     .unwrap_err();
     assert!(
-        matches!(&err, MoveError::JoinTimedOut { room, .. } if room == "Den"),
+        matches!(&err, MoveError::Core(fsonos_core::CoreError::Uncertain(message))
+            if message.contains("group join")),
         "{err}"
+    );
+    assert!(
+        waiting.elapsed() < Duration::from_secs(3),
+        "the move uses its short budget, without a second default join wait"
     );
     let h = houses(&sim, &lan);
     assert_eq!(playing(&lan, &h, "Office").0, TransportState::Playing);

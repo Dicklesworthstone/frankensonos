@@ -24,11 +24,11 @@ use crate::snapshot;
 use crate::store::{Store, StoreError};
 use crate::{CoreError, HouseholdState, control, grouping, resolve_room};
 use fsonos_proto::control as soap;
-use fsonos_proto::topology::{ZoneGroupState, get_zone_group_state};
+use fsonos_proto::topology::get_zone_group_state;
 use fsonos_proto::{ProtoError, Transport};
 use fsonos_types::{PlayerId, TransportState};
 use std::net::IpAddr;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 mod delegation;
 mod replay;
@@ -162,14 +162,7 @@ pub fn move_playback_within<T: Transport + ?Sized>(
     for step in steps {
         match step {
             MoveStep::Join => {
-                control::join(t, households, &to.player.id, &coordinator)?;
-                let host = ip(households, &coordinator)?;
-                if !joined_within(t, host, &coordinator, &to.player.id, join_deadline)? {
-                    return Err(MoveError::JoinTimedOut {
-                        room: to.room.name.clone(),
-                        waited: join_deadline,
-                    });
-                }
+                control::join_within(t, households, &to.player.id, &coordinator, join_deadline)?;
                 report.method = MoveMethod::Regrouped;
             }
             MoveStep::Leave => {
@@ -205,41 +198,6 @@ pub fn move_playback_within<T: Transport + ?Sized>(
         }
     }
     Ok(report)
-}
-
-/// Whether `member` renders in `coordinator`'s group, checking the topology
-/// until it does or `deadline` has passed.
-fn joined_within<T: Transport + ?Sized>(
-    t: &T,
-    host: IpAddr,
-    coordinator: &PlayerId,
-    member: &PlayerId,
-    deadline: Duration,
-) -> Result<bool, ProtoError> {
-    topology_within(t, host, deadline, |zgs| {
-        zgs.groups
-            .iter()
-            .any(|g| g.coordinator == *coordinator && g.members.iter().any(|m| m.uuid == *member))
-    })
-}
-
-/// Whether `holds` comes true of the topology read from `host`, checking
-/// until it does or `deadline` has passed.
-fn topology_within<T: Transport + ?Sized>(
-    t: &T,
-    host: IpAddr,
-    deadline: Duration,
-    holds: impl Fn(&ZoneGroupState) -> bool,
-) -> Result<bool, ProtoError> {
-    let started = Instant::now();
-    loop {
-        let held = holds(&get_zone_group_state(t, host)?);
-        let left = deadline.saturating_sub(started.elapsed());
-        if held || left.is_zero() {
-            return Ok(held);
-        }
-        std::thread::sleep(JOIN_POLL.min(left));
-    }
 }
 
 /// The fallback for a player that lacks DelegateGroupCoordinationTo, or

@@ -366,8 +366,9 @@ fn invalid_or_reassigned_witnesses_cannot_turn_a_lost_join_reply_into_success() 
             let before = f.sim.soap_log().len();
             let error = control::join(&transport, &f.houses, &f.member, &f.leader).unwrap_err();
             assert!(
-                matches!(error, CoreError::Proto(ProtoError::Network { ref detail, .. })
-                if detail == "grouping acknowledgement was lost"),
+                matches!(error, CoreError::Uncertain(ref detail)
+                    if detail.contains("grouping acknowledgement was lost")
+                        && detail.contains("inspect")),
                 "{error}"
             );
             assert_eq!(transport.writes.get(), 1);

@@ -693,7 +693,7 @@ mod tests {
     use crate::zones::fixtures::id;
     use fsonos_proto::ProtoError;
     use std::cell::RefCell;
-    use std::collections::VecDeque;
+    use std::collections::{HashMap, VecDeque};
     use std::net::IpAddr;
 
     /// A transport that records each SOAP action and answers success with
@@ -706,8 +706,12 @@ mod tests {
         /// Responses to successive Browses of the queue (`Q:0`), in order;
         /// once they run out, the queue is browsed like anything else.
         queue: RefCell<VecDeque<String>>,
+        /// Successive topology states; retain the final state for later reads.
+        topologies: RefCell<VecDeque<String>>,
+        /// Selected source fields, retained as escaped XML for each renderer.
+        selected_media: RefCell<HashMap<IpAddr, String>>,
         fail: Option<fn() -> ProtoError>,
-        /// Answer topology and media reads as Den's group, idle: what a
+        /// Before selecting a source, answer media reads as idle: what a
         /// staged queue replacement checks its destination with.
         destination: bool,
     }
@@ -763,6 +767,8 @@ mod tests {
                 out_args,
                 browse: NO_FAVORITES,
                 queue: RefCell::new(VecDeque::new()),
+                topologies: RefCell::new(VecDeque::new()),
+                selected_media: RefCell::new(HashMap::new()),
                 fail: None,
                 destination: false,
             }
@@ -799,11 +805,44 @@ mod tests {
                 }
                 return Ok(self.browse.to_string());
             }
+            if action == "SetAVTransportURI" {
+                let selected = ["CurrentURI", "CurrentURIMetaData"]
+                    .map(|name| {
+                        let start = format!("<{name}>");
+                        let end = format!("</{name}>");
+                        let value = body
+                            .split_once(start.as_str())
+                            .and_then(|(_, rest)| rest.split_once(end.as_str()))
+                            .map(|(value, _)| value)
+                            .expect("source selection supplies URI and metadata");
+                        format!("{start}{value}{end}")
+                    })
+                    .concat();
+                self.selected_media.borrow_mut().insert(host, selected);
+            }
             let out_args = match action.as_str() {
-                "GetZoneGroupState" => crate::surface::testing::topology(host),
-                "GetMediaInfo" if self.destination => {
-                    "<CurrentURI></CurrentURI><CurrentURIMetaData></CurrentURIMetaData>".into()
+                "GetZoneGroupState" => {
+                    let mut topologies = self.topologies.borrow_mut();
+                    let current = if topologies.len() > 1 {
+                        topologies.pop_front()
+                    } else {
+                        topologies.front().cloned()
+                    };
+                    current.unwrap_or_else(|| crate::surface::testing::topology(host))
                 }
+                "GetMediaInfo" => self
+                    .selected_media
+                    .borrow()
+                    .get(&host)
+                    .cloned()
+                    .unwrap_or_else(|| {
+                        if self.destination {
+                            "<CurrentURI></CurrentURI><CurrentURIMetaData></CurrentURIMetaData>"
+                                .into()
+                        } else {
+                            self.out_args.to_string()
+                        }
+                    }),
                 _ => self.out_args.to_string(),
             };
             Ok(format!(
@@ -935,8 +974,28 @@ mod tests {
     #[test]
     fn grouping_mute_and_play_reach_the_right_players() {
         let houses = households();
+        let host = houses[0].players[0].ip;
+        let before = crate::surface::testing::topology_from(host, &houses);
+        let mut joined = houses.clone();
+        let studio = joined[0].groups.remove(1);
+        joined[0].groups[0].members.extend(studio.members);
+        let joined_topology = crate::surface::testing::topology_from(host, &joined);
+        let mut left = joined;
+        left[0].groups[0]
+            .members
+            .retain(|member| *member != id("RINCON_KIT1"));
+        left[0].groups.push(fsonos_types::ZoneGroup {
+            coordinator: id("RINCON_KIT1"),
+            members: vec![id("RINCON_KIT1")],
+        });
         let t = Canned {
-            destination: true,
+            topologies: RefCell::new(VecDeque::from([
+                before.clone(),
+                before,
+                joined_topology.clone(),
+                joined_topology,
+                crate::surface::testing::topology_from(host, &left),
+            ])),
             ..Canned::ok("")
         };
         let join = Command::Join {
@@ -973,11 +1032,16 @@ mod tests {
                 "GetZoneGroupState",
                 "SetAVTransportURI",
                 "GetZoneGroupState",
+                "GetZoneGroupState",
                 "SetAVTransportURI",
+                "GetZoneGroupState",
                 "GetZoneGroupState",
                 "SetMute",
                 "GetZoneGroupState",
                 "SetAVTransportURI",
+                "GetMediaInfo",
+                "GetZoneGroupState",
+                "GetMediaInfo",
                 "Play"
             ]
         );
@@ -1053,7 +1117,15 @@ mod tests {
         assert!(out.changed);
         assert_eq!(
             t.actions(),
-            ["Browse", "GetZoneGroupState", "SetAVTransportURI", "Play"]
+            [
+                "Browse",
+                "GetZoneGroupState",
+                "SetAVTransportURI",
+                "GetMediaInfo",
+                "GetZoneGroupState",
+                "GetMediaInfo",
+                "Play",
+            ]
         );
     }
 

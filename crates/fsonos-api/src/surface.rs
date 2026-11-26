@@ -2328,7 +2328,11 @@ pub(crate) mod testing {
 
     /// Return coherent topology for the same addressed fixture the survey uses.
     pub(crate) fn topology(host: IpAddr) -> String {
-        let houses = households();
+        topology_from(host, &households())
+    }
+
+    /// Render the supplied fixture state after a simulated grouping change.
+    pub(crate) fn topology_from(host: IpAddr, houses: &[HouseholdState]) -> String {
         let house = houses
             .iter()
             .find(|house| house.players.iter().any(|player| player.ip == host))

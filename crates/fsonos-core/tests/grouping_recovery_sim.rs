@@ -105,6 +105,7 @@ struct Lost {
     lan: SimLan,
     action: &'static str,
     malformed: bool,
+    acknowledge: bool,
     writes: Cell<usize>,
     unavailable: Option<IpAddr>,
     all_unavailable: bool,
@@ -117,6 +118,7 @@ impl Lost {
             lan: f.sim.lan(),
             action,
             malformed,
+            acknowledge: false,
             writes: Cell::new(0),
             unavailable: None,
             all_unavailable: false,
@@ -153,6 +155,9 @@ impl Transport for Lost {
         let reply = self.lan.soap_post(host, path, action, body)?;
         if name == self.action {
             self.writes.set(self.writes.get() + 1);
+            if self.acknowledge {
+                return Ok(reply);
+            }
             // A member's self-join really applies before the normal 402 reply.
             // Erasing that reply exercises the uncertain path too.
             return if self.malformed {
@@ -268,7 +273,7 @@ fn move_completes_after_its_join_reply_is_lost() {
 }
 
 #[test]
-fn unavailable_topology_keeps_the_original_uncertain_error_and_never_repeats() {
+fn unavailable_topology_preserves_uncertainty_and_never_repeats() {
     for action in ["SetAVTransportURI", "DelegateGroupCoordinationTo"] {
         let f = Fixture::new(1);
         if action == "DelegateGroupCoordinationTo" {
@@ -282,10 +287,19 @@ fn unavailable_topology_keeps_the_original_uncertain_error_and_never_repeats() {
         } else {
             control::join(&t, &f.houses(), &f.member, &f.leader)
         };
-        assert!(
-            matches!(result, Err(CoreError::Proto(ProtoError::Network { ref detail, .. }))
-            if detail == "group write acknowledgement lost")
-        );
+        if action == "SetAVTransportURI" {
+            assert!(
+                matches!(result, Err(CoreError::Uncertain(ref detail))
+                    if detail.contains("group write acknowledgement lost")
+                        && detail.contains("inspect")),
+                "{result:?}"
+            );
+        } else {
+            assert!(
+                matches!(result, Err(CoreError::Proto(ProtoError::Network { ref detail, .. }))
+                    if detail == "group write acknowledgement lost")
+            );
+        }
         assert_eq!(t.writes.get(), 1);
         assert_eq!(f.writes_since(before), [action]);
     }
@@ -305,7 +319,10 @@ fn a_missing_bonded_player_cannot_confirm_a_join() {
             .clone(),
     );
     let before = f.sim.soap_log().len();
-    assert!(control::join(&t, &f.houses(), &f.member, &f.leader).is_err());
+    assert!(matches!(
+        control::join(&t, &f.houses(), &f.member, &f.leader),
+        Err(CoreError::Uncertain(_))
+    ));
     assert_eq!(t.writes.get(), 1);
     assert_eq!(f.writes_since(before), ["SetAVTransportURI"]);
 }
@@ -318,8 +335,8 @@ fn an_unapplied_join_remains_uncertain_without_replaying_it() {
     let before = f.sim.soap_log().len();
     let result = control::join(&t, &f.houses(), &f.member, &f.leader);
     assert!(
-        matches!(result, Err(CoreError::Proto(ProtoError::Network { ref detail, .. }))
-        if detail == "group write acknowledgement lost")
+        matches!(result, Err(CoreError::Uncertain(ref detail))
+            if detail.contains("group write acknowledgement lost") && detail.contains("inspect"))
     );
     assert_eq!(t.writes.get(), 1);
     assert_eq!(f.writes_since(before), ["SetAVTransportURI"]);
@@ -346,4 +363,125 @@ fn a_definite_join_refusal_is_not_replaced_with_topology_success() {
         Err(CoreError::Proto(ProtoError::SoapFault { code: 800, .. }))
     ));
     assert_eq!(f.writes_since(before), ["SetAVTransportURI"]);
+}
+
+#[test]
+fn acknowledged_joins_wait_for_the_whole_room_using_a_household_witness() {
+    for generation in [1, 2] {
+        let f = Fixture::new(generation);
+        f.queue();
+        f.sim
+            .join_lag("Member", Duration::from_millis(120))
+            .unwrap();
+        let mut t = Lost::new(&f, "SetAVTransportURI", false);
+        t.acknowledge = true;
+        t.unavailable = Some(f.member_host);
+        let before = f.sim.soap_log().len();
+        control::join(&t, &f.houses(), &f.member, &f.leader).unwrap();
+        assert_eq!(t.writes.get(), 1);
+        assert_eq!(f.writes_since(before), ["SetAVTransportURI"]);
+        let houses = f.houses();
+        let member = resolve_room(&houses, "Member").unwrap();
+        assert_eq!(member.room.coordinator, f.leader);
+        assert_eq!(member.room.players.len(), 2);
+        let position = soap::get_position_info(&f.sim.lan(), f.leader_host).unwrap();
+        assert_eq!((position.track, position.position_secs), (2, Some(37)));
+        assert_eq!(
+            soap::get_transport_info(&f.sim.lan(), f.leader_host)
+                .unwrap()
+                .state,
+            TransportState::Playing
+        );
+    }
+}
+
+#[test]
+fn acknowledged_but_ignored_joins_are_not_reported_as_moved_or_replayed() {
+    for generation in [1, 2] {
+        let f = Fixture::new(generation);
+        f.sim.ignore_action("Member", "SetAVTransportURI").unwrap();
+        let houses = f.houses();
+        let member = resolve_room(&houses, "Member").unwrap();
+        let leader = resolve_room(&houses, "Leader").unwrap();
+        let before = f.sim.soap_log().len();
+        let result = fsonos_core::grouping::group(&f.sim.lan(), &houses, &leader, &[member]);
+        assert!(!result.is_complete());
+        assert!(result.moved.is_empty());
+        assert_eq!(result.failed.len(), 1);
+        assert!(
+            matches!(&result.failed[0].1, CoreError::Uncertain(message)
+                if message.contains("acknowledged") && message.contains("inspect")),
+            "{:?}",
+            result.failed
+        );
+        assert_eq!(f.writes_since(before), ["SetAVTransportURI"]);
+        assert_eq!(
+            resolve_room(&f.houses(), "Member")
+                .unwrap()
+                .room
+                .coordinator,
+            f.member
+        );
+    }
+}
+
+#[test]
+fn acknowledged_joins_require_the_joining_room_and_retained_destination_members() {
+    for generation in [1, 2] {
+        for missing_from in ["Member", "Leader"] {
+            let f = Fixture::new(generation);
+            let houses = f.houses();
+            let room = resolve_room(&houses, missing_from).unwrap().room;
+            let missing = room
+                .players
+                .iter()
+                .find(|player| **player != room.primary)
+                .unwrap();
+            let mut t = Lost::new(&f, "SetAVTransportURI", false);
+            t.acknowledge = true;
+            t.missing = Some(missing.0.clone());
+            let before = f.sim.soap_log().len();
+            let result = control::join(&t, &houses, &f.member, &f.leader);
+            assert!(
+                matches!(result, Err(CoreError::Uncertain(ref message))
+                    if message.contains("complete room")),
+                "S{generation}, missing from {missing_from}: {result:?}"
+            );
+            assert_eq!(t.writes.get(), 1);
+            assert_eq!(f.writes_since(before), ["SetAVTransportURI"]);
+        }
+    }
+}
+
+#[test]
+fn acknowledged_joins_with_unreadable_completion_remain_uncertain() {
+    for generation in [1, 2] {
+        let f = Fixture::new(generation);
+        let mut t = Lost::new(&f, "SetAVTransportURI", false);
+        t.acknowledge = true;
+        t.all_unavailable = true;
+        let before = f.sim.soap_log().len();
+        let result = control::join(&t, &f.houses(), &f.member, &f.leader);
+        assert!(matches!(result, Err(CoreError::Uncertain(_))), "{result:?}");
+        assert_eq!(t.writes.get(), 1);
+        assert_eq!(f.writes_since(before), ["SetAVTransportURI"]);
+    }
+}
+
+#[test]
+fn malformed_join_replies_without_completion_evidence_are_not_retryable_failures() {
+    for generation in [1, 2] {
+        let f = Fixture::new(generation);
+        let mut t = Lost::new(&f, "SetAVTransportURI", true);
+        t.all_unavailable = true;
+        let before = f.sim.soap_log().len();
+        let result = control::join(&t, &f.houses(), &f.member, &f.leader);
+        assert!(
+            matches!(result, Err(CoreError::Uncertain(ref detail))
+                if detail.contains("may have taken effect") && detail.contains("inspect")),
+            "{result:?}"
+        );
+        assert_eq!(t.writes.get(), 1);
+        assert_eq!(f.writes_since(before), ["SetAVTransportURI"]);
+    }
 }

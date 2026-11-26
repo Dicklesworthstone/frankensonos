@@ -248,6 +248,7 @@ pub(super) fn joined<T: Transport + ?Sized>(
     households: &[HouseholdState],
     member: &PlayerId,
     coordinator: &PlayerId,
+    wait: Duration,
 ) -> bool {
     let Some(household) = households
         .iter()
@@ -265,7 +266,7 @@ pub(super) fn joined<T: Transport + ?Sized>(
     else {
         return false;
     };
-    observe(t, household, &[coordinator, member], LEAVE_WAIT, |state| {
+    observe(t, household, &[coordinator, member], wait, |state| {
         group(state, coordinator).is_some_and(|members| {
             expected.is_subset(&members) && destination.members.iter().all(|p| members.contains(p))
         })
