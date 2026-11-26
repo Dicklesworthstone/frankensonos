@@ -150,14 +150,14 @@ fn removed_and_resumed_schedules_do_not_accept_an_old_claim() {
         .with_store(|store| store.mark_schedule_fired(schedule.id, at.timestamp()))
         .unwrap();
     assert_eq!(
-        claim_current(&surface, &schedule, at, || Admission::Run).unwrap(),
+        claim_current(&surface, &schedule, at, None, || Admission::Run).unwrap(),
         Admission::Hold
     );
     surface
         .with_store(|store| store.delete_schedule(schedule.id))
         .unwrap();
     assert_eq!(
-        claim_current(&surface, &schedule, at, || Admission::Run).unwrap(),
+        claim_current(&surface, &schedule, at, None, || Admission::Run).unwrap(),
         Admission::Hold
     );
 }
@@ -178,7 +178,7 @@ fn changed_definitions_and_creators_are_not_admitted_under_old_rights() {
             _ => stale.created += chrono::TimeDelta::seconds(1),
         }
         assert_eq!(
-            claim_current(&surface, &stale, at, || Admission::Run).unwrap(),
+            claim_current(&surface, &stale, at, None, || Admission::Run).unwrap(),
             Admission::Hold
         );
     }
@@ -243,7 +243,7 @@ fn concurrent_durable_claims_have_only_one_winner() {
             let surface = Arc::clone(&surface);
             let schedule = schedule.clone();
             thread::spawn(move || {
-                claim_current(&surface, &schedule, at, || Admission::Run).unwrap()
+                claim_current(&surface, &schedule, at, None, || Admission::Run).unwrap()
             })
         })
         .collect();
@@ -267,7 +267,7 @@ fn another_connection_can_retire_a_run_after_the_local_definition_check() {
             let mut other = SqliteStore::open(&path).unwrap();
             let original = other.schedules().unwrap().remove(0);
             let mut replacement = original.clone();
-            let result = claim_current(&surface, &schedule, at, || {
+            let result = claim_current(&surface, &schedule, at, None, || {
                 // Admission runs after claim_current's read, while its local
                 // mutex is still held. A different process's connection does
                 // not share that mutex and can win before the claim writes.

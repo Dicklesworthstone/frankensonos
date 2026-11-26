@@ -288,6 +288,56 @@ fn a_scheduled_scene_waits_for_all_named_rooms_before_any_write() {
 }
 
 #[test]
+fn scene_edits_before_and_after_admission_affect_only_the_intended_occurrence() {
+    let h = House::new(
+        true,
+        &ScheduleAction::ApplyScene {
+            name: "evening".into(),
+        },
+    );
+    h.scene();
+    let schedule = h.surface.load_schedules().unwrap().remove(0);
+    let prepare = || ready(&h.surface, &schedule).unwrap();
+    // Keep the timestamp identical, as two edits can land in the same second.
+    let change_volume = |volume| {
+        h.surface
+            .with_store(|store| {
+                let mut scene = scenes::load(store, "Evening").unwrap();
+                scene.volumes.insert("Room0".into(), volume);
+                Ok(scenes::save(store, &scene, h.at.timestamp()))
+            })
+            .unwrap()
+            .unwrap()
+            .unwrap();
+    };
+    let original = prepare();
+    change_volume(18);
+    assert_eq!(
+        claim_current(&h.surface, &schedule, h.at, original.as_ref(), || {
+            Admission::Run
+        })
+        .unwrap(),
+        Admission::Hold
+    );
+    assert_eq!(h.recorded(), None);
+    let revised = prepare();
+    assert_eq!(
+        claim_current(&h.surface, &schedule, h.at, revised.as_ref(), || {
+            Admission::Run
+        })
+        .unwrap(),
+        Admission::Run
+    );
+    change_volume(10);
+    fire(&h.surface, &schedule, None, revised).unwrap();
+    assert_eq!(
+        soap::get_volume(&h.sim.lan(), h.sim.player("Room0").unwrap().ip).unwrap(),
+        18
+    );
+    assert_eq!(h.recorded(), Some(h.at));
+}
+
+#[test]
 fn a_partial_scene_with_an_unacknowledged_write_is_never_replayed() {
     let h = House::new(
         true,
@@ -297,8 +347,18 @@ fn a_partial_scene_with_an_unacknowledged_write_is_never_replayed() {
     );
     h.scene();
     *h.lose_write.lock().unwrap() = Some("SetVolume");
+    let schedule = h.surface.load_schedules().unwrap().remove(0);
+    let prepared = ready(&h.surface, &schedule).unwrap();
+    assert_eq!(
+        claim_current(&h.surface, &schedule, h.at, prepared.as_ref(), || {
+            Admission::Run
+        })
+        .unwrap(),
+        Admission::Run
+    );
+    let failure = fire(&h.surface, &schedule, None, prepared).unwrap_err();
+    assert_eq!(failure.code, ErrorCode::OutcomeUncertain);
     let scheduler = Scheduler::new(&h.surface);
-    h.tick(&scheduler, h.at);
     assert_eq!(h.recorded(), Some(h.at));
     assert!(h.lose_write.lock().unwrap().is_none());
     assert_eq!(

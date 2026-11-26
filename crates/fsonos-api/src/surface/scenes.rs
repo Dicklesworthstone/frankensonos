@@ -1472,20 +1472,31 @@ impl Surface {
         name: &str,
         fade: Option<Duration>,
     ) -> Result<SceneApplyDto, Failure> {
-        let tool = "apply_scene";
-        self.authorize_logged(client, tool)?;
+        self.authorize_logged(client, "apply_scene")?;
         let scene = self.scene_store(|store| scenes::load(store, name))?;
-        dj_direction::validate(&scene)?;
+        self.apply_loaded_scene(client, &scene, fade)
+    }
+
+    /// Apply an already authorized scene definition. A scheduled run retains
+    /// its admitted definition while checking live topology, source readiness
+    /// and current policy just as an immediate recall does.
+    pub(super) fn apply_loaded_scene(
+        &self,
+        client: &Client,
+        scene: &Scene,
+        fade: Option<Duration>,
+    ) -> Result<SceneApplyDto, Failure> {
+        dj_direction::validate(scene)?;
         let households = self.scene_house()?;
         // Reject ambiguous legacy definitions before even capturing state;
         // policy preflight and scene execution must see the same targets.
-        scenes::check(&scene, &households).map_err(scene_failure)?;
-        let zones = scenes::zones(&scene, &households);
+        scenes::check(scene, &households).map_err(scene_failure)?;
+        let zones = scenes::zones(scene, &households);
         let (snaps, missed) =
             actions::capture_zones(&*self.transport, &households, &zones, self.now());
-        let plan = scenes::plan_apply(&scene, &households, &snaps).map_err(scene_failure)?;
+        let plan = scenes::plan_apply(scene, &households, &snaps).map_err(scene_failure)?;
         let (plan, notes, fade, catalog) =
-            self.bound_scene(client, &scene, &households, plan, fade)?;
+            self.bound_scene(client, scene, &households, plan, fade)?;
         if plan.ops.is_empty() {
             return Ok(SceneApplyDto {
                 scene: scene.name.clone(),
@@ -1561,7 +1572,7 @@ impl Surface {
         }
         self.record(
             client,
-            format!("{tool}: {}", scene.name),
+            format!("apply_scene: {}", scene.name),
             decision,
             logged,
             before,

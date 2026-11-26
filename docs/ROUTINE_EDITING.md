@@ -6,6 +6,12 @@ edit changes future occurrences without running an action on the speakers.
 This supports all existing actions: DJ starts and directions, pauses and fades,
 room volumes, saved scenes, speech and chimes.
 
+A scheduled scene checks the current saved scene and the routine together when
+claiming each occurrence. Editing or deleting the scene before that claim keeps
+the routine due for another readiness check within its grace period. Once
+claimed, the run applies the checked scene definition under current policy.
+Later scene edits take effect on future runs.
+
 ## Phone and dashboard
 
 Open schedules in the phone remote or **Routines** in the dashboard, refresh the

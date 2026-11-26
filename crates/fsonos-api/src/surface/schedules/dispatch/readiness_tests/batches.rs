@@ -40,7 +40,7 @@ fn a_partial_scheduled_pause_or_volume_reports_failure_without_reopening_the_occ
             let schedule = h.surface.load_schedules().unwrap().remove(0);
             let prepared = ready(&h.surface, &schedule).unwrap();
             assert_eq!(
-                claim_current(&h.surface, &schedule, h.at, || Admission::Run).unwrap(),
+                claim_current(&h.surface, &schedule, h.at, None, || Admission::Run).unwrap(),
                 Admission::Run
             );
             let before = h.sim.soap_log().len();

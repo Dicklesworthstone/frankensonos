@@ -2020,6 +2020,7 @@ fn scheduled_control_result(outcome: OutcomeDto) -> Result<String, Failure> {
 enum PreparedRun {
     Dj(PreparedDj),
     Fade(bedtime::PreparedBedtime),
+    Scene(fsonos_core::store::StoredScene),
 }
 
 /// Carry `schedule` out as its creator through the surface's one control path.
@@ -2097,19 +2098,33 @@ fn fire(
                 announcement,
             )
             .map(|announced| announced.done),
-        ScheduleAction::ApplyScene { name } => surface
-            .apply_scene_fading(&client, name, policy_fade(surface))
-            .map(|applied| {
-                if applied.complete {
-                    return applied.done;
-                }
-                let failed: Vec<String> = applied
-                    .failed
-                    .iter()
-                    .map(|f| format!("{}: {}", f.step, f.error))
-                    .collect();
-                format!("{} (failed: {})", applied.done, failed.join("; "))
-            }),
+        ScheduleAction::ApplyScene { .. } => {
+            let Some(PreparedRun::Scene(row)) = prepared else {
+                return Err(Failure::new(
+                    ErrorCode::Internal,
+                    "scheduled scene dispatch has no admitted definition",
+                ));
+            };
+            surface.authorize_logged(&client, "apply_scene")?;
+            let scene =
+                fsonos_core::scenes::from_stored(&row).map_err(super::scenes::scene_failure)?;
+            let applied = surface.apply_loaded_scene(&client, &scene, policy_fade(surface))?;
+            if applied.complete {
+                return Ok(applied.done);
+            }
+            let failed: Vec<String> = applied
+                .failed
+                .iter()
+                .map(|f| format!("{}: {}", f.step, f.error))
+                .collect();
+            Err(Failure::new(
+                ErrorCode::OutcomeUncertain,
+                format!("{} (failed: {})", applied.done, failed.join("; ")),
+            )
+            .with_hint(
+                "Inspect the rooms and the action log. This occurrence will not be retried.",
+            ))
+        }
     }
 }
 

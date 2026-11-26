@@ -594,6 +594,27 @@ impl SqliteStore {
         .inspect(|_| self.wrote())
     }
 
+    /// Serialize a folded scene-name comparison with its dependent write.
+    fn in_immediate_transaction<T>(
+        &self,
+        mut f: impl FnMut(&AsyncConnection) -> Result<T, FrankenError>,
+    ) -> Result<T, StoreError> {
+        retrying(|| {
+            self.conn.execute_sync("BEGIN IMMEDIATE")?;
+            match f(&self.conn)
+                .and_then(|changed| self.conn.commit_transaction_sync().map(|()| changed))
+            {
+                Ok(changed) => Ok(changed),
+                Err(error) => {
+                    let _ = self.conn.rollback_transaction_sync();
+                    Err(error)
+                }
+            }
+        })
+        .map_err(engine)
+        .inspect(|_| self.wrote())
+    }
+
     /// Forget plays, their names and feedback more than
     /// [`LISTENING_RETENTION_SECS`] older than the newest of each: measured
     /// from the newest record, not the clock, so a store kept under a
@@ -2784,20 +2805,9 @@ impl Store for SqliteStore {
         // Plain BEGIN uses fsqlite's concurrent mode. A scene's folded-name
         // absence check must serialize even when different spellings would
         // occupy separate exact primary keys.
-        retrying(|| {
-            self.conn.execute_sync("BEGIN IMMEDIATE")?;
-            match swap_scene(&self.conn, name, expected, replacement)
-                .and_then(|changed| self.conn.commit_transaction_sync().map(|()| changed))
-            {
-                Ok(changed) => Ok(changed),
-                Err(error) => {
-                    let _ = self.conn.rollback_transaction_sync();
-                    Err(error)
-                }
-            }
+        self.in_immediate_transaction(|connection| {
+            swap_scene(connection, name, expected, replacement)
         })
-        .map_err(engine)
-        .inspect(|_| self.wrote())
     }
 
     fn add_schedule(&mut self, schedule: &StoredSchedule) -> Result<i64, StoreError> {
@@ -2935,28 +2945,21 @@ impl Store for SqliteStore {
         expected: &StoredSchedule,
         at: i64,
     ) -> Result<bool, StoreError> {
-        if !expected.enabled || expected.last_fired.is_some_and(|last| last >= at) {
-            return Ok(false);
-        }
-        let claimed = self.in_transaction(|c| {
-            c.execute_with_params_sync(
-                "UPDATE schedules SET last_fired = ?2 \
-                 WHERE id = ?1 AND enabled = 1 \
-                 AND spec = ?3 AND action = ?4 AND creator = ?5 AND created = ?6 \
-                 AND (last_fired = ?7 OR (last_fired IS NULL AND ?7 IS NULL)) \
-                 AND (last_fired IS NULL OR last_fired < ?2)",
-                &[
-                    expected.id.into(),
-                    at.into(),
-                    expected.spec.as_str().into(),
-                    expected.action.as_str().into(),
-                    expected.creator.as_str().into(),
-                    expected.created.into(),
-                    opt_value(expected.last_fired),
-                ],
-            )
-        })?;
-        Ok(claimed > 0)
+        self.in_transaction(|connection| claim_schedule(connection, expected, at))
+    }
+
+    fn claim_scene_schedule(
+        &mut self,
+        schedule: &StoredSchedule,
+        scene: &StoredScene,
+        at: i64,
+    ) -> Result<bool, StoreError> {
+        self.in_immediate_transaction(|connection| {
+            if !scene_matches(connection, &scene.name, Some(scene))? {
+                return Ok(false);
+            }
+            claim_schedule(connection, schedule, at)
+        })
     }
 
     fn delete_schedule(&mut self, id: i64) -> Result<bool, StoreError> {
@@ -2965,6 +2968,33 @@ impl Store for SqliteStore {
         })?;
         Ok(gone > 0)
     }
+}
+
+fn claim_schedule(
+    c: &AsyncConnection,
+    expected: &StoredSchedule,
+    at: i64,
+) -> Result<bool, FrankenError> {
+    if !expected.enabled || expected.last_fired.is_some_and(|last| last >= at) {
+        return Ok(false);
+    }
+    c.execute_with_params_sync(
+        "UPDATE schedules SET last_fired = ?2 \
+         WHERE id = ?1 AND enabled = 1 \
+         AND spec = ?3 AND action = ?4 AND creator = ?5 AND created = ?6 \
+         AND (last_fired = ?7 OR (last_fired IS NULL AND ?7 IS NULL)) \
+         AND (last_fired IS NULL OR last_fired < ?2)",
+        &[
+            expected.id.into(),
+            at.into(),
+            expected.spec.as_str().into(),
+            expected.action.as_str().into(),
+            expected.creator.as_str().into(),
+            expected.created.into(),
+            opt_value(expected.last_fired),
+        ],
+    )
+    .map(|claimed| claimed > 0)
 }
 
 fn schedule_row(r: &Row) -> Result<StoredSchedule, StoreError> {
@@ -2980,11 +3010,10 @@ fn schedule_row(r: &Row) -> Result<StoredSchedule, StoreError> {
 }
 
 // The caller holds a serialized write transaction through publication.
-fn swap_scene(
+fn scene_matches(
     connection: &AsyncConnection,
     name: &str,
     expected: Option<&StoredScene>,
-    replacement: Option<&StoredScene>,
 ) -> Result<bool, FrankenError> {
     // Use exactly the same name equivalence as memory and callers,
     // without loading every other scene's potentially large queues.
@@ -3007,7 +3036,16 @@ fn swap_scene(
             .map_err(|error| FrankenError::Internal(error.to_string()))?,
         None => None,
     };
-    if current.as_ref() != expected {
+    Ok(current.as_ref() == expected)
+}
+
+fn swap_scene(
+    connection: &AsyncConnection,
+    name: &str,
+    expected: Option<&StoredScene>,
+    replacement: Option<&StoredScene>,
+) -> Result<bool, FrankenError> {
+    if !scene_matches(connection, name, expected)? {
         return Ok(false);
     }
     let changed = match (expected, replacement) {

@@ -134,7 +134,7 @@ pub(super) fn run_schedules<Tz: TimeZone>(
                 }
             }
             Tick::Skip { at } => {
-                match claim_current(&scheduler.surface, &schedule, at, || Admission::Skip) {
+                match claim_current(&scheduler.surface, &schedule, at, None, || Admission::Skip) {
                     Ok(Admission::Skip) => {
                         tracing::warn!(
                             "schedule #{id} ({}) skipped its run at {at}: more than {} late",
@@ -161,6 +161,7 @@ fn claim_current(
     surface: &Surface,
     expected: &Schedule,
     at: DateTime<Utc>,
+    prepared: Option<&PreparedRun>,
     admit: impl FnOnce() -> Admission,
 ) -> Result<Admission, Failure> {
     Ok(surface
@@ -178,9 +179,20 @@ fn claim_current(
                 return Ok(Admission::Hold);
             }
             let admission = admit();
-            if admission == Admission::Hold
-                || !store.claim_schedule_fired(stored, at.timestamp())?
-            {
+            let claimed = match (admission, prepared) {
+                (Admission::Hold, _) => false,
+                (Admission::Run, Some(PreparedRun::Scene(scene))) => {
+                    store.claim_scene_schedule(stored, scene, at.timestamp())?
+                }
+                (Admission::Run, _)
+                    if matches!(expected.action, ScheduleAction::ApplyScene { .. }) =>
+                {
+                    false
+                }
+                // Expired occurrences may be skipped even when their scene is gone.
+                _ => store.claim_schedule_fired(stored, at.timestamp())?,
+            };
+            if !claimed {
                 return Ok(Admission::Hold);
             }
             Ok(admission)
@@ -205,10 +217,14 @@ fn ready(surface: &Surface, schedule: &Schedule) -> Result<Option<PreparedRun>, 
             announcements::targets_ready(&rooms, names)
         }
         ScheduleAction::ApplyScene { name } => {
-            let scene = surface
-                .with_store(|store| Ok(scenes::load(store, name)))?
+            let row = surface
+                .with_store(|store| Ok(scenes::observe(store, name)))?
                 .ok_or_else(super::no_store)?
-                .map_err(scene_failure)?;
+                .map_err(scene_failure)?
+                .ok_or_else(|| {
+                    Failure::new(ErrorCode::NotReady, format!("scene {name} is unavailable"))
+                })?;
+            let scene = scenes::from_stored(&row).map_err(scene_failure)?;
             scenes::check(&scene, &households).map_err(scene_failure)?;
             for room in scene
                 .groups
@@ -219,7 +235,8 @@ fn ready(surface: &Surface, schedule: &Schedule) -> Result<Option<PreparedRun>, 
             {
                 named_ready(&households, room)?;
             }
-            surface.scene_sources_ready(&client, &scene, &households)
+            surface.scene_sources_ready(&client, &scene, &households)?;
+            return Ok(Some(PreparedRun::Scene(row)));
         }
         ScheduleAction::Pause { room, fade_secs: 0 } | ScheduleAction::Volume { room, .. } => {
             targets_ready(&rooms, room, false)
@@ -386,7 +403,7 @@ fn launch(
         };
         // Readiness can take time, so recheck the grace period, shutdown and
         // current definition immediately before the irreversible claim.
-        let result = claim_current(&surface, &schedule, at, admission);
+        let result = claim_current(&surface, &schedule, at, prepared.as_ref(), admission);
         match result {
             Ok(Admission::Run) => {}
             Ok(Admission::Skip) => {

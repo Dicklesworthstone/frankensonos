@@ -1174,6 +1174,19 @@ pub trait Store {
         ))
     }
 
+    /// Claim a scheduled scene only while both observed definitions still match.
+    /// Another connection can edit the scene independently of its schedule.
+    fn claim_scene_schedule(
+        &mut self,
+        _schedule: &StoredSchedule,
+        _scene: &StoredScene,
+        _at: i64,
+    ) -> Result<bool, StoreError> {
+        Err(StoreError::Backend(
+            "this store does not support atomic scene schedule claims".into(),
+        ))
+    }
+
     /// Forget schedule `id`; whether there was one.
     fn delete_schedule(&mut self, id: i64) -> Result<bool, StoreError>;
 }
@@ -2692,6 +2705,18 @@ impl Store for MemStore {
             }
             _ => Ok(false),
         }
+    }
+
+    fn claim_scene_schedule(
+        &mut self,
+        schedule: &StoredSchedule,
+        scene: &StoredScene,
+        at: i64,
+    ) -> Result<bool, StoreError> {
+        if !self.compare_and_swap_scene(&scene.name, Some(scene), Some(scene))? {
+            return Ok(false);
+        }
+        self.claim_schedule_fired(schedule, at)
     }
 
     fn delete_schedule(&mut self, id: i64) -> Result<bool, StoreError> {

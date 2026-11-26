@@ -2,7 +2,7 @@
 //! checked, including its previous receipt. A process-local mutex cannot fence
 //! another connection's pause, replacement or competing scheduler.
 
-use fsonos_core::store::{MemStore, SqliteStore, Store, StoredSchedule};
+use fsonos_core::store::{MemStore, SqliteStore, Store, StoredScene, StoredSchedule};
 use std::sync::{Arc, Barrier};
 
 fn schedule(store: &mut dyn Store) -> StoredSchedule {
@@ -82,6 +82,59 @@ fn sqlite_claims_require_the_current_enabled_definition_and_receipt() {
     let mut store = SqliteStore::open_in_memory().unwrap();
     claims(&mut store);
     store.close().unwrap();
+}
+
+#[test]
+fn scene_claim_observes_an_independent_connections_latest_edit_or_removal() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("schedules.db");
+    let mut daemon = SqliteStore::open(&path).unwrap();
+    let mut editor = SqliteStore::open(&path).unwrap();
+    let schedule = schedule(&mut daemon);
+    let scene = StoredScene {
+        name: "Dinner".into(),
+        spec: "v1".into(),
+        updated: 100,
+    };
+    editor.save_scene(&scene).unwrap();
+    let replacement = StoredScene {
+        spec: "v2".into(),
+        ..scene.clone()
+    };
+    editor.save_scene(&replacement).unwrap();
+    assert!(!daemon.claim_scene_schedule(&schedule, &scene, 200).unwrap());
+    editor.delete_scene(&scene.name).unwrap();
+    assert!(
+        !daemon
+            .claim_scene_schedule(&schedule, &replacement, 200)
+            .unwrap()
+    );
+    editor.save_scene(&replacement).unwrap();
+    let conflicting = StoredScene {
+        name: "dinner".into(),
+        ..replacement.clone()
+    };
+    editor.save_scene(&conflicting).unwrap();
+    assert!(
+        !daemon
+            .claim_scene_schedule(&schedule, &replacement, 200)
+            .unwrap()
+    );
+    assert_eq!(current(&editor, schedule.id).last_fired, None);
+    editor.delete_scene(&conflicting.name).unwrap();
+    assert!(
+        daemon
+            .claim_scene_schedule(&schedule, &replacement, 200)
+            .unwrap()
+    );
+    assert!(
+        !daemon
+            .claim_scene_schedule(&schedule, &replacement, 200)
+            .unwrap()
+    );
+    assert_eq!(current(&editor, schedule.id).last_fired, Some(200));
+    editor.close().unwrap();
+    daemon.close().unwrap();
 }
 
 #[test]

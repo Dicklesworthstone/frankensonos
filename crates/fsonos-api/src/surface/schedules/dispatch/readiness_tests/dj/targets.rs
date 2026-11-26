@@ -65,7 +65,7 @@ fn aliases(house: &mut House, directory: &tempfile::TempDir, text: &str) {
 
 fn claim(house: &House, schedule: &Schedule) {
     assert_eq!(
-        claim_current(&house.surface, schedule, house.at, || Admission::Run).unwrap(),
+        claim_current(&house.surface, schedule, house.at, None, || Admission::Run).unwrap(),
         Admission::Run
     );
     assert_eq!(house.recorded(), Some(house.at));
