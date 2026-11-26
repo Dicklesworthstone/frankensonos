@@ -18,6 +18,8 @@ use std::time::Duration;
 
 #[path = "sleep_recovery_sim/endpoints.rs"]
 mod endpoints;
+#[path = "sleep_recovery_sim/metadata.rs"]
+mod metadata;
 
 struct House {
     sim: SimHandle,

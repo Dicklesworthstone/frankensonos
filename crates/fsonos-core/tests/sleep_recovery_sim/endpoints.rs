@@ -138,7 +138,8 @@ impl SleepCheckpoint for DuringSave<'_> {
                 )
                 .unwrap(),
                 Takeover::Group => {
-                    soap::leave_group(&lan, sim.player("SleepB").unwrap().ip).unwrap();
+                    let player = sim.player("SleepB").unwrap();
+                    soap::leave_group(&lan, player.ip, &PlayerId(player.uuid.clone())).unwrap();
                 }
                 Takeover::Boot => sim.reboot("SleepA", Duration::ZERO).unwrap(),
                 Takeover::Retirement => self.journal.complete(fade)?,

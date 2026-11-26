@@ -184,6 +184,7 @@ fn a_full_publication_invalidates_an_older_continuation_without_consuming_its_ne
             &mut Taste::default(),
             directory.as_deref(),
             None,
+            &SpotifyAvailability::default(),
         )
         .unwrap()
         .is_some()
@@ -240,6 +241,7 @@ fn essential_publication_requires_the_exact_read_and_playlist_directory() {
                 &mut Taste::default(),
                 directory.as_deref(),
                 None,
+                &SpotifyAvailability::default(),
             )
             .unwrap()
             .is_none()
@@ -263,6 +265,7 @@ fn essential_publication_requires_the_exact_read_and_playlist_directory() {
             &mut Taste::default(),
             current.as_deref(),
             None,
+            &SpotifyAvailability::default(),
         )
         .unwrap()
         .is_some()

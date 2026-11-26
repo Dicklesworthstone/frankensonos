@@ -475,7 +475,11 @@ test('assets are shipped and tested without adding permissive browser policy', (
   assert.match(registry, /\{STEERING_SCRIPT\}/); assert.match(registry, /\{STEERING_STYLE\}/);
   assert.match(registry, /script-src 'self'/); assert.match(registry, /frame-ancestors 'none'/);
   const workflow = fs.readFileSync(path.join(root, '.github/workflows/linux-speech.yml'), 'utf8');
-  assert.match(workflow, /run: node --test scripts\/test-remote-dj-preferences.cjs scripts\/test-remote-dj-steering.cjs/);
+  const commands = [...workflow.matchAll(/^\s+run: node --test\s+([^\r\n]+)$/gm)]
+    .map(([, command]) => command.trim().split(/\s+/));
+  for (const script of ['scripts/test-remote-dj-preferences.cjs', 'scripts/test-remote-dj-steering.cjs']) {
+    assert.ok(commands.some(command => command.includes(script)), `${script} must run in CI`);
+  }
   for (const name of ['dj-steering.js', 'dj-steering.css']) {
     const asset = fs.readFileSync(path.join(root, 'crates/fsonos-api/src/remote', name), 'utf8');
     for (const secret of ['token', 'authorization', 'x-fsonos', 'tailscale-user', 'password', 'cookie', 'ts.net', 'http://', 'https://']) {

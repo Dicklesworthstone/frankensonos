@@ -83,7 +83,7 @@ fn source_matches(a: &SnapshotSource, b: &SnapshotSource) -> bool {
                 metadata: bm,
                 ..
             },
-        ) => a == b && am == bm,
+        ) => a == b && (am == bm || fsonos_proto::didl::equivalent_metadata(am, bm)),
         _ => false,
     }
 }
