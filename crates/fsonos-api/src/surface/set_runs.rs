@@ -27,6 +27,7 @@ const STACK: usize = 8 * 1024 * 1024;
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(super) enum Execution {
     Ordinary,
+    Scheduled,
     Dj,
     ReviewedSource,
 }
@@ -91,6 +92,8 @@ impl Surface {
                 self.execute_dj_member(households, guard, command)
             } else if execution == Execution::ReviewedSource {
                 self.execute_reviewed_source(households, guard, command, &mut queue_undo)
+            } else if execution == Execution::Scheduled {
+                self.execute_scheduled_control(households, guard, command)
             } else {
                 self.execute_following(households, guard, command, &recovery, &mut queue_undo)
             };
@@ -165,6 +168,8 @@ impl Surface {
                 self.execute_dj_member(households, guard, command)
             } else if execution == Execution::ReviewedSource {
                 self.execute_reviewed_source(households, guard, command, &mut restored_queue)
+            } else if execution == Execution::Scheduled {
+                self.execute_scheduled_control(households, guard, command)
             } else {
                 self.execute_following(households, guard, command, &recovery, &mut restored_queue)
             };

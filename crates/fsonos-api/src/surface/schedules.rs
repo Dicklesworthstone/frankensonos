@@ -45,11 +45,12 @@ use super::{Surface, room_view};
 use crate::dj::DjDirectionDto;
 use crate::execute::OutcomeDto;
 use crate::failure::{ErrorCode, Failure, NoteCode};
-use crate::plan::{self, TransportAction, resolve};
+use crate::plan::{self, resolve};
 use crate::request::{DjStartRequest, VolumeChange, VolumeRequest, ZoneRequest, zone_name};
 
 mod announcements;
 mod bedtime;
+mod controls;
 mod dispatch;
 mod recovery;
 mod sleep_dispatch;
@@ -1773,19 +1774,34 @@ impl Surface {
         room: &str,
         level: u8,
         over: Option<Duration>,
+        prepared: Option<controls::PreparedControl>,
     ) -> Result<OutcomeDto, Failure> {
         self.authorize_write(client, tool)?;
         let guard = self.guard(client);
-        let households = self.households()?;
-        let aliases = self.aliases();
-        let req = VolumeRequest {
-            zone: room.into(),
-            volume: Some(i64::from(level)),
-            delta: None,
-            group: false,
+        let retained = prepared.is_some();
+        let (households, planned) = if let Some(prepared) = prepared {
+            (prepared.households, prepared.commands)
+        } else {
+            let households = self.households()?;
+            let aliases = self.aliases();
+            let req = VolumeRequest {
+                zone: room.into(),
+                volume: Some(i64::from(level)),
+                delta: None,
+                group: false,
+            };
+            let planned =
+                plan::plan_volume_set(room_view(&households, aliases.as_ref(), client), &req)
+                    .map_err(|f| self.explain(f))?;
+            (households, planned)
         };
-        let planned = plan::plan_volume_set(room_view(&households, aliases.as_ref(), client), &req)
-            .map_err(|f| self.explain(f))?;
+        let audience = retained
+            .then(|| controls::Audience::new(self, &households, &planned))
+            .transpose()?;
+        let transport: &(dyn Transport + Sync) = match &audience {
+            Some(audience) => audience,
+            None => &*self.transport,
+        };
         let mut targets: Vec<PlayerId> = Vec::new();
         for command in &planned {
             for player in super::affected(&households, command) {
@@ -1795,7 +1811,7 @@ impl Surface {
             }
         }
         let (snaps, missed) = fsonos_core::actions::capture_zones(
-            &*self.transport,
+            transport,
             &households,
             &targets,
             self.now(),
@@ -1815,10 +1831,13 @@ impl Surface {
             &own
         };
         // Each room's target, bounded as an immediate change would be.
-        let bounded = planned
-            .into_iter()
-            .map(|command| guard.bound(&*self.transport, &households, command))
-            .collect::<Result<Vec<_>, Failure>>();
+        let checked = audience.as_ref().map_or(Ok(()), controls::Audience::check_all);
+        let bounded = checked.and_then(|()| {
+            planned
+                .into_iter()
+                .map(|command| guard.bound(transport, &households, command))
+                .collect::<Result<Vec<_>, Failure>>()
+        });
         let pace = pace_of(over);
         // The rooms whose speakers still ramp themselves when the call
         // answers, and the level each reaches.
@@ -1844,12 +1863,12 @@ impl Surface {
             let (left, mut done) = if let Some(over) = over {
                 (
                     fader
-                        .fade_each(&*self.transport, &households, &lanes, over)
+                        .fade_each(transport, &households, &lanes, over)
                         .map_err(Failure::from)?,
                     format!("ramped {room}'s volume to {level} {pace}"),
                 )
             } else {
-                let (left, secs) = ramp_each(fader, &*self.transport, &households, &lanes)
+                let (left, secs) = ramp_each(fader, transport, &households, &lanes)
                     .map_err(Failure::from)?;
                 ramping = lanes
                     .iter()
@@ -1875,6 +1894,10 @@ impl Surface {
                 notes,
             })
         });
+        let ramped = match &audience {
+            Some(audience) => audience.finish(ramped),
+            None => ramped,
+        };
         let before = if dispatched && ramped.is_err() {
             // A failed multi-room fade has no complete receipt of which
             // players a newer manual action superseded. Its current levels
@@ -1969,7 +1992,7 @@ impl Surface {
             .ok_or_else(|| {
                 Failure::invalid(format!("volume must be 0 to 100, got {}", req.volume))
             })?;
-        self.fade_volume(client, "fade_volume", &req.zone, level, over)
+        self.fade_volume(client, "fade_volume", &req.zone, level, over, None)
     }
 
     /// Fade every selected group out together, pause it, and put its volumes
@@ -2018,6 +2041,7 @@ fn scheduled_control_result(outcome: OutcomeDto) -> Result<String, Failure> {
 /// The exact audience admitted before a schedule's durable occurrence claim.
 #[derive(Debug)]
 enum PreparedRun {
+    Control(controls::PreparedControl),
     Dj(PreparedDj),
     Fade(bedtime::PreparedBedtime),
     Scene(fsonos_core::store::StoredScene),
@@ -2032,7 +2056,6 @@ fn fire(
     prepared: Option<PreparedRun>,
 ) -> Result<String, Failure> {
     let client = client_of(&schedule.creator);
-    let zone = |room: &str| ZoneRequest { zone: room.into() };
     match &schedule.action {
         ScheduleAction::DjStart { direction, .. } => {
             if direction.is_some() {
@@ -2048,11 +2071,23 @@ fn fire(
                 .control_prepared_dj(&client, "dj_start", prepared)
                 .and_then(scheduled_control_result)
         }
-        ScheduleAction::Pause { room, fade_secs: 0 } => surface
-            .control_set(&client, "pause", |rooms| {
-                plan::plan_transport_set(rooms, &zone(room), TransportAction::Pause)
-            })
-            .and_then(scheduled_control_result),
+        ScheduleAction::Pause { fade_secs: 0, .. } => {
+            let Some(PreparedRun::Control(prepared)) = prepared else {
+                return Err(Failure::new(
+                    ErrorCode::Internal,
+                    "scheduled pause has no admitted audience",
+                ));
+            };
+            surface
+                .control_prepared_set(
+                    &client,
+                    "pause",
+                    &prepared.households,
+                    prepared.commands,
+                    super::set_runs::Execution::Scheduled,
+                )
+                .and_then(scheduled_control_result)
+        }
         ScheduleAction::Pause { fade_secs, .. } => {
             let Some(PreparedRun::Fade(prepared)) = prepared else {
                 return Err(Failure::new(
@@ -2069,24 +2104,33 @@ fn fire(
                 )
                 .and_then(scheduled_control_result)
         }
-        ScheduleAction::Volume { room, level } if surface.policy().defaults.fade_secs > 0 => {
-            let over = Duration::from_secs(u64::from(surface.policy().defaults.fade_secs));
-            surface
-                .fade_volume(&client, "set_volume", room, *level, Some(over))
-                .and_then(scheduled_control_result)
-        }
         ScheduleAction::Volume { room, level } => {
-            let req = VolumeRequest {
-                zone: room.clone(),
-                volume: Some(i64::from(*level)),
-                delta: None,
-                group: false,
+            let Some(PreparedRun::Control(prepared)) = prepared else {
+                return Err(Failure::new(
+                    ErrorCode::Internal,
+                    "scheduled volume has no admitted audience",
+                ));
             };
-            surface
-                .control_set(&client, "set_volume", |rooms| {
-                    plan::plan_volume_set(rooms, &req)
-                })
-                .and_then(scheduled_control_result)
+            let fade_secs = surface.policy().defaults.fade_secs;
+            let outcome = if fade_secs > 0 {
+                surface.fade_volume(
+                    &client,
+                    "set_volume",
+                    room,
+                    *level,
+                    Some(Duration::from_secs(u64::from(fade_secs))),
+                    Some(prepared),
+                )
+            } else {
+                surface.control_prepared_set(
+                    &client,
+                    "set_volume",
+                    &prepared.households,
+                    prepared.commands,
+                    super::set_runs::Execution::Scheduled,
+                )
+            };
+            outcome.and_then(scheduled_control_result)
         }
         ScheduleAction::Announce {
             source,

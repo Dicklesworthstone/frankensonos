@@ -8,7 +8,7 @@
 
 use super::{
     PreparedRun, Ran, Schedule, ScheduleAction, Scheduler, Surface, Tick, announcements, bedtime,
-    client_of, core_schedule, dj_start_commands, fire, room_view, span, summary,
+    client_of, controls, core_schedule, dj_start_commands, fire, room_view, span, summary,
 };
 use crate::failure::{ErrorCode, Failure};
 use crate::plan;
@@ -215,9 +215,9 @@ fn ready(surface: &Surface, schedule: &Schedule) -> Result<Option<PreparedRun>, 
         ScheduleAction::Announce { rooms: names, .. } => {
             surface.announcement_ready()?;
             announcements::targets_ready(&rooms, names)?;
-            return surface
+            surface
                 .reminder_audience(&rooms, names)
-                .map(|audience| Some(PreparedRun::Announcement(audience)));
+                .map(|audience| Some(PreparedRun::Announcement(audience)))
         }
         ScheduleAction::ApplyScene { name } => {
             let row = surface
@@ -239,16 +239,18 @@ fn ready(surface: &Surface, schedule: &Schedule) -> Result<Option<PreparedRun>, 
                 named_ready(&households, room)?;
             }
             surface.scene_sources_ready(&client, &scene, &households)?;
-            return Ok(Some(PreparedRun::Scene(row)));
+            Ok(Some(PreparedRun::Scene(row)))
         }
         ScheduleAction::Pause { room, fade_secs: 0 } | ScheduleAction::Volume { room, .. } => {
-            targets_ready(&rooms, room, false)
+            targets_ready(&rooms, room, false)?;
+            controls::prepare(&rooms, &schedule.action)
+                .map(|prepared| Some(PreparedRun::Control(prepared)))
         }
         ScheduleAction::Pause { room, .. } => {
             targets_ready(&rooms, room, false)?;
             let prepared = bedtime::prepare(&rooms, room, None)?;
             surface.bedtime_ready(&prepared)?;
-            return Ok(Some(PreparedRun::Fade(prepared)));
+            Ok(Some(PreparedRun::Fade(prepared)))
         }
         ScheduleAction::DjStart {
             room,
@@ -258,7 +260,7 @@ fn ready(surface: &Surface, schedule: &Schedule) -> Result<Option<PreparedRun>, 
             if direction.is_some() {
                 surface.authorize_write(&client, "dj_steer")?;
             }
-            return surface
+            surface
                 .prepare_dj_controls(&client, "dj_start", |rooms| {
                     targets_ready(rooms, room, false)?;
                     dj_start_commands(
@@ -269,10 +271,9 @@ fn ready(surface: &Surface, schedule: &Schedule) -> Result<Option<PreparedRun>, 
                         surface.mood_lasts(),
                     )
                 })
-                .map(|prepared| Some(PreparedRun::Dj(prepared)));
+                .map(|prepared| Some(PreparedRun::Dj(prepared)))
         }
-    }?;
-    Ok(None)
+    }
 }
 
 fn named_ready(households: &[HouseholdState], name: &str) -> Result<(), Failure> {

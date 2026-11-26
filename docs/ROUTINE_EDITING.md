@@ -132,6 +132,14 @@ already claimed run can finish; editing does not cancel it or undo speaker
 commands. Pause, resume and removal also compare the observed row before
 changing it, preventing a concurrent replacement from being overwritten.
 
+Scheduled pause and volume actions retain the physical players and group
+membership resolved during readiness. Changing a room alias after admission
+cannot redirect the claimed occurrence. Each write, including volume fade
+steps, checks the admitted group again. Immediate actions report results per
+target, so an unchanged target can finish when another is refused; a changed
+group interrupts a volume fade. Current permissions and volume caps are applied
+at dispatch, and failed or partial occurrences are not automatically replayed.
+
 ## Permissions and action history
 
 Editing requires `update_schedule`, in `house-config`, and the existing
