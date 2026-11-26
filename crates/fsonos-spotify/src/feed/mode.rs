@@ -6,9 +6,10 @@ use fsonos_proto::content::{QUEUE, browse_range_snapshot};
 use fsonos_proto::control::{get_media_info, get_position_info, set_normal_play_mode};
 use fsonos_proto::didl::spotify_uri_from_renderer_uri;
 use fsonos_proto::play_mode::get_play_mode;
-use fsonos_types::PlayMode;
+use fsonos_types::{PlayMode, TransportState};
 
 use super::recovery::Group;
+use super::stop::{self, Selected, Selection};
 use super::{FeedError, QueueFeed, QueuedWork, Speakers, host_of, placed};
 
 mod exhaustion;
@@ -22,6 +23,110 @@ pub(super) fn start<T: Transport + ?Sized>(
 ) -> Result<(), FeedError> {
     control::play_queue_from_in_order(at.transport, at.households, at.coordinator, position)?;
     Ok(())
+}
+
+/// Repeating an explicit start continues an owned playing or paused occurrence.
+/// New sessions, another source and stopped/exhausted queues use the ordinary
+/// ordered start. Reads that cannot establish that distinction remain errors.
+pub(super) fn continuation<T: Transport + ?Sized>(
+    feed: &QueueFeed,
+    at: &Speakers<'_, T>,
+) -> Result<Option<Selected>, FeedError> {
+    if !feed.is_active() {
+        return Ok(None);
+    }
+    let host = host_of(at)?;
+    let own_queue = format!("x-rincon-queue:{}#0", at.coordinator.0);
+    if stop::source(at, host)? != own_queue {
+        return Ok(None);
+    }
+    let live = fsonos_proto::control::get_transport_info(at.transport, host)?;
+    if live.status == "ERROR_OCCURRED" || live.state == TransportState::Stopped {
+        // A stopped queue may have no selected track yet (a partial first
+        // start), so it cannot require an owned playing-occurrence proof.
+        if Group::read(at)?.is_none() || stop::source(at, host)? != own_queue {
+            return Err(changed_selection());
+        }
+        return Ok(None);
+    }
+    if !matches!(
+        live.state,
+        TransportState::Playing | TransportState::Paused
+    ) {
+        return Err(changed_selection());
+    }
+    let selected = match stop::selected(feed, at)? {
+        Selection::Owned(selected) => Some(selected),
+        Selection::Unowned => None,
+        Selection::DifferentSource | Selection::Changed => return Err(changed_selection()),
+    };
+    // A stopped/unknown state arriving during the proof is a conflict, not
+    // the definite stopped queue observed before it began.
+    if !resumable(at)? {
+        return Err(changed_selection());
+    }
+    Ok(selected)
+}
+
+fn changed_selection() -> FeedError {
+    fsonos_proto::ProtoError::Malformed(
+        "the selected DJ occurrence changed or is not ready during start; retry its current state"
+            .into(),
+    )
+    .into()
+}
+
+fn resumable<T: Transport + ?Sized>(at: &Speakers<'_, T>) -> Result<bool, FeedError> {
+    let live = fsonos_proto::control::get_transport_info(at.transport, host_of(at)?)?;
+    Ok(matches!(
+        live.state,
+        TransportState::Playing | TransportState::Paused
+    ) && live.status != "ERROR_OCCURRED")
+}
+
+/// Preserve elapsed playback: neither changing the source nor seeking is
+/// needed to resume the selected movement. Refill and mode writes can race
+/// another controller, so reconfirm the exact occurrence and group before
+/// each mutation. A changed selection is an error, never a fallback rewind.
+pub(super) fn resume<T: Transport + ?Sized>(
+    feed: &QueueFeed,
+    at: &Speakers<'_, T>,
+    expected: &Selected,
+) -> Result<(), FeedError> {
+    let confirm = || -> Result<(), FeedError> {
+        if !matches!(
+            stop::selected(feed, at)?,
+            Selection::Owned(selected) if &selected == expected
+        ) || !resumable(at)?
+        {
+            return Err(changed_selection());
+        }
+        Ok(())
+    };
+    confirm()?;
+    let host = host_of(at)?;
+    // Mode and Play form one operation. An ambiguous first write or any
+    // failure after it must not be presented as a retryable read error.
+    if let Err(error) = set_normal_play_mode(at.transport, host) {
+        if matches!(
+            &error,
+            fsonos_proto::ProtoError::Network { .. } | fsonos_proto::ProtoError::Malformed(_)
+        ) {
+            return Err(uncertain_resume("SetPlayMode", error));
+        }
+        return Err(error.into());
+    }
+    confirm().map_err(|error| uncertain_resume("confirmation after SetPlayMode", error))?;
+    fsonos_proto::control::play(at.transport, host)
+        .map_err(|error| uncertain_resume("Play after SetPlayMode", error))?;
+    Ok(())
+}
+
+fn uncertain_resume(stage: &str, error: impl std::fmt::Display) -> FeedError {
+    fsonos_core::CoreError::Uncertain(format!(
+        "DJ resume stopped during {stage}; inspect the speaker's current playback before retrying: {error}"
+    ))
+    .into()
 }
 
 impl QueueFeed {

@@ -253,6 +253,12 @@ fn a_partial_work_already_played_past_cannot_count_toward_start_readiness() {
         added: false,
     });
     feed.playing = feed.queued[1].first();
+    control::seek_track(
+        &lan,
+        house.sim.player("Den").unwrap().ip,
+        feed.playing.unwrap(),
+    )
+    .unwrap();
     let before = format!("{feed:?}");
     let calls = house.sim.soap_log().len();
     let empty = WorkPool::default();

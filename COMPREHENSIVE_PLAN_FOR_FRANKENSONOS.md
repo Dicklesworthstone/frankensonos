@@ -597,8 +597,15 @@ from a genre the DJ was built around.
   exposes the steering fields and `for_minutes`. The remote's DJ direction
   editor can review and start a stopped group with its edited settings.
   Steering is saved before new music is selected: a fresh session's first
-  pick uses it. An existing feed retains its already queued works. A duration
-  requires a mood or a nonempty constraint; a plain start preserves existing
+  pick uses it. An existing feed retains its already queued works. Repeating a
+  start while its owned queue is playing or paused continues the live movement
+  at its current position, including after a daemon restart or missed playback
+  events. New direction affects subsequent selections. Fresh sessions, stopped
+  queues and other sources retain the ordinary start behavior. Changed or
+  unreadable ownership evidence stops the request without falling back to a
+  source reset or seek. Uncertain continuation writes and failures after an
+  acknowledged mode change report an uncertain outcome without replaying the
+  mode or Play request. A duration requires a mood or a nonempty constraint; a plain start preserves existing
   steering. These use the same preference and filter-relaxation rules as a
   separate steer, rather than inventing another selection policy.
 - **Optional strict steering.** CLI starts, steers and rehearsals accept

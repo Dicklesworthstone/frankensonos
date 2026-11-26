@@ -563,7 +563,9 @@ impl QueueFeed {
     }
 
     /// Start (or, after a failure, resume starting): queue the first work and
-    /// `lookahead` more, and play from the first. Returns the queued works.
+    /// `lookahead` more, and play from the first. Repeating a start on an owned
+    /// playing or paused queue continues its current movement without seeking.
+    /// Returns the queued works, beginning with the current one.
     /// A start that fails with none of its works on the queue lets go: it
     /// owns nothing there, and running on would fill the queue on some later
     /// playback event, days after the owner saw the start fail.
@@ -591,11 +593,21 @@ impl QueueFeed {
         self.accepted_playback = false;
         // An explicit start is the owner's decision to try this session anew.
         self.recovery = RecoveryBudget::default();
-        if self.active {
-            // Resuming: the queue may have changed since.
+        let continuation = if self.active {
+            // Resuming: the queue and current movement may have changed since
+            // the last event, including a seek back into a retained work.
             self.resync(at)?;
+            let continuation = mode::continuation(self, at);
+            if continuation.is_err() {
+                self.invalidate_queue();
+            }
+            continuation?
         } else {
             self.release();
+            None
+        };
+        if let Some(selected) = &continuation {
+            self.place_current(selected.position);
         }
         // An explicit start authorizes a new set even if reconciliation
         // relinquished every old occurrence. Automatic callers stay released.
@@ -609,12 +621,19 @@ impl QueueFeed {
         if self.queued.len() < want {
             self.enqueue(at, plan, store, want - self.queued.len(), &mut proof)?;
         }
-        let first = self.queued[0]
-            .first()
-            .expect("a queued work has a queued movement");
-        mode::start(at, first)?;
-        self.playing = Some(first);
-        self.jumped = true;
+        if let Some(selected) = continuation {
+            if let Err(error) = mode::resume(self, at, &selected) {
+                self.invalidate_queue();
+                return Err(error);
+            }
+        } else {
+            let first = self.queued[0]
+                .first()
+                .expect("a queued work has a queued movement");
+            mode::start(at, first)?;
+            self.playing = Some(first);
+            self.jumped = true;
+        }
         Ok(())
     }
 
@@ -749,18 +768,7 @@ impl QueueFeed {
         // caller cannot turn an ignored event into listening feedback.
         self.accepted_playback = true;
         if let Some(position) = position {
-            self.restore_played_from(position);
-            self.playing = Some(position);
-            self.jumped = false;
-            // Works wholly behind the playing position are played now; the
-            // feed keeps where they are until it trims them off.
-            let (played, ahead): (Vec<QueuedWork>, Vec<QueuedWork>) =
-                std::mem::take(&mut self.queued)
-                    .into_iter()
-                    .partition(|w| w.is_whole() && w.last().is_none_or(|last| last < position));
-            self.queued = ahead;
-            self.played
-                .extend(played.into_iter().filter(|w| w.last().is_some()));
+            self.place_current(position);
             // Selecting a queue occurrence while stopped or buffering is not
             // listening. A later PLAYING event for that same occurrence still
             // records it once, without making pause/resume a new play.
@@ -779,6 +787,22 @@ impl QueueFeed {
             }
         }
         self.top_up(at, plan, store)
+    }
+
+    /// Adopt a freshly observed occurrence without recording a listen. Starts
+    /// and playback events share cursor movement, but only playing events
+    /// enter the listening history.
+    fn place_current(&mut self, position: u32) {
+        self.restore_played_from(position);
+        self.playing = Some(position);
+        self.jumped = false;
+        let (played, ahead): (Vec<QueuedWork>, Vec<QueuedWork>) =
+            std::mem::take(&mut self.queued)
+                .into_iter()
+                .partition(|w| w.is_whole() && w.last().is_none_or(|last| last < position));
+        self.queued = ahead;
+        self.played
+            .extend(played.into_iter().filter(|w| w.last().is_some()));
     }
 
     /// Preserve the event-only fast path while enough whole works remain.
@@ -1699,6 +1723,7 @@ mod tests {
     mod ownership;
     mod recovery;
     mod source;
+    mod start;
     mod stop;
 
     const ROOM: &str = "Living Room";

@@ -20,6 +20,9 @@ impl QueueFeed {
         let mut preview = self.clone();
         if preview.active {
             preview.resync(at)?;
+            if let Some(selected) = super::mode::continuation(&preview, at)? {
+                preview.place_current(selected.position);
+            }
         } else {
             preview.release();
         }
