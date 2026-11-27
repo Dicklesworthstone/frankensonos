@@ -119,7 +119,7 @@ impl Surface {
             .zip(destinations)
             .map(|(target, destination)| Command::PlayNativeSelection {
                 coordinator: target.coordinator.id.clone(),
-                selection: selection.clone(),
+                selection: selection.clone().into(),
                 destination,
             })
             .collect();

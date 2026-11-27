@@ -74,7 +74,13 @@ impl Surface {
                 (Vec::new(), Vec::new())
             }
         };
-        if commands.len() < 2 || !disjoint(&zones) {
+        // A live queue can also be a destination. Its source-last plan must
+        // finish the other groups before changing the occurrences they read.
+        let changes_native_source = commands.iter().any(|command| {
+            matches!(command, Command::PlayNativeSelection { coordinator, selection, .. }
+                if selection.queue_source() == Some(coordinator))
+        });
+        if commands.len() < 2 || !disjoint(&zones) || changes_native_source {
             let mut every: Vec<PlayerId> = Vec::new();
             for zone in zones.into_iter().flatten() {
                 if !every.contains(&zone) {

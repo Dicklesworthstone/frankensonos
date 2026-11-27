@@ -100,6 +100,7 @@ fn command_timeout(path: &str) -> Duration {
         || path == "/pause/fade"
         || path == "/sonos/playlists/play"
         || path == "/sonos/playlists/tracks"
+        || path == "/queue/selection"
         || path == "/sonos/playlists/remove-tracks"
         || path == "/sonos/playlists/move-tracks"
         || path == "/sonos/playlists/append-tracks"
@@ -1136,6 +1137,8 @@ mod tests {
             "/queue?trace=1",
             "/queue/tracks",
             "/queue/tracks?trace=1",
+            "/queue/selection",
+            "/queue/selection?trace=1",
             "/sonos/playlists/play",
             "/sonos/playlists/play?trace=1",
             "/sonos/playlists/tracks",

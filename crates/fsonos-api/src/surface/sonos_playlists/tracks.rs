@@ -191,7 +191,8 @@ impl Surface {
                     positions: req.positions.clone(),
                     expected_revision: req.expected_revision.clone(),
                     tracks,
-                },
+                }
+                .into(),
                 destination,
             })
         })?;

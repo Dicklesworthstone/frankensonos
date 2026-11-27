@@ -49,6 +49,9 @@ pub use removal::{QueueRemoveRequest, QueueRemovedDto, REMOVE};
 mod tracks;
 pub use tracks::{MAX_QUEUE_TRACKS, PlayTracksRequest, QueueTrackInput, QueueTracksRequest};
 
+mod selection;
+pub use selection::{QueueSelectionDto, QueueSelectionRequest};
+
 /// The tool name the queue read is authorized as.
 pub const TOOL: &str = "get_queue";
 

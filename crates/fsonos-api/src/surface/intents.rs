@@ -57,9 +57,9 @@ fn describe(households: &[HouseholdState], command: &Command) -> String {
             selection,
             ..
         } => format!(
-            "play saved playlist {} occurrences {:?} in {} in the supplied order",
-            selection.playlist,
-            selection.positions,
+            "play {} occurrences {:?} in {} in the supplied order",
+            selection.source_label(),
+            selection.positions(),
             room(coordinator)
         ),
         Command::PlayLineIn {

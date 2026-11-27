@@ -60,6 +60,9 @@ pub use queue_add::AddToQueue;
 mod queue_tracks;
 pub use queue_tracks::{AddTracksToQueue, PlayTracks};
 
+mod queue_selection;
+pub use queue_selection::QueueSelection;
+
 mod queue_search;
 pub use queue_search::SearchQueue;
 

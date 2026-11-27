@@ -14,8 +14,8 @@ use super::{CONTROL, Ctx, Op, answer, body};
 use crate::OutcomeDto;
 use crate::surface::queue::{
     ADD, MOVE, PLAY, PlayTracksRequest, QueueAddOutcome, QueueMoveRequest, QueueMovedDto,
-    QueuePlayRequest, QueueRemoveRequest, QueueRemovedDto, QueueRequest, QueueTracksRequest,
-    REMOVE,
+    QueuePlayRequest, QueueRemoveRequest, QueueRemovedDto, QueueRequest, QueueSelectionDto,
+    QueueSelectionRequest, QueueTracksRequest, REMOVE,
 };
 
 mod mode;
@@ -46,6 +46,17 @@ pub(super) fn routes(cx: &Ctx<'_>) -> Vec<RouteEntry> {
         )
         .request_schema::<QueueTracksRequest>(true)
         .response_schema::<QueueAddOutcome>(200, "Single-group insertion or complete/partial set receipt; never replay the whole batch"),
+        cx.route(
+            &Op::post(
+                "/queue/selection",
+                "queue_selection",
+                CONTROL,
+                "Play, queue next or append 1-10 exact native queue occurrences in each selected group in the same household, preserving their order, repetitions and service metadata",
+            ),
+            |s, c, req| answer(body::<QueueSelectionRequest>(req).and_then(|r| s.queue_selection(c, &r))),
+        )
+        .request_schema::<QueueSelectionRequest>(true)
+        .response_schema::<QueueSelectionDto>(200, "Confirmed native selection and every destination receipt; never replay an incomplete batch"),
         cx.route(
             &Op::post(
                 "/play/tracks",

@@ -76,7 +76,7 @@ impl NativePlaylistSelection {
         {
             return Err(Failure::new(
                 ErrorCode::CrossHouseholdGroup,
-                "saved playlist occurrences can only be sent to groups in their original Sonos household",
+                "native occurrences can only be sent to groups in their original Sonos household",
             )
             .with_hint(
                 "Choose rooms or a saved alias within the source household, or all@S1 / all@S2 for that household.",
@@ -122,6 +122,77 @@ impl NativePlaylistSelection {
     }
 }
 
+/// Native source authority shared by saved-playlist and live-queue selections.
+/// Both use the same staged replacement and exact-range insertion executor.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum NativeTrackSelection {
+    Playlist(NativePlaylistSelection),
+    Queue(Box<fsonos_core::playlists::PreparedQueueSelection>),
+}
+
+impl From<NativePlaylistSelection> for NativeTrackSelection {
+    fn from(selection: NativePlaylistSelection) -> Self {
+        Self::Playlist(selection)
+    }
+}
+
+impl NativeTrackSelection {
+    pub(crate) fn tracks(&self) -> &[Favorite] {
+        match self {
+            Self::Playlist(selection) => &selection.tracks,
+            Self::Queue(selection) => selection.tracks(),
+        }
+    }
+
+    pub(crate) fn source_label(&self) -> String {
+        match self {
+            Self::Playlist(selection) => format!("saved playlist {}", selection.playlist),
+            Self::Queue(selection) => format!("queue on {}", selection.coordinator().0),
+        }
+    }
+
+    pub(crate) fn positions(&self) -> &[u32] {
+        match self {
+            Self::Playlist(selection) => &selection.positions,
+            Self::Queue(selection) => selection.positions(),
+        }
+    }
+
+    /// The queue whose mutation must wait until every other destination has
+    /// used its original source proof. Saved playlists are unaffected by play.
+    pub(crate) fn queue_source(&self) -> Option<&PlayerId> {
+        match self {
+            Self::Queue(selection) => Some(selection.coordinator()),
+            Self::Playlist(_) => None,
+        }
+    }
+
+    pub(crate) fn confirm<T: fsonos_proto::Transport + ?Sized>(
+        &self,
+        transport: &T,
+        households: &[HouseholdState],
+        coordinator: &PlayerId,
+    ) -> Result<(), Failure> {
+        match self {
+            Self::Playlist(selection) => selection.confirm(transport, households, coordinator),
+            Self::Queue(selection) => {
+                if !households.iter().any(|house| {
+                    house.player(selection.coordinator()).is_some()
+                        && house.player(coordinator).is_some()
+                }) {
+                    return Err(Failure::new(
+                        ErrorCode::CrossHouseholdGroup,
+                        "native queue metadata cannot be used outside its original household",
+                    ));
+                }
+                selection
+                    .confirm(transport, households)
+                    .map_err(Failure::from)
+            }
+        }
+    }
+}
+
 /// What a request asks the daemon to do, addressed to concrete players.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Command {
@@ -153,7 +224,7 @@ pub enum Command {
     /// This revision-bound command cannot follow a coordinator change or replay.
     PlayNativeSelection {
         coordinator: PlayerId,
-        selection: NativePlaylistSelection,
+        selection: NativeTrackSelection,
         destination: fsonos_core::control::TrackBatchDestination,
     },
     /// A native input bound to its physical player and an observed destination.

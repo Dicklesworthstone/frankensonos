@@ -92,8 +92,8 @@ pub fn execute_guarded<T: Transport + ?Sized>(
 /// Carry out `command` against `households` over `transport`.
 ///
 /// `spotify:track:` URIs render with the household's learned Spotify
-/// parameters ([`ErrorCode::RenderParamsMissing`] when it has no Spotify
-/// favorite to learn from); `spotify:album:` and `spotify:playlist:` URIs
+/// parameters ([`ErrorCode::RenderParamsMissing`] when its favorites and current
+/// playback have no usable template); `spotify:album:` and `spotify:playlist:` URIs
 /// replace the group's queue with the album or playlist and play it from the
 /// top; `spotify:episode:` renders on the account id alone (only `?sid=` is
 /// sent). Other renderer URIs play as given, without DIDL metadata. The DJ
@@ -192,14 +192,14 @@ fn execute_command<T: Transport + ?Sized>(
                 transport,
                 households,
                 coordinator,
-                &selection.tracks,
+                selection.tracks(),
                 destination,
             )?;
             let room = &control::locate(households, coordinator)?.room_name;
             Ok(Executed {
                 outcome: OutcomeDto::sent(format!(
-                    "playing {} selected saved playlist tracks in {room}'s group in the supplied order (replaced the queue)",
-                    selection.tracks.len()
+                    "playing {} selected native tracks in {room}'s group in the supplied order (replaced the queue)",
+                    selection.tracks().len()
                 )),
                 replacement: receipt.then_some(replacement),
             })
@@ -576,13 +576,12 @@ pub(crate) fn spotify_failure(e: CoreError) -> Failure {
     match e {
         CoreError::NoSpotifyFavorite => Failure::new(
             ErrorCode::RenderParamsMissing,
-            "this household has no Spotify track among its favorites to learn its Spotify \
-             settings from",
+            "this group has no usable Spotify track template in its favorites or current playback",
         ),
         CoreError::RenderParamsStale => Failure::new(
             ErrorCode::RenderParamsStale,
             "the speaker refused this Spotify render (UPnP 800) even after relearning the \
-             household's settings from its favorites once",
+             group's observed Spotify settings once",
         ),
         e => e.into(),
     }
@@ -1131,7 +1130,10 @@ mod tests {
 
     #[test]
     fn spotify_without_a_favorite_to_learn_from_says_what_to_do() {
-        let t = Canned::ok("");
+        let t = Canned {
+            destination: true,
+            ..Canned::ok("")
+        };
         let err = execute(
             &t,
             &households(),
@@ -1143,7 +1145,14 @@ mod tests {
             (ErrorCode::RenderParamsMissing, 409)
         );
         assert!(err.hint.contains("My Sonos"), "{}", err.hint);
-        assert_eq!(t.actions(), ["Browse"]);
+        let actions = t.actions();
+        assert_eq!(actions.first().map(String::as_str), Some("Browse"));
+        assert!(
+            actions
+                .iter()
+                .all(|action| action == "Browse" || action.starts_with("Get")),
+            "missing Spotify evidence must not change a speaker: {actions:?}"
+        );
     }
 
     #[test]
@@ -1212,8 +1221,11 @@ mod tests {
                 }
             }
         }
-        // No favorite to learn the account from: said so, the queue untouched.
-        let t = Canned::ok("");
+        // No favorite or current Spotify source: the queue remains untouched.
+        let t = Canned {
+            destination: true,
+            ..Canned::ok("")
+        };
         let err = execute(
             &t,
             &households(),
@@ -1221,7 +1233,14 @@ mod tests {
         )
         .unwrap_err();
         assert_eq!(err.code, ErrorCode::RenderParamsMissing);
-        assert_eq!(t.actions(), ["Browse"]);
+        let actions = t.actions();
+        assert_eq!(actions.first().map(String::as_str), Some("Browse"));
+        assert!(
+            actions
+                .iter()
+                .all(|action| action == "Browse" || action.starts_with("Get")),
+            "missing Spotify evidence must not change a speaker: {actions:?}"
+        );
     }
 
     #[test]
@@ -1243,9 +1262,12 @@ mod tests {
 
     #[test]
     fn episodes_need_the_household_account() {
-        // An episode renders with `?sid=` learnt from a Spotify favorite;
-        // without one it says so before touching a speaker.
-        let t = Canned::ok("");
+        // An episode needs an observed account from a favorite or current
+        // Spotify playback; without either it performs only reads.
+        let t = Canned {
+            destination: true,
+            ..Canned::ok("")
+        };
         let err = execute(
             &t,
             &households(),
@@ -1253,7 +1275,14 @@ mod tests {
         )
         .unwrap_err();
         assert_eq!(err.code, ErrorCode::RenderParamsMissing);
-        assert_eq!(t.actions(), ["Browse"]);
+        let actions = t.actions();
+        assert_eq!(actions.first().map(String::as_str), Some("Browse"));
+        assert!(
+            actions
+                .iter()
+                .all(|action| action == "Browse" || action.starts_with("Get")),
+            "missing Spotify evidence must not change a speaker: {actions:?}"
+        );
     }
 
     #[test]

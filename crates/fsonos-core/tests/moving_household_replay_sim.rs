@@ -175,6 +175,7 @@ impl Fixture {
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Damage {
     EmptyCurrent,
+    WithoutFlags,
     WrongCurrentTrack,
     ForeignQueueAccount,
     ForeignDescriptor,
@@ -206,6 +207,22 @@ impl Transport for Replies<'_> {
         }
         let mut reply = parse_response(&response, name)?;
         let service = if name == "GetPositionInfo" {
+            if self.damage == Some(Damage::WithoutFlags) {
+                let uri = &mut reply
+                    .args
+                    .iter_mut()
+                    .find(|(key, _)| key == "TrackURI")
+                    .unwrap()
+                    .1;
+                if let Some((base, query)) = uri.split_once('?') {
+                    let query = query
+                        .split('&')
+                        .filter(|pair| !pair.starts_with("flags="))
+                        .collect::<Vec<_>>()
+                        .join("&");
+                    *uri = format!("{base}?{query}");
+                }
+            }
             let metadata = &mut reply
                 .args
                 .iter_mut()
@@ -462,3 +479,6 @@ fn direct_spotify_sources_retain_their_observed_account_within_a_household() {
         }
     }
 }
+
+#[path = "moving_household_replay_sim/queue_selection.rs"]
+mod queue_selection;

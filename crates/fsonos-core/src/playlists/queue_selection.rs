@@ -2,12 +2,14 @@
 //! the queue does not require it to be selected or change the current source.
 
 use super::contents::native_evidence_bytes;
-use super::selection::track;
+use super::selection::{native_item, track};
 use super::{GroupProof, MAX_PLAYLIST_EDIT_BYTES, invalid};
 use crate::favorites::Favorite;
+use crate::queue_source::native::replay::{self, Identity, Selected};
 use crate::{CoreError, HouseholdState, control};
 use fsonos_proto::Transport;
 use fsonos_proto::content::{self, BrowseFlag, BrowsePage, NativeBrowsePage, QUEUE};
+use fsonos_proto::didl::{NativeDidlObject, parse_didl, spotify_uri_from_renderer_uri};
 use fsonos_types::PlayerId;
 use std::collections::BTreeMap;
 use std::net::IpAddr;
@@ -29,6 +31,140 @@ fn revision(coordinator: &PlayerId, update_id: u32, total_matches: u32) -> Strin
     )
 }
 
+/// Exact source occurrences and their replayable native metadata. The original
+/// queue evidence stays separate: Spotify queue IDs may need the household's
+/// observed service identity before the same tracks can be enqueued elsewhere.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PreparedQueueSelection {
+    coordinator: PlayerId,
+    positions: Vec<u32>,
+    revision: String,
+    group: GroupProof,
+    current: Option<Selected>,
+    observed: Vec<Favorite>,
+    tracks: Vec<Favorite>,
+}
+
+impl PreparedQueueSelection {
+    /// Read and prepare 1–10 occurrences, preserving order and repetitions.
+    /// No queue or playback changes occur. A missing native service identity
+    /// must be learned from this household; it is never guessed or borrowed.
+    pub fn read<T: Transport + ?Sized>(
+        transport: &T,
+        households: &[HouseholdState],
+        coordinator: &PlayerId,
+        positions: &[u32],
+        revision: &str,
+    ) -> Result<Self, CoreError> {
+        validate_selection(positions, revision)?;
+        let (host, group) = observed_group(transport, households, coordinator)?;
+        let observed =
+            select_queue_tracks(transport, households, coordinator, positions, revision)?;
+        // Native queue replay needs only the observed account and service
+        // identity, not the flags required to render a new direct source.
+        // Fully replayable metadata must not depend on an advancing playhead.
+        let mut needs_identity = false;
+        for selected in &observed {
+            if let Some(uri) = selected.uri.as_deref()
+                && spotify_uri_from_renderer_uri(uri)
+                    .is_some_and(|source| source.starts_with("spotify:track:"))
+                && Identity::read(uri, &selected.metadata)?.is_none()
+            {
+                needs_identity = true;
+            }
+        }
+        let current = if needs_identity {
+            Selected::current(transport, host, coordinator)?
+        } else {
+            None
+        };
+        let mut parameters = None;
+        let mut tracks = Vec::with_capacity(observed.len());
+        for selected in &observed {
+            let native = NativeDidlObject {
+                object: native_item(selected)?,
+                metadata: selected.metadata.clone(),
+            };
+            let replay = replay::item(
+                transport,
+                households,
+                coordinator,
+                native,
+                &mut parameters,
+                current.as_ref(),
+            )?;
+            let objects = parse_didl(&replay.metadata)?;
+            let [item] = objects.as_slice() else {
+                return Err(invalid(
+                    "queue replay metadata must retain exactly one item",
+                ));
+            };
+            tracks.push(track(item, &replay.metadata)?);
+        }
+        let selection = Self {
+            coordinator: coordinator.clone(),
+            positions: positions.to_vec(),
+            revision: revision.into(),
+            group,
+            current,
+            observed,
+            tracks,
+        };
+        selection.confirm(transport, households)?;
+        Ok(selection)
+    }
+
+    #[must_use]
+    pub fn coordinator(&self) -> &PlayerId {
+        &self.coordinator
+    }
+
+    #[must_use]
+    pub fn positions(&self) -> &[u32] {
+        &self.positions
+    }
+
+    #[must_use]
+    pub fn tracks(&self) -> &[Favorite] {
+        &self.tracks
+    }
+
+    /// Confirm the original source, not a destination that now contains copies.
+    /// Source-targeted operations must dispatch this group after other targets.
+    pub fn confirm<T: Transport + ?Sized>(
+        &self,
+        transport: &T,
+        households: &[HouseholdState],
+    ) -> Result<(), CoreError> {
+        let host = control::locate(households, &self.coordinator)?.ip;
+        self.group
+            .confirm(transport, host, &self.coordinator)
+            .map_err(|error| changed(&error.to_string()))?;
+        let current = select_queue_tracks(
+            transport,
+            households,
+            &self.coordinator,
+            &self.positions,
+            &self.revision,
+        )?;
+        if current != self.observed {
+            return Err(changed(
+                "the selected queue occurrences changed after preparation",
+            ));
+        }
+        if let Some(current) = &self.current {
+            current
+                .confirm(transport, host)
+                .map_err(|error| changed(&error.to_string()))?;
+        }
+        // Selected deliberately leaves membership to callers that may regroup.
+        // Keep this copy's original full group through the final metadata read.
+        self.group
+            .confirm(transport, host, &self.coordinator)
+            .map_err(|error| changed(&error.to_string()))
+    }
+}
+
 /// Select 1–10 one-based queue occurrences in requested order, with repeats.
 /// The mandatory revision comes from a prior queue page for this coordinator.
 /// Nearby selected positions share bounded pages; each page is read twice at
@@ -44,19 +180,7 @@ pub fn select_queue_tracks<T: Transport + ?Sized>(
     positions: &[u32],
     expected_revision: &str,
 ) -> Result<Vec<Favorite>, CoreError> {
-    if positions.is_empty()
-        || positions.len() > control::MAX_TRACK_BATCH
-        || positions
-            .iter()
-            .any(|position| *position == 0 || *position > content::MAX_BROWSE_OBJECTS)
-        || expected_revision.trim().is_empty()
-        || expected_revision.len() > 4096
-        || expected_revision.chars().any(char::is_control)
-    {
-        return Err(invalid(
-            "a queue selection requires 1 to 10 bounded one-based positions and an observed revision",
-        ));
-    }
+    validate_selection(positions, expected_revision)?;
     let (host, group) = observed_group(transport, households, coordinator)?;
     let mut pending = positions.to_vec();
     pending.sort_unstable();
@@ -123,6 +247,23 @@ pub fn select_queue_tracks<T: Transport + ?Sized>(
             track(&selected.object, &selected.metadata)
         })
         .collect()
+}
+
+fn validate_selection(positions: &[u32], expected_revision: &str) -> Result<(), CoreError> {
+    if positions.is_empty()
+        || positions.len() > control::MAX_TRACK_BATCH
+        || positions
+            .iter()
+            .any(|position| *position == 0 || *position > content::MAX_BROWSE_OBJECTS)
+        || expected_revision.trim().is_empty()
+        || expected_revision.len() > 4096
+        || expected_revision.chars().any(char::is_control)
+    {
+        return Err(invalid(
+            "a queue selection requires 1 to 10 bounded one-based positions and an observed revision",
+        ));
+    }
+    Ok(())
 }
 
 fn observed_group<T: Transport + ?Sized>(

@@ -242,6 +242,7 @@ fn configured_server(
             .tool(tools::SonosPlaylistContents)
             .tool(tools::SonosPlaylistTrack)
             .tool(tools::SonosPlaylistTracks)
+            .tool(tools::QueueSelection)
             .tool(tools::PlaySonosPlaylist)
             .tool(tools::SaveSonosPlaylist)
             .tool(tools::RenameSonosPlaylist)

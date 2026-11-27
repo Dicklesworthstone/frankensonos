@@ -685,3 +685,5 @@ fn native_source_changes_between_groups_keep_the_first_receipt_and_refuse_the_se
     assert_eq!(house.queue("Den@S2"), original);
     assert_eq!(house.queue("Office@S2"), original);
 }
+
+mod queue_selection;

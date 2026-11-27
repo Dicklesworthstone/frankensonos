@@ -132,6 +132,7 @@ impl Identity {
 /// Current renderer evidence used to repair incomplete native queue metadata.
 /// Membership is deliberately left to the caller: a move may intentionally
 /// detach rooms while the original coordinator, boot and selection stay owned.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Selected {
     coordinator: PlayerId,
     track: u32,
@@ -157,6 +158,29 @@ fn boot<T: Transport + ?Sized>(
 }
 
 impl Selected {
+    /// Observe the current queue track for a partial occurrence selection.
+    /// The selected items need not include this occurrence, and native replay
+    /// needs no renderer flags: only the matching service/account identity.
+    pub(crate) fn current<T: Transport + ?Sized>(
+        t: &T,
+        host: IpAddr,
+        coordinator: &PlayerId,
+    ) -> Result<Option<Self>, ProtoError> {
+        let source = format!("x-rincon-queue:{}#0", coordinator.0);
+        if soap::get_media_info(t, host)?.uri != source {
+            return Ok(None);
+        }
+        let (position, _) = soap::get_position_info_with_metadata(t, host)?;
+        if position.track == 0
+            || !spotify_uri_from_renderer_uri(&position.uri)
+                .is_some_and(|uri| uri.starts_with("spotify:track:"))
+        {
+            return Ok(None);
+        }
+        Self::observe(t, host, coordinator, position.track, &position.uri, true)
+            .map(|current| current.identity.is_some().then_some(current))
+    }
+
     pub(crate) fn read<T: Transport + ?Sized>(
         t: &T,
         host: IpAddr,

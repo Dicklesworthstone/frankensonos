@@ -8,7 +8,7 @@ use fsonos_core::policy::{CARRIES, CLASSES, class_of};
 use fsonos_mcp::{Profile, server_with};
 
 /// Mutating tools in no class, and what holds them to the policy instead.
-const HELD_AS_OTHERS: [(&str, &str); 11] = [
+const HELD_AS_OTHERS: [(&str, &str); 12] = [
     (
         "echo",
         "nothing to hold: it answers its text and reaches no speaker",
@@ -40,6 +40,10 @@ const HELD_AS_OTHERS: [(&str, &str); 11] = [
     (
         "sonos_playlist_tracks",
         "play_favorite for play, add_to_queue for next/append; the shared ordered native selection checks permissions before reads",
+    ),
+    (
+        "queue_selection",
+        "play_favorite for play, add_to_queue for next/append; shared native executors retain the original source queue proof",
     ),
     (
         "add_tracks_to_queue",

@@ -1591,7 +1591,7 @@ impl Surface {
             Command::PlayFavorite { favorite, .. } => favorite.uri.as_deref(),
             Command::PlayNativeSelection { selection, .. } => {
                 let Some(uri) = selection
-                    .tracks
+                    .tracks()
                     .first()
                     .and_then(|track| track.uri.as_deref())
                 else {

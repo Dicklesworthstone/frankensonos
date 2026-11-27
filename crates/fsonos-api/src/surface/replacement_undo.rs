@@ -103,7 +103,7 @@ pub(super) fn attach(
         let label = match commands {
             [Command::PlayTracks { selection, .. }] => selection.kind.source_label(),
             [Command::PlaySelection { .. }] => "selected tracks",
-            [Command::PlayNativeSelection { .. }] => "selected saved playlist tracks",
+            [Command::PlayNativeSelection { .. }] => "selected native tracks",
             _ => "source",
         };
         return Some(actions::before_state_not_undoable(&format!(
