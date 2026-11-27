@@ -12,7 +12,7 @@ use crate::didl::{DidlObject, parse_didl};
 use crate::soap::{
     self, AV_TRANSPORT, GROUP_RENDERING_CONTROL, RENDERING_CONTROL, Service, SoapResponse,
 };
-use crate::{ProtoError, Transport};
+use crate::{ProtoError, Transport, xml};
 use fsonos_types::{PlayerId, TransportState};
 use std::net::IpAddr;
 
@@ -381,7 +381,7 @@ pub fn set_relative_volume<T: Transport + ?Sized>(
 
 pub fn get_mute<T: Transport + ?Sized>(t: &T, host: IpAddr) -> Result<bool, ProtoError> {
     let r = call(t, host, &RENDERING_CONTROL, "GetMute", &[INSTANCE, MASTER])?;
-    Ok(r.require("CurrentMute")?.trim() == "1")
+    boolean_arg(&r, "CurrentMute")
 }
 
 pub fn set_mute<T: Transport + ?Sized>(t: &T, host: IpAddr, mute: bool) -> Result<(), ProtoError> {
@@ -451,13 +451,7 @@ pub fn get_loudness<T: Transport + ?Sized>(t: &T, host: IpAddr) -> Result<bool, 
         "GetLoudness",
         &[INSTANCE, MASTER],
     )?;
-    match r.require("CurrentLoudness")?.trim() {
-        "1" | "true" | "yes" => Ok(true),
-        "0" | "false" | "no" => Ok(false),
-        value => Err(ProtoError::Malformed(format!(
-            "CurrentLoudness is not a boolean: {value:?}"
-        ))),
-    }
+    boolean_arg(&r, "CurrentLoudness")
 }
 
 /// Turn loudness compensation on or off at `host`.
@@ -486,6 +480,12 @@ fn tone_arg(r: &SoapResponse, name: &str) -> Result<i8, ProtoError> {
         .ok()
         .filter(|v| TONE_RANGE.contains(v))
         .ok_or_else(|| ProtoError::Malformed(format!("{name} out of range: {raw}")))
+}
+
+fn boolean_arg(r: &SoapResponse, name: &str) -> Result<bool, ProtoError> {
+    let value = r.require(name)?.trim();
+    xml::boolean(value)
+        .ok_or_else(|| ProtoError::Malformed(format!("{name} is not a boolean: {value:?}")))
 }
 
 /// The group volume, as the coordinator at `host` reports it.
@@ -1258,6 +1258,54 @@ mod tests {
         assert!(get_mute(&t, host()).unwrap());
         set_mute(&t, host(), false).unwrap();
         assert!(t.last().2.contains("<DesiredMute>0</DesiredMute>"));
+    }
+
+    #[test]
+    fn mute_readback_preserves_boolean_forms_when_restored() {
+        for (value, expected) in [
+            ("1", true),
+            ("true", true),
+            ("yes", true),
+            ("0", false),
+            ("false", false),
+            ("no", false),
+        ] {
+            let t = Canned::new(&format!("<CurrentMute> \n{value}\t </CurrentMute>"));
+            let observed = get_mute(&t, host()).unwrap();
+            assert_eq!(observed, expected, "{value}");
+            set_mute(&t, host(), observed).unwrap();
+            let desired = if expected { "1" } else { "0" };
+            let requests = t.sent.borrow();
+            assert_eq!(requests.len(), 2);
+            assert!(requests[0].1.ends_with("#GetMute\""));
+            assert!(requests[1].1.ends_with("#SetMute\""));
+            assert!(
+                requests[1]
+                    .2
+                    .contains(&format!("<DesiredMute>{desired}</DesiredMute>"))
+            );
+            assert!(requests.iter().all(|request| {
+                request
+                    .2
+                    .contains("<InstanceID>0</InstanceID><Channel>Master</Channel>")
+            }));
+        }
+    }
+
+    #[test]
+    fn malformed_mute_readback_is_never_reported_as_unmuted() {
+        for value in ["", " ", "2", "-1", "unknown", "NOT_IMPLEMENTED"] {
+            let t = Canned::new(&format!("<CurrentMute>{value}</CurrentMute>"));
+            assert!(matches!(
+                get_mute(&t, host()),
+                Err(ProtoError::Malformed(detail)) if detail.contains("CurrentMute")
+            ));
+            assert_eq!(t.sent.borrow().len(), 1);
+        }
+        assert!(matches!(
+            get_mute(&Canned::new(""), host()),
+            Err(ProtoError::Malformed(detail)) if detail.contains("CurrentMute")
+        ));
     }
 
     #[test]

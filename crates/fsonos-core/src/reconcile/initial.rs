@@ -50,10 +50,6 @@ fn level(value: Option<&str>) -> bool {
         .is_some_and(|volume| volume <= 100)
 }
 
-fn mute(value: Option<&str>) -> bool {
-    value.is_some_and(|value| matches!(value.trim(), "0" | "1"))
-}
-
 pub(super) fn validate(service: Service, notify: &Notify) -> Result<(), ProtoError> {
     if notify.seq != 0 {
         return Ok(());
@@ -67,9 +63,9 @@ pub(super) fn validate(service: Service, notify: &Notify) -> Result<(), ProtoErr
         }),
         Service::RenderingControl => notify
             .last_change()?
-            .is_some_and(|change| level(change.get("Volume")) && mute(change.get("Mute"))),
+            .is_some_and(|change| level(change.get("Volume")) && change.mute().is_some()),
         Service::GroupRenderingControl => {
-            level(notify.property("GroupVolume")) && mute(notify.property("GroupMute"))
+            level(notify.property("GroupVolume")) && notify.property_bool("GroupMute").is_some()
         }
         Service::ZoneGroupTopology => notify.property("ZoneGroupState").is_some(),
         Service::ContentDirectory => fsonos_proto::content::parse_update(notify)?.has_counters(),
@@ -183,6 +179,69 @@ mod tests {
         assert!(validate(service, &notify(service, 1, partial)).is_ok());
         let full = vec![("ZoneGroupState".into(), "<ZoneGroupState/>".into())];
         assert!(validate(service, &notify(service, 0, full)).is_ok());
+    }
+
+    #[test]
+    fn initial_mute_readiness_uses_the_same_boolean_forms_as_playback() {
+        let now = Instant::now();
+        let player = PlayerId("mute-readiness-player".into());
+        for service in [Service::RenderingControl, Service::GroupRenderingControl] {
+            let initial = |value: &str| {
+                let properties = if service == Service::RenderingControl {
+                    last_change(&format!(
+                        "<Volume channel=\"Master\" val=\"17\"/>\
+                         <Mute channel=\"Master\" val=\" {value} \"/>"
+                    ))
+                } else {
+                    vec![
+                        ("GroupVolume".into(), "17".into()),
+                        ("GroupMute".into(), format!(" {value} ")),
+                    ]
+                };
+                notify(service, 0, properties)
+            };
+            for (value, expected) in [
+                ("1", true),
+                ("true", true),
+                ("yes", true),
+                ("0", false),
+                ("false", false),
+                ("no", false),
+            ] {
+                let mut playback = Playback::default();
+                apply(
+                    &mut [],
+                    &mut playback,
+                    &player,
+                    service,
+                    &initial(value),
+                    now,
+                )
+                .unwrap();
+                let state = playback.of(&player).unwrap();
+                let mute = if service == Service::RenderingControl {
+                    state.mute
+                } else {
+                    state.group_mute
+                };
+                assert_eq!(mute, Some(expected), "{service:?}: {value}");
+                let before = state.clone();
+                for invalid in ["", "2", "unknown", "NOT_IMPLEMENTED"] {
+                    assert!(
+                        apply(
+                            &mut [],
+                            &mut playback,
+                            &player,
+                            service,
+                            &initial(invalid),
+                            now,
+                        )
+                        .is_err()
+                    );
+                    assert_eq!(playback.of(&player), Some(&before));
+                }
+            }
+        }
     }
 
     #[test]

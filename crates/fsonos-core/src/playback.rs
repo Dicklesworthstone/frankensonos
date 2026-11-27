@@ -221,8 +221,8 @@ impl Playback {
                     state.group_volume = Some(v);
                     changes.group_volume = Some(v);
                 }
-                if let Some(m) = notify.property("GroupMute") {
-                    state.group_mute = Some(m.trim() == "1");
+                if let Some(m) = notify.property_bool("GroupMute") {
+                    state.group_mute = Some(m);
                 }
             }
         }

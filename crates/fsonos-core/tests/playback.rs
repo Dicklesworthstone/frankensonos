@@ -143,6 +143,93 @@ fn group_rendering_control_is_plain_properties() {
     assert_eq!((st.group_volume, st.group_mute), (Some(33), Some(false)));
 }
 
+fn mute_event(source: EventSource, value: &str, volume: u8) -> Notify {
+    if source == EventSource::RenderingControl {
+        plain(&[(
+            "LastChange",
+            &format!(
+                "<Event><InstanceID val=\"0\">\
+                 <Volume channel=\"Master\" val=\"{volume}\"/>\
+                 <Mute channel=\"Master\" val=\" {value} \"/>\
+                 </InstanceID></Event>"
+            ),
+        )])
+    } else {
+        plain(&[("GroupVolume", &volume.to_string()), ("GroupMute", value)])
+    }
+}
+
+#[test]
+fn room_and_group_mute_events_accept_all_known_boolean_forms() {
+    for source in [
+        EventSource::RenderingControl,
+        EventSource::GroupRenderingControl,
+    ] {
+        for (value, expected) in [
+            ("1", true),
+            ("true", true),
+            ("yes", true),
+            ("0", false),
+            ("false", false),
+            ("no", false),
+        ] {
+            let mut playback = Playback::default();
+            let changes = playback
+                .apply(
+                    &player(),
+                    source,
+                    &mute_event(source, value, 17),
+                    Instant::now(),
+                )
+                .unwrap();
+            let state = playback.of(&player()).unwrap();
+            if source == EventSource::RenderingControl {
+                assert_eq!(state.mute, Some(expected), "{value}");
+                assert_eq!(changes.mute, Some(expected));
+                assert_eq!(state.group_mute, None);
+            } else {
+                assert_eq!(state.group_mute, Some(expected), "{value}");
+                assert_eq!(state.mute, None);
+            }
+        }
+    }
+}
+
+#[test]
+fn malformed_mute_deltas_preserve_unknown_or_observed_state_and_apply_volume() {
+    for source in [
+        EventSource::RenderingControl,
+        EventSource::GroupRenderingControl,
+    ] {
+        for prior in [None, Some(true), Some(false)] {
+            for invalid in ["", "2", "unknown", "NOT_IMPLEMENTED"] {
+                let mut playback = Playback::default();
+                let now = Instant::now();
+                if let Some(mute) = prior {
+                    let value = if mute { "true" } else { "false" };
+                    playback
+                        .apply(&player(), source, &mute_event(source, value, 17), now)
+                        .unwrap();
+                }
+                let changes = playback
+                    .apply(&player(), source, &mute_event(source, invalid, 29), now)
+                    .unwrap();
+                let state = playback.of(&player()).unwrap();
+                assert_eq!(changes.mute, None);
+                if source == EventSource::RenderingControl {
+                    assert_eq!(state.mute, prior, "{invalid}");
+                    assert_eq!(state.volume, Some(29));
+                    assert_eq!(changes.volume, Some(29));
+                } else {
+                    assert_eq!(state.group_mute, prior, "{invalid}");
+                    assert_eq!(state.group_volume, Some(29));
+                    assert_eq!(changes.group_volume, Some(29));
+                }
+            }
+        }
+    }
+}
+
 #[test]
 fn position_advances_while_playing_and_freezes_when_it_stops() {
     let mut p = Playback::default();

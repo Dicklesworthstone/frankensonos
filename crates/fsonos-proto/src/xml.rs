@@ -13,6 +13,16 @@ pub(crate) fn parse(text: &str) -> Result<Document<'_>, ProtoError> {
     Document::parse(text).map_err(|e| ProtoError::Malformed(format!("xml: {e}")))
 }
 
+/// The UPnP boolean forms shared by SOAP reads and event values. An absent
+/// usable value must remain unknown instead of being interpreted as false.
+pub(crate) fn boolean(value: &str) -> Option<bool> {
+    match value.trim() {
+        "1" | "true" | "yes" => Some(true),
+        "0" | "false" | "no" => Some(false),
+        _ => None,
+    }
+}
+
 /// First child element of `node` whose local name is `name`.
 pub(crate) fn child<'a, 'i>(node: Node<'a, 'i>, name: &str) -> Option<Node<'a, 'i>> {
     node.children()

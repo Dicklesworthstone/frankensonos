@@ -89,6 +89,13 @@ impl Notify {
             .map(|(_, v)| v.as_str())
     }
 
+    /// A boolean property, if present and valid. Malformed values are not an
+    /// observation of false; callers retain their previous or unknown state.
+    #[must_use]
+    pub fn property_bool(&self, name: &str) -> Option<bool> {
+        self.property(name).and_then(xml::boolean)
+    }
+
     /// The `LastChange` document of an AVTransport or RenderingControl event.
     pub fn last_change(&self) -> Result<Option<LastChange>, ProtoError> {
         self.property("LastChange")
@@ -227,7 +234,7 @@ impl LastChange {
     /// The Master mute (RenderingControl).
     #[must_use]
     pub fn mute(&self) -> Option<bool> {
-        self.get("Mute").map(|v| v.trim() == "1")
+        self.get("Mute").and_then(xml::boolean)
     }
 
     #[must_use]
@@ -325,6 +332,44 @@ mod tests {
         let init = notify(RCS_INIT_S1).last_change().unwrap().unwrap();
         assert!(init.volume().is_some());
         assert!(init.mute().is_some());
+    }
+
+    #[test]
+    fn mute_events_use_known_boolean_forms_and_only_the_master_channel() {
+        for (value, expected) in [
+            ("1", Some(true)),
+            ("true", Some(true)),
+            ("yes", Some(true)),
+            ("0", Some(false)),
+            ("false", Some(false)),
+            ("no", Some(false)),
+            ("", None),
+            ("2", None),
+            ("unknown", None),
+            ("NOT_IMPLEMENTED", None),
+        ] {
+            let change = parse_last_change(&format!(
+                "<Event><InstanceID val=\"0\">\
+                 <Mute channel=\"LF\" val=\"1\"/>\
+                 <Mute channel=\"Master\" val=\" {value} \"/>\
+                 <Mute channel=\"RF\" val=\"0\"/>\
+                 </InstanceID></Event>"
+            ))
+            .unwrap();
+            assert_eq!(change.mute(), expected, "{value}");
+            let event = notify(&format!(
+                "<e:propertyset xmlns:e=\"urn:schemas-upnp-org:event-1-0\">\
+                 <e:property><GroupMute> \n{value}\t </GroupMute></e:property>\
+                 </e:propertyset>"
+            ));
+            assert_eq!(event.property_bool("GroupMute"), expected, "{value}");
+            assert_eq!(event.property_bool("Missing"), None);
+        }
+        let no_master = parse_last_change(
+            "<Event><InstanceID val=\"0\"><Mute channel=\"LF\" val=\"1\"/></InstanceID></Event>",
+        )
+        .unwrap();
+        assert_eq!(no_master.mute(), None);
     }
 
     #[test]
