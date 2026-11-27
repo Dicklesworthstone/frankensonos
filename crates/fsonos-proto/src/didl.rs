@@ -203,7 +203,7 @@ pub fn favorite_metadata(metadata: &str) -> Result<String, ProtoError> {
 }
 
 /// Parameters needed to render a Spotify track on a specific household. These
-/// are discovered from the household's own favorites, never guessed.
+/// are observed in the household's favorites or current native track, never guessed.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct SpotifyRenderParams {
     pub sid: u32,
@@ -211,7 +211,7 @@ pub struct SpotifyRenderParams {
     pub sn: u32,
     /// The `SA_RINCON<service_type>_X_#Svc<service_type>-0-Token` descriptor.
     pub cdudn: String,
-    /// The item-id prefix observed in the household's favorites (e.g. 10032020).
+    /// The item-id prefix observed in native track metadata (e.g. 10032020).
     pub item_id_prefix: String,
 }
 

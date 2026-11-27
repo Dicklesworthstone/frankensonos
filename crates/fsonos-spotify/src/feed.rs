@@ -262,8 +262,8 @@ pub enum FeedError {
     )]
     TemporarilyUnavailable { retry_after_secs: u64 },
     #[error(
-        "this household can't play Spotify yet: add any Spotify track to its Sonos \
-         favorites so FrankenSonos can learn how this household plays Spotify"
+        "this group has no usable Spotify renderer settings: play a Spotify track here \
+         with the Sonos app, or add a track to its Sonos favorites, then try again"
     )]
     NoRenderParams,
     #[error(
@@ -1672,9 +1672,9 @@ impl QueueFeed {
     }
 }
 
-/// The household's Spotify render parameters: learned from its favorites
-/// and cached in `store` for the household, or read from `store` if its
-/// favorites no longer hold a Spotify track.
+/// The household's Spotify render parameters: learned from favorites or this
+/// group's current native track, and cached in `store` for the household.
+/// A previous observation can be reused when neither live source supplies it.
 fn render_params<T: Transport + ?Sized, S: Store + ?Sized>(
     at: &Speakers<'_, T>,
     store: &mut S,
@@ -3348,7 +3348,15 @@ mod tests {
             "{err}"
         );
 
-        // A household that never had a Spotify favorite to learn from.
+        // No favorite, cached template, or current native Spotify source.
+        // A prior native queue can now provide usable renderer evidence.
+        fsonos_proto::control::set_av_transport_uri(
+            &lan,
+            rig.host(),
+            "http://example.invalid/no-spotify-template.flac",
+            "",
+        )
+        .unwrap();
         let bare = Flaky {
             no_favorites: true,
             ..Flaky::new(lan.clone())

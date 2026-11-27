@@ -1,10 +1,7 @@
 //! Recover one definitively refused movement from this household's observed
 //! track accounts. The queue proof owns every send, including the one retry.
 
-use fsonos_proto::content::browse_all;
-use fsonos_proto::didl::{
-    SpotifyRenderParams, spotify_queue_uri, spotify_track_didl, spotify_track_templates,
-};
+use fsonos_proto::didl::{SpotifyRenderParams, spotify_queue_uri, spotify_track_didl};
 use fsonos_proto::soap::{self, AV_TRANSPORT};
 use fsonos_proto::{ProtoError, Transport};
 use std::net::IpAddr;
@@ -13,7 +10,7 @@ use super::{FeedError, Movement, enqueue};
 use fsonos_core::CoreError;
 
 /// Add one movement, retaining an accepted replacement template for the rest
-/// of this work/batch. A definite AddURIToQueue/800 permits one new favorites
+/// of this work/batch. A definite AddURIToQueue/800 permits one new template
 /// read and at most one retry, only after the owner and unchanged queue have
 /// been confirmed. An uncertain write is never replayed.
 pub(super) fn add_movement<T: Transport + ?Sized>(
@@ -41,8 +38,8 @@ pub(super) fn add_movement<T: Transport + ?Sized>(
     if !proof.retains_refused_queue() {
         return classify_refusal(result, refused);
     }
-    let favorites = browse_all(transport, host, "FV:2")?;
-    let templates = spotify_track_templates(&favorites);
+    let templates =
+        fsonos_core::control::spotify_track_templates_at(transport, host, proof.coordinator())?;
     // Queue URIs carry neither flags nor account numbers. Compare the actual
     // DIDL so an equivalent payload cannot consume the one recovery attempt.
     let replacement = templates

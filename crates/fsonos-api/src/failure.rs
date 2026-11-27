@@ -273,7 +273,8 @@ impl ErrorCode {
                 "Link Spotify in that household's Sonos app once, then retry."
             }
             Self::RenderParamsMissing => {
-                "Add any Spotify track to My Sonos in that household's app, then retry."
+                "Play a Spotify track in this group with the Sonos app, or add a Spotify track \
+                 to My Sonos in that household, then retry."
             }
             Self::RenderParamsStale => {
                 "Re-link Spotify in that household's Sonos app (or re-add a Spotify track \

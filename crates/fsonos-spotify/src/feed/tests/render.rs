@@ -519,3 +519,102 @@ fn relearning_cannot_rebase_an_enqueue_onto_an_owner_edit_or_reboot() {
         }
     }
 }
+
+#[test]
+fn current_native_playback_bootstraps_readiness_and_a_cold_dj_without_favorites_or_cache() {
+    for s2 in [false, true] {
+        let rig = Rig::generation(s2);
+        let generation = if s2 { 2 } else { 1 };
+        let params = rig.sim.render_params(generation).unwrap();
+        let uri = "spotify:track:MnOpQr0123456789StUvWx";
+        transport::set_av_transport_uri(
+            &rig.lan,
+            rig.host(),
+            &spotify_track_uri(uri, &params),
+            &spotify_track_didl(uri, "Native current track", &params),
+        )
+        .unwrap();
+        transport::play(&rig.lan, rig.host()).unwrap();
+        transport::seek_position(&rig.lan, rig.host(), 37).unwrap();
+        rig.sim.retain_favorites(generation, |_| false).unwrap();
+        let pool = multi_movement_pool();
+        let mut store = MemStore::default();
+        let mut feed = QueueFeed::new(&rig.coordinator, DjConfig::default(), 73);
+        let before = format!("{feed:?}");
+        let marker = rig.sim.soap_log().len();
+
+        feed.start_ready(&rig.speakers(&rig.lan), plan(&pool, MIDNIGHT), &store)
+            .unwrap();
+        assert_eq!(
+            format!("{feed:?}"),
+            before,
+            "readiness does not advance the DJ"
+        );
+        let speakers = rig.speakers(&rig.lan);
+        let household = household_of(&speakers).unwrap();
+        assert_eq!(store.render_params(household).unwrap(), None);
+        assert!(store.recent_plays(None, 100).unwrap().is_empty());
+        assert!(
+            rig.sim.soap_log()[marker..]
+                .iter()
+                .all(|call| call.action == "Browse" || call.action.starts_with("Get"))
+        );
+        let current = control::playback(&rig.lan, &rig.houses, &rig.coordinator).unwrap();
+        assert_eq!(
+            spotify_uri_from_renderer_uri(&current.position.uri).as_deref(),
+            Some(uri)
+        );
+        assert_eq!(current.position.position_secs, Some(37));
+
+        feed.start(&rig.speakers(&rig.lan), plan(&pool, MIDNIGHT), &mut store)
+            .unwrap();
+        assert!(feed.is_active());
+        assert_eq!(rig.queue(), expected(&feed));
+        assert!(feed.queued().iter().all(QueuedWork::is_whole));
+        assert_eq!(store.render_params(household).unwrap().unwrap().0, params);
+        assert_eq!(rig.position(), 1);
+        assert_eq!(observation(&rig).transport, Some(TransportState::Playing));
+        assert!(plays(&store).is_empty(), "enqueue is not a listen");
+    }
+}
+
+#[test]
+fn native_current_settings_retry_only_a_definite_refusal_without_replaying_an_uncertain_add() {
+    for s2 in [false, true] {
+        for fault in [Fault::Transient800, Fault::LostReplyAndRead] {
+            let rig = Rig::generation(s2);
+            let params = rig.sim.render_params(if s2 { 2 } else { 1 }).unwrap();
+            let uri = "spotify:track:MnOpQr0123456789StUvWx";
+            transport::set_av_transport_uri(
+                &rig.lan,
+                rig.host(),
+                &spotify_track_uri(uri, &params),
+                &spotify_track_didl(uri, "Native current track", &params),
+            )
+            .unwrap();
+            transport::play(&rig.lan, rig.host()).unwrap();
+            let favorites = Favorites::new(&rig, false, false, fault);
+            let pool = multi_movement_pool();
+            let mut store = MemStore::default();
+            let mut feed = QueueFeed::new(&rig.coordinator, DjConfig::default(), 79);
+            let result = feed.start(&rig.speakers(&favorites), plan(&pool, MIDNIGHT), &mut store);
+            if fault == Fault::Transient800 {
+                result.unwrap();
+                assert_eq!(rig.queue(), expected(&feed));
+                assert_eq!(favorites.reads.get(), 2);
+                assert_eq!(favorites.adds.get(), rig.queue().len() + 1);
+                assert!(feed.queued().iter().all(QueuedWork::is_whole));
+            } else {
+                assert!(result.is_err());
+                assert_eq!(
+                    favorites.adds.get(),
+                    1,
+                    "an uncertain append is never replayed"
+                );
+                assert_eq!(favorites.accepted.get(), 1);
+                assert_eq!(favorites.reads.get(), 1);
+                assert_eq!(rig.queue().len(), 1);
+            }
+        }
+    }
+}

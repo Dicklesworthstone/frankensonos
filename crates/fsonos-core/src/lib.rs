@@ -92,10 +92,10 @@ pub enum CoreError {
     },
     #[error("store error: {0}")]
     Store(String),
-    #[error("this household has no Spotify track favorite to learn render parameters from")]
+    #[error("this group has no usable Spotify track template in its favorites or current playback")]
     NoSpotifyFavorite,
     /// The renderer refused a Spotify render with UPnP 800, the parameters
-    /// were relearned from the household's favorites and the render retried
+    /// were relearned from favorites or current native playback and retried
     /// once, and it still failed. Remedy: re-link Spotify in that
     /// household's Sonos app (or remove and re-add a Spotify track
     /// favorite) and retry.

@@ -12,8 +12,8 @@ use fsonos_proto::Transport;
 use fsonos_proto::content;
 use fsonos_proto::control::{self as soap, PositionInfo, TransportInfo};
 use fsonos_proto::didl::{
-    SpotifyBare, SpotifyContainer, SpotifyRenderParams, learn_spotify_params, spotify_bare_didl,
-    spotify_bare_uri, spotify_queue_uri, spotify_track_didl,
+    SpotifyBare, SpotifyContainer, SpotifyRenderParams, spotify_bare_didl, spotify_bare_uri,
+    spotify_queue_uri, spotify_track_didl,
 };
 use fsonos_proto::topology::{ZoneGroupState, get_zone_group_state};
 use fsonos_types::{Player, PlayerId};
@@ -31,6 +31,7 @@ mod queue_start;
 mod seek_absolute;
 mod seek_relative;
 mod source_start;
+mod spotify_observed;
 mod spotify_source;
 mod spotify_tracks;
 mod track_batch;
@@ -318,17 +319,33 @@ pub fn play_uri<T: Transport + ?Sized>(
     source_start::play(t, host, coordinator, uri, metadata)
 }
 
-/// The household's Spotify render parameters, learned from its own
-/// favorites (browsed through `coordinator`). `None` when the household has
-/// no Spotify track favorite to learn from: link Spotify in that household's
-/// Sonos app and add any Spotify track to My Sonos.
+/// The household's Spotify render parameters, learned from its favorites or
+/// the requested group's current native Spotify track. The observed track's
+/// account, flags and prefix must be complete and stable; nothing is guessed.
+/// `None` when neither source has a usable template. Playing a Spotify track
+/// in this group with the Sonos app, or adding one to My Sonos, supplies it.
 pub fn spotify_params<T: Transport + ?Sized>(
     t: &T,
     households: &[HouseholdState],
     coordinator: &PlayerId,
 ) -> Result<Option<SpotifyRenderParams>, CoreError> {
-    let favorites = content::browse_all(t, addr(households, coordinator)?, "FV:2")?;
-    Ok(learn_spotify_params(&favorites))
+    Ok(
+        spotify_track_templates_at(t, addr(households, coordinator)?, coordinator)?
+            .into_iter()
+            .next(),
+    )
+}
+
+/// Read complete track templates at an identified player without writes.
+/// Favorite preference is retained. With no usable favorite, the player's
+/// current group supplies its observed native track template. Group members
+/// may be used for scene readiness before they become coordinators.
+pub fn spotify_track_templates_at<T: Transport + ?Sized>(
+    t: &T,
+    host: IpAddr,
+    player: &PlayerId,
+) -> Result<Vec<SpotifyRenderParams>, CoreError> {
+    spotify_observed::templates(t, host, player)
 }
 
 /// The renderer-ready URI and DIDL-Lite metadata that play `spotify_uri` (a
@@ -342,9 +359,9 @@ pub fn spotify_track_source<T: Transport + ?Sized>(
     spotify_uri: &str,
     title: &str,
 ) -> Result<Option<(String, String)>, CoreError> {
-    let favorites = content::browse_all(t, addr(households, coordinator)?, "FV:2")?;
+    let templates = spotify_track_templates_at(t, addr(households, coordinator)?, coordinator)?;
     Ok(spotify_source::track(
-        &favorites,
+        &templates,
         spotify_uri,
         title,
         spotify_source::TrackUse::Direct,
@@ -372,10 +389,17 @@ pub fn check_spotify_source<T: Transport + ?Sized>(
             .ok_or(CoreError::NoSpotifyFavorite);
     }
     if let Some(kind) = SpotifyContainer::of(spotify_uri) {
-        let favorites = content::browse_all(t, addr(households, player)?, "FV:2")?;
-        return spotify_source::container(&favorites, kind, spotify_uri, spotify_uri)
-            .map(|_| ())
-            .ok_or(CoreError::NoSpotifyFavorite);
+        return spotify_observed::container(
+            t,
+            addr(households, player)?,
+            player,
+            kind,
+            spotify_uri,
+            spotify_uri,
+            None,
+        )?
+        .map(|_| ())
+        .ok_or(CoreError::NoSpotifyFavorite);
     }
     Err(ProtoError::Malformed("unsupported Spotify source kind".into()).into())
 }
@@ -389,9 +413,10 @@ fn is_render_800(e: &CoreError) -> bool {
 /// Play `spotify_uri` (a `spotify:track:<id>`) on the group `coordinator`
 /// leads, self-healing one round of parameter drift: if the renderer
 /// refuses the initial source selection with UPnP 800, the household's render
-/// parameters are relearned from its favorites and the render retried
-/// exactly once. A second 800 (or a household that lost its Spotify
-/// favorites mid-flight) fails with [`CoreError::RenderParamsStale`] /
+/// parameters are relearned from its favorites or current native track and
+/// the render retried
+/// exactly once. A second 800 (or loss of the observed template mid-flight)
+/// fails with [`CoreError::RenderParamsStale`] /
 /// [`CoreError::NoSpotifyFavorite`]; the retry never loops. Once the source is
 /// selected, a failed Play is an uncertain overall start and never replays
 /// the completed source change, even when Play explicitly returns 800.
@@ -443,8 +468,9 @@ pub fn play_spotify_container_with_receipt<T: Transport + ?Sized>(
 
 /// Play a bare Spotify kind (`spotify:artist:<id>`, `spotify:episode:<id>`,
 /// `spotify:show:<id>`) on the group `coordinator` leads. The account id is
-/// taken from the household's Spotify render parameters, so it needs a
-/// Spotify favorite ([`CoreError::NoSpotifyFavorite`] otherwise);
+/// taken from the group's observed Spotify render parameters: a track
+/// favorite or complete current native track ([`CoreError::NoSpotifyFavorite`]
+/// otherwise);
 /// `flags`/`sn`/the descriptor are not sent for these kinds (they are
 /// refused with 402 when present).
 pub fn play_spotify_bare<T: Transport + ?Sized>(
@@ -606,25 +632,29 @@ fn enqueue_spotify_observed<T: Transport + ?Sized>(
     }
     let kind = SpotifyContainer::of(spotify_uri);
     let source = |rejected: Option<&(String, String)>| -> Result<(String, String), CoreError> {
-        let favorites = content::browse_all(t, host, "FV:2")?;
         if SpotifyBare::of(spotify_uri).is_some() {
-            let params = learn_spotify_params(&favorites).ok_or(CoreError::NoSpotifyFavorite)?;
+            let params =
+                spotify_params(t, households, coordinator)?.ok_or(CoreError::NoSpotifyFavorite)?;
             return Ok((
                 spotify_bare_uri(spotify_uri, params.sid),
                 spotify_bare_didl(spotify_uri, title, params.sid),
             ));
         }
         if let Some(kind) = kind {
-            return match rejected {
-                Some(old) => {
-                    spotify_source::after_rejection(&favorites, kind, spotify_uri, title, old)
-                }
-                None => spotify_source::container(&favorites, kind, spotify_uri, title),
-            }
+            return spotify_observed::container(
+                t,
+                host,
+                coordinator,
+                kind,
+                spotify_uri,
+                title,
+                rejected,
+            )?
             .ok_or(CoreError::NoSpotifyFavorite);
         }
+        let templates = spotify_track_templates_at(t, host, coordinator)?;
         spotify_source::track(
-            &favorites,
+            &templates,
             spotify_uri,
             title,
             spotify_source::TrackUse::Queue,

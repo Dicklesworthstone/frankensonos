@@ -5,7 +5,7 @@
 use fsonos_proto::didl::{
     DidlObject, SpotifyContainer, SpotifyRenderParams, learn_spotify_params, parse_didl,
     spotify_container_didl, spotify_container_uri, spotify_queue_uri, spotify_track_didl,
-    spotify_track_templates, spotify_track_uri, spotify_uri_from_renderer_uri,
+    spotify_track_uri, spotify_uri_from_renderer_uri,
 };
 
 #[derive(Clone, Copy)]
@@ -20,19 +20,19 @@ pub(super) enum TrackUse {
 /// rejected queue metadata. If no alternative exists, retain the established
 /// single retry of the preferred template for a transient 800.
 pub(super) fn track(
-    favorites: &[DidlObject],
+    templates: &[SpotifyRenderParams],
     source: &str,
     title: &str,
     usage: TrackUse,
     rejected: Option<&(String, String)>,
 ) -> Option<(String, String)> {
     let mut preferred = None;
-    for params in spotify_track_templates(favorites) {
+    for params in templates {
         let uri = match usage {
-            TrackUse::Direct => spotify_track_uri(source, &params),
+            TrackUse::Direct => spotify_track_uri(source, params),
             TrackUse::Queue => spotify_queue_uri(source),
         };
-        let candidate = (uri, spotify_track_didl(source, title, &params));
+        let candidate = (uri, spotify_track_didl(source, title, params));
         if rejected.is_none_or(|old| !same_source(&candidate, old)) {
             return Some(candidate);
         }
@@ -212,11 +212,7 @@ fn choose(
     // Without a complete container template, do not borrow a prefix from a
     // malformed or differently linked favorite. These are the existing
     // protocol defaults, not values inferred from another household.
-    let prefix = kind.prefix_in(&[]);
-    let fallback = (
-        spotify_container_uri(source, &prefix, &params),
-        spotify_container_didl(source, title, kind, &prefix, &params),
-    );
+    let fallback = from_track(&params, kind, source, title);
     if rejected.is_some_and(|old| same_source(&fallback, old)) {
         None
     } else {
@@ -224,10 +220,25 @@ fn choose(
     }
 }
 
+pub(super) fn from_track(
+    params: &SpotifyRenderParams,
+    kind: SpotifyContainer,
+    source: &str,
+    title: &str,
+) -> (String, String) {
+    let prefix = kind.prefix_in(&[]);
+    (
+        spotify_container_uri(source, &prefix, params),
+        spotify_container_didl(source, title, kind, &prefix, params),
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use fsonos_proto::didl::{spotify_track_didl, spotify_track_uri, xml_escape};
+    use fsonos_proto::didl::{
+        spotify_track_didl, spotify_track_templates, spotify_track_uri, xml_escape,
+    };
 
     fn params(sn: u32) -> SpotifyRenderParams {
         SpotifyRenderParams {
@@ -277,9 +288,10 @@ mod tests {
                 )
             })
             .collect();
-        let initial = track(&favorites, source, "Track", TrackUse::Queue, None).unwrap();
+        let templates = spotify_track_templates(&favorites);
+        let initial = track(&templates, source, "Track", TrackUse::Queue, None).unwrap();
         let recovered =
-            track(&favorites, source, "Track", TrackUse::Queue, Some(&initial)).unwrap();
+            track(&templates, source, "Track", TrackUse::Queue, Some(&initial)).unwrap();
         assert_eq!(recovered.0, spotify_queue_uri(source));
         assert_eq!(recovered.1, spotify_track_didl(source, "Track", &distinct));
     }
@@ -292,10 +304,11 @@ mod tests {
             &spotify_track_uri(source, &params),
             &spotify_track_didl(source, "Track", &params),
         )];
+        let templates = spotify_track_templates(&favorites);
         for usage in [TrackUse::Direct, TrackUse::Queue] {
-            let initial = track(&favorites, source, "Track", usage, None).unwrap();
+            let initial = track(&templates, source, "Track", usage, None).unwrap();
             assert_eq!(
-                track(&favorites, source, "Track", usage, Some(&initial)),
+                track(&templates, source, "Track", usage, Some(&initial)),
                 Some(initial)
             );
         }

@@ -273,6 +273,10 @@ impl Batch {
         self
     }
 
+    pub(super) fn coordinator(&self) -> &PlayerId {
+        &self.coordinator
+    }
+
     pub(super) fn continuity(&self) -> Option<Continuity> {
         self.continuity.clone()
     }

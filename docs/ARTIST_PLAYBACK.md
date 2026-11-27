@@ -14,9 +14,18 @@ DJ's selection pool.
 ## Use it
 
 Complete `fsonos setup` for the owner's Spotify app and sign-in. The destination
-household must also have its Spotify account linked in Sonos and a Spotify
-favorite from which FrankenSonos can learn the track-rendering parameters.
+household must also have its Spotify account linked in Sonos. FrankenSonos
+learns rendering settings from a Spotify track favorite, or, when no usable
+track favorite exists, from a complete native Spotify track currently selected
+in the destination group. Playing a Spotify track there with the Sonos app
+can therefore bootstrap playback without adding a favorite.
 Web sign-in reads metadata; the speakers play through their existing Sonos link.
+
+The current-track fallback also serves direct playback, queue additions, DJ
+readiness and cold starts. It checks the source, account metadata, coordinator,
+group membership and player boot across repeated reads. It never borrows a
+template from an unrelated group or invents missing account fields. DJ readiness
+is read-only; a start can retain the observed settings in its household cache.
 
 ```sh
 fsonos play Kitchen 'https://open.spotify.com/artist/<22-character-id>'

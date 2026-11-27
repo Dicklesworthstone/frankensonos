@@ -2,10 +2,10 @@
 //! loading share renderer account selection and the same bounded recovery.
 
 use super::{
-    addr, is_render_800, pause, play_uri, queue_start, source_start, spotify_params, spotify_source,
+    addr, is_render_800, pause, play_uri, queue_start, source_start, spotify_observed,
+    spotify_params, spotify_source, spotify_track_templates_at,
 };
 use crate::{CoreError, HouseholdState};
-use fsonos_proto::content;
 use fsonos_proto::control as soap;
 use fsonos_proto::didl::{SpotifyContainer, spotify_bare_didl, spotify_bare_uri};
 use fsonos_proto::{ProtoError, Transport};
@@ -142,9 +142,9 @@ pub(super) fn spotify_track<T: Transport + ?Sized>(
     autoplay: bool,
 ) -> Result<(), CoreError> {
     let source = |rejected| {
-        let favorites = content::browse_all(t, addr(households, coordinator)?, "FV:2")?;
+        let templates = spotify_track_templates_at(t, addr(households, coordinator)?, coordinator)?;
         spotify_source::track(
-            &favorites,
+            &templates,
             spotify_uri,
             title,
             spotify_source::TrackUse::Direct,
@@ -175,7 +175,7 @@ pub(super) fn spotify_track<T: Transport + ?Sized>(
 /// Play a bare Spotify kind (`spotify:artist:<id>`, `spotify:episode:<id>`,
 /// `spotify:show:<id>`) on the group `coordinator` leads. These kinds render
 /// on the account id alone: only `?sid=<id>` is appended, with the class the
-/// kind expects. It needs the household's Spotify favorite for that id.
+/// kind expects. The account is observed from a favorite or current native track.
 pub(super) fn spotify_bare<T: Transport + ?Sized>(
     t: &T,
     households: &[HouseholdState],
@@ -284,12 +284,8 @@ fn spotify_container_render<T: Transport + ?Sized>(
 ) -> Result<super::QueueReplacement, CoreError> {
     let host = addr(households, coordinator)?;
     let source = |rejected: Option<&(String, String)>| -> Result<(String, String), CoreError> {
-        let favorites = content::browse_all(t, host, "FV:2")?;
-        match rejected {
-            Some(old) => spotify_source::after_rejection(&favorites, kind, spotify_uri, title, old),
-            None => spotify_source::container(&favorites, kind, spotify_uri, title),
-        }
-        .ok_or(CoreError::NoSpotifyFavorite)
+        spotify_observed::container(t, host, coordinator, kind, spotify_uri, title, rejected)?
+            .ok_or(CoreError::NoSpotifyFavorite)
     };
     crate::queue_source::replace_recovering(t, households, coordinator, autoplay, receipt, source)
 }

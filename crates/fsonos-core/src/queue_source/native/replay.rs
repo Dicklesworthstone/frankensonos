@@ -115,6 +115,45 @@ impl Identity {
         }))
     }
 
+    /// A current renderer can supply the complete track template even when
+    /// My Sonos has no track favorite. Queue-only URIs cannot reveal flags.
+    pub(crate) fn render_params(
+        uri: &str,
+        metadata: &str,
+    ) -> Result<Option<SpotifyRenderParams>, ProtoError> {
+        if !uri.starts_with("x-sonos-spotify:") {
+            return Ok(None);
+        }
+        let Some(identity) = Self::read(uri, metadata)? else {
+            return Ok(None);
+        };
+        let Some((_, query)) = uri.split_once('?') else {
+            return Ok(None);
+        };
+        let mut values = query
+            .split('&')
+            .filter_map(|pair| pair.strip_prefix("flags="));
+        let Some(flags) = values.next() else {
+            return Ok(None);
+        };
+        if values.next().is_some()
+            || flags.is_empty()
+            || !flags.bytes().all(|byte| byte.is_ascii_digit())
+        {
+            return Err(invalid("a Spotify resource has ambiguous or invalid flags"));
+        }
+        let flags = flags
+            .parse::<u32>()
+            .map_err(|_| invalid("a Spotify resource has invalid flags"))?;
+        Ok(Some(SpotifyRenderParams {
+            sid: identity.sid,
+            flags,
+            sn: identity.sn,
+            cdudn: identity.descriptor.value,
+            item_id_prefix: identity.prefix,
+        }))
+    }
+
     pub(crate) fn repair(&self, uri: &str, metadata: &str) -> Result<Option<String>, ProtoError> {
         if account(uri)? != Some((self.sid, self.sn)) {
             return Ok(None);
