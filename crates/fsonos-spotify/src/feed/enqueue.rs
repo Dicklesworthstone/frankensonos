@@ -292,6 +292,7 @@ impl Batch {
         host: IpAddr,
         uri: &str,
         desired: u32,
+        admit: impl FnOnce() -> Result<(), FeedError>,
         send: impl FnOnce() -> Result<(u32, Option<u32>), FeedError>,
     ) -> Result<(u32, Option<u32>), FeedError> {
         // Errors invalidate cached evidence unless a definitive refusal is
@@ -334,6 +335,9 @@ impl Batch {
                 invalid("invalid position, empty identity or queue verification limit")
             })?;
         current(transport, host, &before)?;
+        // Selection may have waited through slow speaker reads. Admission
+        // failures send nothing and must never enter post-send reconciliation.
+        admit()?;
         let failure = match send() {
             Ok(acknowledgement) if expected.accepts(acknowledgement) => None,
             Ok(_) => Some(invalid(

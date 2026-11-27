@@ -234,8 +234,21 @@ fn work(pool: &WorkPool, queued: &QueuedWork, queue_position: Option<u32>) -> Dj
                 .and_then(|k| k.movement.clone())
                 .unwrap_or_else(|| m.title.clone())
         }),
+        // A catalog change can retire an unfinished suffix while its
+        // confirmed prefix remains owned. Show only that retained portion.
         minutes: known
-            .map(|w| w.total_secs)
+            .map(|work| {
+                queued
+                    .movements
+                    .iter()
+                    .filter_map(|retained| {
+                        work.movements
+                            .iter()
+                            .find(|movement| movement.track.source_uri == retained.uri)
+                            .and_then(|movement| movement.track.duration_secs)
+                    })
+                    .fold(0_u32, u32::saturating_add)
+            })
             .filter(|&secs| secs > 0)
             .map(|secs| secs.div_ceil(60)),
         reason: reason(&queued.reason),

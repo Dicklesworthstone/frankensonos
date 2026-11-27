@@ -790,6 +790,7 @@ Multi-destination selection regressions in
 deduplicated groups, ordered repeats, volume caps, silent next/append, separate
 source/audience/queue revisions, complete undo and individual partial outcomes.
 CLI and MCP tests cover destination arguments and retained partial receipts.
-These Rust additions remain unexecuted: both workspace checking attempts exited
-137 before project checking, and the execution environment disconnected before
-final formatting and simulator validation.
+Pinned rustfmt checks pass across all 1,148 workspace Rust source files.
+These Rust tests remain unexecuted: both workspace checking attempts exited 137
+before project checking, and the execution environment repeatedly disconnected.
+Compilation and simulator validation remain outstanding.

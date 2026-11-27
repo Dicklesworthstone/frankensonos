@@ -52,7 +52,12 @@ impl QueueFeed {
         } else {
             preview.release();
         }
-        let partial = preview.partial_to_finish();
+        if preview.queued.iter().any(|work| !work.is_whole())
+            && let Some(receipt) = plan.catalog
+        {
+            receipt.confirm(store)?;
+        }
+        let partial = preview.partial_to_finish(plan);
         let count = (1 + preview.lookahead()).saturating_sub(preview.queued.len());
         let mut additional = partial.map_or(0, |index| {
             preview.queued[index]
@@ -115,6 +120,9 @@ impl QueueFeed {
                 .any(|group| group.coordinator == *at.coordinator)
         }) {
             enqueue::ready(at.transport, host_of(at)?, at.coordinator, additional)?;
+        }
+        if let Some(receipt) = plan.catalog {
+            receipt.confirm(store)?;
         }
         Ok(())
     }

@@ -111,7 +111,13 @@ fn check_plan(
         context.now.unsigned_abs(),
     );
     let feed = state.feeds.get(at.coordinator).unwrap_or(&fresh);
-    let planning = plan(&candidate.pool, Some(&feedback), &context, &elsewhere);
+    let planning = plan(
+        &candidate.pool,
+        candidate.catalog.as_ref(),
+        Some(&feedback),
+        &context,
+        &elsewhere,
+    );
     if silent {
         feed.load_ready(&speakers(at), planning, store)
     } else {

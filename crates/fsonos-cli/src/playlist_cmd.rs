@@ -332,7 +332,10 @@ mod tests {
             let request = args.request().unwrap();
             assert_eq!(request.zone, "Den@S1");
             assert_eq!(request.target.as_deref(), Some("all@S1"));
-            assert_eq!(request.expected_target_revision.as_deref(), Some(revision.as_str()));
+            assert_eq!(
+                request.expected_target_revision.as_deref(),
+                Some(revision.as_str())
+            );
             assert_eq!(request.expected_revision, "native:source");
             assert_eq!(request.positions, [3, 1, 3]);
             assert_eq!(request.expected_queue_revision, None);

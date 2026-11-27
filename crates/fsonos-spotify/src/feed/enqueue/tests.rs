@@ -198,6 +198,7 @@ fn speakers<'a, T: Transport + ?Sized>(
 fn planning(pool: &WorkPool) -> Planning<'_> {
     Planning {
         pool,
+        catalog: None,
         steer: None,
         feedback: None,
         now: MIDNIGHT,
@@ -235,6 +236,7 @@ fn lost_and_malformed_replies_are_recovered_over_s1_and_s2_sockets() {
                     &movement(),
                     0,
                     &mut Batch::new(&coordinator),
+                    &|| Ok(()),
                 )
                 .unwrap(),
                 (1, Some(1))
@@ -260,6 +262,7 @@ fn lost_reply_during_insertion_keeps_neighboring_owner_items() {
             &movement(),
             1,
             &mut Batch::new(&coordinator),
+            &|| Ok(()),
         )
         .unwrap(),
         (1, Some(2))
@@ -282,6 +285,7 @@ fn an_explicit_rejection_remains_retryable_without_a_duplicate() {
             &movement(),
             0,
             &mut Batch::new(&coordinator),
+            &|| Ok(()),
         ),
         Err(FeedError::Proto(ProtoError::SoapFault { code: 501, .. }))
     ));
@@ -294,6 +298,7 @@ fn an_explicit_rejection_remains_retryable_without_a_duplicate() {
             &movement(),
             0,
             &mut Batch::new(&coordinator),
+            &|| Ok(()),
         )
         .unwrap(),
         (1, Some(1))
@@ -313,6 +318,7 @@ fn an_unchanged_queue_after_a_timeout_does_not_authorize_a_repeat() {
         &movement(),
         0,
         &mut Batch::new(&coordinator),
+        &|| Ok(()),
     );
     assert!(matches!(result, Err(FeedError::UncertainEnqueue(_))));
     assert_eq!(transport.adds.get(), 1);
@@ -332,6 +338,7 @@ fn failed_preflight_never_sends_the_mutation() {
         &movement(),
         0,
         &mut Batch::new(&coordinator),
+        &|| Ok(()),
     );
     assert!(matches!(result, Err(FeedError::Proto(_))));
     assert_eq!(transport.adds.get(), 0);

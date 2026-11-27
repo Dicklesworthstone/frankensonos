@@ -116,7 +116,6 @@ fn selected_tracks_forward_order_duplicates_and_both_revisions_once() {
     }
 }
 
-
 #[test]
 fn selected_tracks_forward_the_source_and_reviewed_target_once() {
     let request = SonosPlaylistTracksRequest {
@@ -343,7 +342,11 @@ fn selected_tracks_tool_requires_native_selection_and_keeps_destination_revision
     for field in ["zone", "playlist", "positions", "expected_revision", "mode"] {
         assert!(required.contains(&json!(field)), "{value}");
     }
-    for optional in ["target", "expected_target_revision", "expected_queue_revision"] {
+    for optional in [
+        "target",
+        "expected_target_revision",
+        "expected_queue_revision",
+    ] {
         assert!(!required.contains(&json!(optional)), "{value}");
         assert!(value["inputSchema"]["properties"].get(optional).is_some());
     }

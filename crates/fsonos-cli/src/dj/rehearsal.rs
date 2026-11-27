@@ -96,6 +96,7 @@ pub(super) fn rehearse(
     let elsewhere = queued_elsewhere(&state.feeds, at.coordinator, now.timestamp());
     let plan = Planning {
         pool: &state.pool,
+        catalog: state.catalog.as_ref().map(super::catalog::Receipt::catalog),
         steer: None,
         feedback: state.feedback.as_ref(),
         now: now.timestamp(),

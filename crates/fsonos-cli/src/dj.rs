@@ -510,12 +510,14 @@ fn configuration_changed() -> Failure {
 
 fn plan<'a>(
     pool: &'a WorkPool,
+    catalog: Option<&'a catalog::Receipt>,
     feedback: Option<&'a FeedbackModel>,
     cx: &'a Context,
     queued_elsewhere: &'a [PlayRecord],
 ) -> Planning<'a> {
     Planning {
         pool,
+        catalog: catalog.map(catalog::Receipt::catalog),
         steer: cx.steer.as_ref(),
         feedback,
         now: cx.now,
@@ -748,6 +750,10 @@ fn steering_problem(failure: &Failure) -> String {
 fn failure(err: FeedError) -> Failure {
     let detail = err.to_string();
     match err {
+        FeedError::CatalogChanged => Failure::new(ErrorCode::NotReady, detail).with_hint(
+            "Already confirmed queue entries were retained. Retry with the updated library; \
+             automatic refills rebuild their selection plan before trying again.",
+        ),
         FeedError::EmptyPool => Failure::new(ErrorCode::SpotifyAuthRequired, detail).with_hint(
             "Sign in to Spotify and sync the library: fsonos setup does both, and running it again re-reads a library cached before the DJ played every genre.",
         ),
@@ -974,6 +980,7 @@ impl SpotifyDj {
                 let State {
                     feeds,
                     pool,
+                    catalog,
                     feedback,
                     ..
                 } = &mut *state;
@@ -981,7 +988,7 @@ impl SpotifyDj {
                 let feed = feeds.entry(at.coordinator.clone()).or_insert_with(|| {
                     QueueFeed::new(at.coordinator, DjConfig::default(), now.unsigned_abs())
                 });
-                let planning = plan(pool, feedback.as_ref(), &cx, &elsewhere);
+                let planning = plan(pool, catalog.as_ref(), feedback.as_ref(), &cx, &elsewhere);
                 let prepared = if action == FeedAction::Load {
                     feed.load(&speakers, planning, store)
                 } else {
@@ -1032,6 +1039,7 @@ impl SpotifyDj {
                 let State {
                     feeds,
                     pool,
+                    catalog,
                     feedback,
                     ..
                 } = &mut *state;
@@ -1042,7 +1050,7 @@ impl SpotifyDj {
                 let work = feed
                     .skip(
                         &speakers,
-                        plan(pool, feedback.as_ref(), &cx, &elsewhere),
+                        plan(pool, catalog.as_ref(), feedback.as_ref(), &cx, &elsewhere),
                         store,
                     )
                     .map_err(failure)?;
@@ -1527,6 +1535,7 @@ impl DjEngine for SpotifyDj {
             feeds,
             refill_retries,
             pool,
+            catalog,
             feedback,
             listening,
             problems,
@@ -1540,7 +1549,7 @@ impl DjEngine for SpotifyDj {
         };
         let result = feed.on_playback_with_recovery_checkpoint(
             &guarded_speakers,
-            plan(pool, feedback.as_ref(), &cx, &elsewhere),
+            plan(pool, catalog.as_ref(), feedback.as_ref(), &cx, &elsewhere),
             store,
             playback,
             &mut |feed| {

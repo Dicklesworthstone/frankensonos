@@ -4,14 +4,14 @@
 
 use super::{Failure, PLAN_RETRY, State, WorkPool};
 use fsonos_api::ErrorCode;
-use fsonos_core::store::{SpotifyLibraryOwner, Store};
+use fsonos_core::store::Store;
+use fsonos_spotify::feed::CatalogReceipt;
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct Receipt {
-    owner: Option<SpotifyLibraryOwner>,
-    revision: Option<u64>,
+    catalog: CatalogReceipt,
     data_dir: Option<PathBuf>,
     authorization_id: Option<String>,
 }
@@ -22,21 +22,14 @@ impl Receipt {
             .map(super::sync::authorization::selection)
             .transpose()?
             .flatten();
-        let read = || {
-            Ok((
-                store.spotify_library_owner()?,
-                store.library_catalog_revision()?,
-            ))
-        };
-        let (owner, revision) = read().map_err(|error: fsonos_core::store::StoreError| {
+        let catalog = CatalogReceipt::read(store).map_err(|error| {
             Failure::new(
                 ErrorCode::Internal,
                 format!("the DJ's library identity could not be read: {error}"),
             )
         })?;
         Ok(Self {
-            owner,
-            revision,
+            catalog,
             data_dir: data_dir.map(Path::to_owned),
             authorization_id,
         })
@@ -62,7 +55,11 @@ impl Receipt {
     }
 
     fn permits_reuse(&self, current: &Self) -> bool {
-        self.revision.is_some() && self == current
+        self.catalog.is_versioned() && self == current
+    }
+
+    pub(super) fn catalog(&self) -> &CatalogReceipt {
+        &self.catalog
     }
 }
 

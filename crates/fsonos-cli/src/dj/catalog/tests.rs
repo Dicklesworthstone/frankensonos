@@ -15,16 +15,17 @@ use fsonos_types::{Player, ZoneGroup};
 use std::cell::{Cell, RefCell};
 use std::collections::HashSet;
 use std::ops::Range;
+use std::rc::Rc;
 
 #[derive(Default)]
 struct ObservedStore {
-    inner: RefCell<MemStore>,
+    inner: Rc<RefCell<MemStore>>,
     library_reads: Cell<usize>,
     feedback_reads: Cell<usize>,
     fail_library: Cell<bool>,
     fail_feedback: Cell<bool>,
     fail_feedback_after_record: Cell<bool>,
-    fail_receipt: Cell<bool>,
+    fail_receipt: Rc<Cell<bool>>,
     revision_supported: Cell<bool>,
     publish_while_reading: Cell<bool>,
     publish_while_reading_feedback: Cell<bool>,
@@ -213,6 +214,7 @@ fn fixture() -> (ObservedStore, State) {
     (store, state)
 }
 
+mod enqueue;
 mod feedback_failures;
 mod genres;
 

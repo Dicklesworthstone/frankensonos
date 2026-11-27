@@ -341,17 +341,44 @@ fn real_s1_and_s2_batches_recover_a_lost_second_reply_without_duplicates() {
         let transport = Replies::new(&sim, Fault::LostReply);
         transport.fault.set(None);
         let mut batch = Batch::new(&coordinator);
-        add_movement(&transport, target, &mut params, &movement(), 0, &mut batch).unwrap();
+        add_movement(
+            &transport,
+            target,
+            &mut params,
+            &movement(),
+            0,
+            &mut batch,
+            &|| Ok(()),
+        )
+        .unwrap();
         assert!(
             batch.queue.is_some(),
             "the simulator reports boot and generation"
         );
         transport.fault.set(Some(Fault::LostReply));
         assert_eq!(
-            add_movement(&transport, target, &mut params, &movement(), 0, &mut batch).unwrap(),
+            add_movement(
+                &transport,
+                target,
+                &mut params,
+                &movement(),
+                0,
+                &mut batch,
+                &|| Ok(()),
+            )
+            .unwrap(),
             (2, Some(2))
         );
-        add_movement(&transport, target, &mut params, &movement(), 0, &mut batch).unwrap();
+        add_movement(
+            &transport,
+            target,
+            &mut params,
+            &movement(),
+            0,
+            &mut batch,
+            &|| Ok(()),
+        )
+        .unwrap();
         assert_eq!(transport.adds.get(), 3);
         assert_eq!(
             read(&sim.lan(), target).unwrap().uris,
@@ -368,10 +395,27 @@ fn real_reboot_invalidates_a_warm_batch_before_any_new_add() {
     let transport = Replies::new(&sim, Fault::LostReply);
     transport.fault.set(None);
     let mut batch = Batch::new(&coordinator);
-    add_movement(&transport, target, &mut params, &movement(), 0, &mut batch).unwrap();
+    add_movement(
+        &transport,
+        target,
+        &mut params,
+        &movement(),
+        0,
+        &mut batch,
+        &|| Ok(()),
+    )
+    .unwrap();
     sim.reboot("Den", std::time::Duration::ZERO).unwrap();
     assert!(matches!(
-        add_movement(&transport, target, &mut params, &movement(), 0, &mut batch),
+        add_movement(
+            &transport,
+            target,
+            &mut params,
+            &movement(),
+            0,
+            &mut batch,
+            &|| Ok(()),
+        ),
         Err(FeedError::Proto(_))
     ));
     assert_eq!(transport.adds.get(), 1);

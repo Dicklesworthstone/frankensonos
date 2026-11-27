@@ -623,6 +623,7 @@ mod tests {
                     },
                     Planning {
                         pool: &pool,
+                        catalog: None,
                         steer: None,
                         feedback: None,
                         now: 100,

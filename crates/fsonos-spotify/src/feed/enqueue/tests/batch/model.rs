@@ -99,9 +99,14 @@ impl Model {
         desired: u32,
         effect: Effect,
     ) -> Result<(u32, Option<u32>), FeedError> {
-        batch.confirmed(self, host(), uri, desired, || {
-            self.insert(uri, desired, effect)
-        })
+        batch.confirmed(
+            self,
+            host(),
+            uri,
+            desired,
+            || Ok(()),
+            || self.insert(uri, desired, effect),
+        )
     }
 
     fn insert(

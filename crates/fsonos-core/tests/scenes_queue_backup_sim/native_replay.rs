@@ -343,11 +343,7 @@ impl Transport for RegroupDuringReplayMetadata<'_> {
         // read after a complete native page belongs to replay identity capture.
         if name == "GetPositionInfo" && self.read_queue.get() && !self.changed.replace(true) {
             let member = self.fixture.sim.player("Beta").unwrap();
-            soap::leave_group(
-                &self.fixture.lan,
-                member.ip,
-                &PlayerId(member.uuid.clone()),
-            )?;
+            soap::leave_group(&self.fixture.lan, member.ip, &PlayerId(member.uuid.clone()))?;
         }
         Ok(response)
     }
@@ -371,7 +367,10 @@ fn a_group_change_during_native_replay_metadata_cannot_become_the_scene_baseline
         let error =
             scenes::capture_with_queue_backups(&transport, &f.houses, "Native queue", &[], 1)
                 .unwrap_err();
-        assert!(transport.changed.get(), "the group changed during renderer metadata capture");
+        assert!(
+            transport.changed.get(),
+            "the group changed during renderer metadata capture"
+        );
         assert!(
             error.to_string().contains("group changed while saving"),
             "S{generation}: {error}"

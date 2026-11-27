@@ -77,6 +77,21 @@ Inspect `fsonos dj sync --status` for the pending refresh, or request
 library needs one full refresh to establish this receipt; its last successful
 refresh remains visible while the new read is pending.
 
+Before each new movement is appended, the feeder also checks the accepted
+Spotify account and catalog revision that supplied its selection pool. This
+small store receipt is checked after speaker and queue preparation, including
+the bounded renderer retry. A changed or unreadable receipt stops admission
+before that append is sent; it is not an uncertain speaker mutation. Previously
+confirmed queue entries remain intact, and subsequent selection must use the
+current catalog. A rebuilt plan cannot revive unfinished movements that the
+accepted catalog has removed or excluded. It retains ownership of the admitted
+prefix, including a currently selected movement and its elapsed position, while
+retiring only the unadded suffix. Status reports the retained occurrences and
+their duration, and a shortened recording cannot inherit full-work listening
+credit. The check does not reread the full library or open another database
+connection, and it does not make the database and speaker write one atomic
+operation.
+
 ## Availability survives restarts
 
 A completed library refresh retains Spotify's explicit track exclusions for
@@ -177,6 +192,16 @@ Playlist cases cover interrupted publication, consumed-proof reuse, newer
 positive evidence, and a competing publication after the read. These Rust tests
 were added and reviewed, but could not run before the execution workspace
 became unavailable; compilation, formatting and runtime validation remain pending.
+
+Enqueue-admission regressions exercise S1/S2 account adoption, accepted library
+publication, negative availability, unreadable receipts and renderer retries
+during speaker preflight. They also cover read-only readiness, catalog-neutral
+listening writes, persisted partial additions, and continuing an already playing
+prefix after its suffix is retired. These tests are added but not executed:
+the workspace checks exited 137 before project checking, and the executor
+repeatedly disconnected. Pinned rustfmt checks subsequently passed across all
+1,148 workspace Rust source files; compilation and simulator validation remain
+outstanding.
 
 The focused filters below exercise this behavior; live Spotify operation and
 physical-speaker acceptance are separate. The stalled-body

@@ -187,6 +187,7 @@ fn next_uri(pool: &WorkPool, store: &impl Store) -> String {
         store,
         Planning {
             pool,
+            catalog: None,
             steer: None,
             feedback: None,
             now: NOW,

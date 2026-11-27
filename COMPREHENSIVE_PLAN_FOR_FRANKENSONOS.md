@@ -735,7 +735,17 @@ their standing preferences on every surface and in the daemon. What is on
   account changes retire the prior account's exclusions. Background artist and
   playlist continuation now publish fresh explicit denials in the same
   transaction as their music, checked against the account and exact receipt.
-  Negative-only changes also invalidate the warmed DJ pool. Playlist checkpoints
+  Negative-only changes also invalidate the warmed DJ pool. Every newly appended
+  movement now rechecks the accepted account/catalog receipt after speaker
+  preflight, including the bounded renderer retry. Stale or unreadable evidence
+  stops before that append is sent. Confirmed partial prefixes remain owned and
+  can continue at their selected position; a fresh plan retires an unavailable
+  unadded suffix instead of admitting it under the new receipt. The check uses
+  existing store metadata without a full catalog scan or another connection.
+  Added S1/S2 admission and continuation regressions await execution after
+  workspace checking exited 137 and the executor disconnected. Pinned rustfmt
+  checks subsequently passed across all 1,148 workspace Rust source files.
+  Playlist checkpoints
   retain pending denials until their exact window is acknowledged. Their original
   catalog revision prevents old unpublished evidence from overriding a newer
   accepted positive observation; a stale proof starts a fresh private scan while

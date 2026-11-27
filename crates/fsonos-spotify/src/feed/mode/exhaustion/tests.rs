@@ -164,6 +164,7 @@ impl Rig {
             &self.speakers(transport),
             Planning {
                 pool: &pool,
+                catalog: None,
                 steer: None,
                 feedback: None,
                 now: 10_000,

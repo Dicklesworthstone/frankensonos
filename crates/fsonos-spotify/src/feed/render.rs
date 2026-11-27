@@ -23,10 +23,11 @@ pub(super) fn add_movement<T: Transport + ?Sized>(
     movement: &Movement,
     desired: u32,
     proof: &mut enqueue::Batch,
+    admit: &dyn Fn() -> Result<(), FeedError>,
 ) -> Result<(u32, Option<u32>), FeedError> {
     let metadata = spotify_track_didl(&movement.uri, &movement.title, params);
     let mut refused = false;
-    let result = proof.confirmed(transport, host, &movement.uri, desired, || {
+    let result = proof.confirmed(transport, host, &movement.uri, desired, admit, || {
         let result = send(transport, host, movement, &metadata, desired);
         refused = matches!(
             &result,
@@ -55,7 +56,7 @@ pub(super) fn add_movement<T: Transport + ?Sized>(
     // A prerequisite for the retry can itself return 800. Only the actual
     // AddURIToQueue result can identify this attempt as a renderer refusal.
     refused = false;
-    let result = proof.confirmed(transport, host, &movement.uri, desired, || {
+    let result = proof.confirmed(transport, host, &movement.uri, desired, admit, || {
         let result = send(transport, host, movement, &metadata, desired);
         refused = is_refusal(&result);
         result

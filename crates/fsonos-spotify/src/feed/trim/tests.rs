@@ -398,6 +398,7 @@ fn failed_readback_defers_top_up_until_positions_can_be_reconciled() {
     let pool = WorkPool::default();
     let plan = Planning {
         pool: &pool,
+        catalog: None,
         steer: None,
         feedback: None,
         now: 0,
@@ -587,6 +588,7 @@ fn playback_keeps_feeding_and_recording_once_after_a_confirmed_lost_trim_reply()
         let pool = works_of(&song_items());
         let plan = Planning {
             pool: &pool,
+            catalog: None,
             steer: None,
             feedback: None,
             now: MIDNIGHT,

@@ -1111,3 +1111,17 @@ fn renderer_errors_are_neither_skips_nor_completed_listens() {
         }
     }
 }
+
+#[test]
+fn a_retired_suffix_cannot_turn_its_confirmed_prefix_into_a_full_listen() {
+    let work = work("Prefix");
+    let pool = WorkPool::from_works(vec![work.clone()]);
+    let previous = sample(&work, 0);
+    let mut retained = queued(&work, 1);
+    retained.movements.truncate(1);
+    let state = playback(&retained, 0);
+    assert!(
+        observed(&[retained], &pool, &state, Some(&previous)).is_none(),
+        "the shortened owned recording cannot inherit full-work attribution"
+    );
+}

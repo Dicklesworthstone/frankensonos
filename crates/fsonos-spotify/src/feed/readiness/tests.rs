@@ -59,6 +59,7 @@ impl House {
 fn planning(pool: &WorkPool) -> Planning<'_> {
     Planning {
         pool,
+        catalog: None,
         steer: None,
         feedback: None,
         now: MIDNIGHT,

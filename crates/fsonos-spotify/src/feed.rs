@@ -54,7 +54,9 @@ use crate::feedback::FeedbackModel;
 use crate::rehearse::{Rehearsed, Span, rehearse};
 use crate::steer::Steer;
 
+mod catalog;
 mod enqueue;
+pub use catalog::CatalogReceipt;
 mod history;
 mod loading;
 mod mode;
@@ -226,6 +228,9 @@ pub struct Speakers<'a, T: ?Sized> {
 #[derive(Debug, Clone, Copy)]
 pub struct Planning<'a> {
     pub pool: &'a WorkPool,
+    /// Account/catalog observation that supplied `pool`. When present, every
+    /// append rechecks it after speaker preflight, including renderer retries.
+    pub catalog: Option<&'a CatalogReceipt>,
     pub steer: Option<&'a Steer>,
     /// The owner's feedback, decayed to now.
     pub feedback: Option<&'a FeedbackModel>,
@@ -241,6 +246,11 @@ pub struct Planning<'a> {
 
 #[derive(Debug, thiserror::Error)]
 pub enum FeedError {
+    #[error(
+        "the Spotify account or library changed after the DJ selected this music; \
+         no further music was appended from that selection"
+    )]
+    CatalogChanged,
     #[error("the DJ has nothing to play: the library cache holds no tracks it can play")]
     EmptyPool,
     /// The library has works, but the preferences keep every one out.
@@ -637,7 +647,7 @@ impl QueueFeed {
             self.queue_continuity.clone(),
             self.played.is_empty() && self.queued.is_empty(),
         );
-        self.finish_partial(at, store, plan.now, &mut proof)?;
+        self.finish_partial(at, store, plan, &mut proof)?;
         let want = 1 + self.lookahead();
         if self.queued.len() < want {
             self.enqueue(at, plan, store, want - self.queued.len(), &mut proof)?;
@@ -1081,7 +1091,7 @@ impl QueueFeed {
             // enqueue could not add. Only the selected successor must be
             // completed before playback can move to it.
             if !self.queued[next].is_whole() {
-                self.finish_partial_work(at, store, plan.now, next, &mut proof)?;
+                self.finish_partial_work(at, store, plan, next, &mut proof)?;
             }
             next
         } else {
@@ -1292,7 +1302,7 @@ impl QueueFeed {
         }
         let mut proof = enqueue::Batch::on_queue(at.coordinator)
             .retaining(self.queue_continuity.clone(), false);
-        self.finish_partial(at, store, plan.now, &mut proof)?;
+        self.finish_partial(at, store, plan, &mut proof)?;
         let playing = self.playing.unwrap_or(0);
         let ahead = self
             .queued
@@ -1307,19 +1317,39 @@ impl QueueFeed {
         Ok(want - ahead)
     }
 
-    /// Discard unfinished works a start would already have passed.
+    /// Discard unfinished works a start would already have passed. Retire an
+    /// unadded suffix absent from the accepted catalog, retaining its confirmed
+    /// prefix and ownership so a selected movement can continue in place.
     /// Admission applies the same decision to a clone before counting picks.
-    fn partial_to_finish(&mut self) -> Option<usize> {
+    fn partial_to_finish(&mut self, plan: Planning<'_>) -> Option<usize> {
         loop {
             let index = self.queued.iter().position(|work| !work.is_whole())?;
             if self.queued[index]
                 .last()
                 .is_some_and(|last| !self.playing.is_some_and(|playing| playing > last))
             {
-                return Some(index);
+                if self.partial_in_catalog(index, plan) {
+                    return Some(index);
+                }
+                self.queued[index]
+                    .movements
+                    .retain(|movement| movement.added);
+            } else {
+                self.queued.remove(index);
             }
-            self.queued.remove(index);
         }
+    }
+
+    /// A rebuilt plan cannot grant an old unfinished selection permission to
+    /// append tracks the accepted library has retired. Caller-owned pools with
+    /// no catalog receipt retain the original standalone feeder behavior.
+    fn partial_in_catalog(&self, index: usize, plan: Planning<'_>) -> bool {
+        plan.catalog.is_none()
+            || self.queued[index]
+                .movements
+                .iter()
+                .filter(|movement| !movement.added)
+                .all(|movement| plan.pool.work_of(&movement.uri).is_some())
     }
 
     /// Add the movements an earlier failure left unadded, right after the
@@ -1329,24 +1359,40 @@ impl QueueFeed {
         &mut self,
         at: &Speakers<'_, T>,
         store: &mut S,
-        now: i64,
+        plan: Planning<'_>,
         proof: &mut enqueue::Batch,
     ) -> Result<(), FeedError> {
-        let Some(index) = self.partial_to_finish() else {
+        if self.queued.iter().any(|work| !work.is_whole())
+            && let Some(receipt) = plan.catalog
+        {
+            receipt.confirm(store)?;
+        }
+        let Some(index) = self.partial_to_finish(plan) else {
             return Ok(());
         };
-        self.finish_partial_work(at, store, now, index, proof)
+        self.finish_partial_work(at, store, plan, index, proof)
     }
 
     fn finish_partial_work<T: Transport + ?Sized, S: Store + ?Sized>(
         &mut self,
         at: &Speakers<'_, T>,
         store: &mut S,
-        now: i64,
+        plan: Planning<'_>,
         index: usize,
         proof: &mut enqueue::Batch,
     ) -> Result<(), FeedError> {
-        let mut params = render_params(at, store, now)?;
+        if let Some(receipt) = plan.catalog {
+            receipt.confirm(store)?;
+        }
+        if !self.partial_in_catalog(index, plan) {
+            // The confirmed prefix stays owned, including any selected slot.
+            // Its retired suffix cannot inherit the new catalog's permission.
+            self.queued[index]
+                .movements
+                .retain(|movement| movement.added);
+            return Err(FeedError::CatalogChanged);
+        }
+        let mut params = render_params(at, store, plan.now)?;
         let host = host_of(at)?;
         while let Some(m) = self.queued[index].movements.iter().position(|m| !m.added) {
             let desired = self.queued[index].last().map_or(0, |last| last + 1);
@@ -1358,10 +1404,14 @@ impl QueueFeed {
                 &self.queued[index].movements[m],
                 desired,
                 proof,
+                &|| {
+                    plan.catalog
+                        .map_or(Ok(()), |receipt| receipt.confirm(store))
+                },
             )
             .map_err(|e| render_refused(at, e));
             if params != previous_params {
-                remember_render_params(at, store, &params, now);
+                remember_render_params(at, store, &params, plan.now);
             }
             let (position, len) = self.add_result(result, proof)?;
             // Inserted ahead of something (rather than appended): that
@@ -1454,7 +1504,10 @@ impl QueueFeed {
                     .map(|m| PlayRecord::at(m.uri.clone(), plan.now)),
             );
             let previous_params = params.clone();
-            let added = self.append(at.transport, host, &mut params, &mut work, proof);
+            let added = self.append(at.transport, host, &mut params, &mut work, proof, &|| {
+                plan.catalog
+                    .map_or(Ok(()), |receipt| receipt.confirm(store))
+            });
             if params != previous_params {
                 // Recovery updates params only after an observed insertion.
                 // Keep that usable account even if a later movement failed.
@@ -1489,9 +1542,10 @@ impl QueueFeed {
         params: &mut SpotifyRenderParams,
         work: &mut QueuedWork,
         proof: &mut enqueue::Batch,
+        admit: &dyn Fn() -> Result<(), FeedError>,
     ) -> Result<(), FeedError> {
         for m in work.movements.iter_mut().filter(|m| !m.added) {
-            let result = add_movement(t, host, params, m, 0, proof);
+            let result = add_movement(t, host, params, m, 0, proof, admit);
             let (position, len) = self.add_result(result, proof)?;
             m.position = Some(position);
             m.added = true;
@@ -2009,6 +2063,7 @@ mod tests {
     fn plan(pool: &WorkPool, now: i64) -> Planning<'_> {
         Planning {
             pool,
+            catalog: None,
             steer: None,
             feedback: None,
             now,

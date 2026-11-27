@@ -21,8 +21,7 @@ impl House {
             SimHousehold::builder()
                 .s1(["Den", "Member", "Office"]
                     .map(|room| SimPlayerSpec::new(room, SimModel::Play5Gen1)))
-                .s2(["Den", "Member", "Office"]
-                    .map(|room| SimPlayerSpec::new(room, SimModel::One)))
+                .s2(["Den", "Member", "Office"].map(|room| SimPlayerSpec::new(room, SimModel::One)))
                 .spawn()
                 .unwrap(),
         );
@@ -109,7 +108,10 @@ impl House {
             zone,
             target: Some(target.into()),
             expected_target_revision: Some(
-                surface.resolve_rooms(&Client::Cli, target).unwrap().revision,
+                surface
+                    .resolve_rooms(&Client::Cli, target)
+                    .unwrap()
+                    .revision,
             ),
             playlist: page.playlist.id,
             positions: vec![3, 2, 3],
@@ -152,7 +154,11 @@ fn native_selection_plays_once_per_alias_group_with_caps_and_one_complete_undo()
             .unwrap();
         assert!(selected.complete() && selected.changed);
         let batch = selected.batch.as_ref().unwrap();
-        assert_eq!(batch.results.len(), 2, "the grouped alias member is not a third target");
+        assert_eq!(
+            batch.results.len(),
+            2,
+            "the grouped alias member is not a third target"
+        );
         assert!(batch.complete);
         assert_eq!(selected.positions, [3, 2, 3]);
         assert_eq!(selected.titles[0], selected.titles[2]);
@@ -162,27 +168,55 @@ fn native_selection_plays_once_per_alias_group_with_caps_and_one_complete_undo()
             let target = house.target(&zone);
             assert_eq!(
                 house.queue(&zone),
-                [original[2].clone(), original[1].clone(), original[2].clone()]
+                [
+                    original[2].clone(),
+                    original[1].clone(),
+                    original[2].clone()
+                ]
             );
-            assert_eq!(get_play_mode(&house.sim.lan(), target.coordinator.ip).unwrap(), PlayMode::Normal);
-            assert_eq!(soap::get_position_info(&house.sim.lan(), target.coordinator.ip).unwrap().track, 1);
             assert_eq!(
-                soap::get_transport_info(&house.sim.lan(), target.coordinator.ip).unwrap().state,
+                get_play_mode(&house.sim.lan(), target.coordinator.ip).unwrap(),
+                PlayMode::Normal
+            );
+            assert_eq!(
+                soap::get_position_info(&house.sim.lan(), target.coordinator.ip)
+                    .unwrap()
+                    .track,
+                1
+            );
+            assert_eq!(
+                soap::get_transport_info(&house.sim.lan(), target.coordinator.ip)
+                    .unwrap()
+                    .state,
                 TransportState::Playing
             );
         }
         for room in ["Den", "Member", "Office"] {
             let target = house.target(&format!("{room}@{generation}"));
-            assert_eq!(soap::get_volume(&house.sim.lan(), target.player.ip).unwrap(), 25);
+            assert_eq!(
+                soap::get_volume(&house.sim.lan(), target.player.ip).unwrap(),
+                25
+            );
         }
         let writes = house.writes(start);
-        assert_eq!(writes.iter().filter(|call| call.action == "AddURIToQueue").count(), 6);
-        assert!(!writes.iter().any(|call| call.action == "RemoveAllTracksFromQueue"));
+        assert_eq!(
+            writes
+                .iter()
+                .filter(|call| call.action == "AddURIToQueue")
+                .count(),
+            6
+        );
+        assert!(
+            !writes
+                .iter()
+                .any(|call| call.action == "RemoveAllTracksFromQueue")
+        );
         let actions = surface
             .recent_actions(&Client::McpStdio, &ActionFilter::default())
             .unwrap();
         assert_eq!(actions.len(), 1);
-        let before = BeforeState::parse(actions[0].action.before_state.as_deref().unwrap()).unwrap();
+        let before =
+            BeforeState::parse(actions[0].action.before_state.as_deref().unwrap()).unwrap();
         assert_eq!(before.queue_undo.len(), 2);
         house.undo(&surface);
         for (room, track) in [("Den", 2), ("Office", 1)] {
@@ -191,7 +225,10 @@ fn native_selection_plays_once_per_alias_group_with_caps_and_one_complete_undo()
             assert_eq!(house.queue(&zone), original);
             let position = soap::get_position_info(&house.sim.lan(), host).unwrap();
             assert_eq!((position.track, position.position_secs), (track, Some(17)));
-            assert_eq!(get_play_mode(&house.sim.lan(), host).unwrap(), PlayMode::ShuffleRepeatOne);
+            assert_eq!(
+                get_play_mode(&house.sim.lan(), host).unwrap(),
+                PlayMode::ShuffleRepeatOne
+            );
         }
     }
 }
@@ -214,9 +251,14 @@ fn native_next_and_append_keep_each_playhead_silent_and_undo_both_exact_ranges()
                 .unwrap()
             });
             let start = house.sim.soap_log().len();
-            let selected = surface.sonos_playlist_tracks(&Client::McpStdio, &request).unwrap();
+            let selected = surface
+                .sonos_playlist_tracks(&Client::McpStdio, &request)
+                .unwrap();
             assert!(selected.complete() && selected.changed);
-            assert_eq!((selected.first, selected.count, selected.playing_queue), (None, None, None));
+            assert_eq!(
+                (selected.first, selected.count, selected.playing_queue),
+                (None, None, None)
+            );
             assert!(selected.batch.is_none());
             let batch = selected.queue_batch.as_ref().unwrap();
             assert!(batch.complete && batch.logged && batch.undoable);
@@ -231,15 +273,27 @@ fn native_next_and_append_keep_each_playhead_silent_and_undo_both_exact_ranges()
                 } else {
                     2
                 };
-                assert_eq!((row.queue.first, row.queue.count, row.queue.playing_queue), (first, 3, true));
+                assert_eq!(
+                    (row.queue.first, row.queue.count, row.queue.playing_queue),
+                    (first, 3, true)
+                );
                 let mut expected = original.clone();
                 expected.splice(
                     (first - 1) as usize..(first - 1) as usize,
-                    [original[2].clone(), original[1].clone(), original[2].clone()],
+                    [
+                        original[2].clone(),
+                        original[1].clone(),
+                        original[2].clone(),
+                    ],
                 );
                 assert_eq!(house.queue(&zone), expected);
             }
-            assert!(house.writes(start).iter().all(|call| call.action == "AddURIToQueue"));
+            assert!(
+                house
+                    .writes(start)
+                    .iter()
+                    .all(|call| call.action == "AddURIToQueue")
+            );
             for (i, room) in ["Den", "Office"].into_iter().enumerate() {
                 let zone = format!("{room}@{generation}");
                 let after = control::playback(
@@ -253,9 +307,12 @@ fn native_next_and_append_keep_each_playhead_silent_and_undo_both_exact_ranges()
             for player in house.sim.players() {
                 assert_eq!(soap::get_volume(&house.sim.lan(), player.ip).unwrap(), 80);
             }
-            let actions = surface.recent_actions(&Client::Cli, &ActionFilter::default()).unwrap();
+            let actions = surface
+                .recent_actions(&Client::Cli, &ActionFilter::default())
+                .unwrap();
             assert_eq!(actions.len(), 1);
-            let before = BeforeState::parse(actions[0].action.before_state.as_deref().unwrap()).unwrap();
+            let before =
+                BeforeState::parse(actions[0].action.before_state.as_deref().unwrap()).unwrap();
             assert_eq!(before.queued.len(), 2);
             assert!(before.queued.iter().all(|range| range.proof.is_some()));
             house.undo(&surface);
@@ -276,15 +333,21 @@ fn another_destination_uses_the_original_source_revision_and_its_own_queue_revis
         let house = House::new();
         let surface = house.surface(Box::new(house.sim.lan()), Policy::default());
         let mut request = house.request(&surface, "S2", "Office@S2", mode);
-        request.expected_queue_revision = surface.queue(&Client::Cli, "Office@S2", 0, 1).unwrap().revision;
+        request.expected_queue_revision = surface
+            .queue(&Client::Cli, "Office@S2", 0, 1)
+            .unwrap()
+            .revision;
         let destination_page = surface
             .sonos_playlist_contents(&Client::Cli, &contents("Office@S2", "SQ:7", 100))
             .unwrap();
         assert_ne!(request.expected_revision, destination_page.revision);
         let source = house.target("Den@S2");
-        let source_before = control::playback(&house.sim.lan(), &house.households, &source.coordinator.id).unwrap();
+        let source_before =
+            control::playback(&house.sim.lan(), &house.households, &source.coordinator.id).unwrap();
         let source_queue = house.queue("Den@S2");
-        let selected = surface.sonos_playlist_tracks(&Client::McpStdio, &request).unwrap();
+        let selected = surface
+            .sonos_playlist_tracks(&Client::McpStdio, &request)
+            .unwrap();
         assert!(selected.complete() && selected.changed);
         assert_eq!(selected.zone, "Office");
         assert_eq!(house.queue("Den@S2"), source_queue);
@@ -312,7 +375,12 @@ fn invalid_source_audience_and_scalar_queue_proofs_reject_every_group_before_wri
             match case {
                 0 => request.expected_revision = "stale-source-revision".into(),
                 1 => request.expected_target_revision = Some("0".repeat(64)),
-                2 => request.expected_queue_revision = surface.queue(&Client::Cli, "Den@S2", 0, 1).unwrap().revision,
+                2 => {
+                    request.expected_queue_revision = surface
+                        .queue(&Client::Cli, "Den@S2", 0, 1)
+                        .unwrap()
+                        .revision
+                }
                 3 => {
                     request.target = Some("all".into());
                     request.expected_target_revision = None;
@@ -326,7 +394,9 @@ fn invalid_source_audience_and_scalar_queue_proofs_reject_every_group_before_wri
                 }
             }
             let start = house.sim.soap_log().len();
-            let failure = surface.sonos_playlist_tracks(&Client::McpStdio, &request).unwrap_err();
+            let failure = surface
+                .sonos_playlist_tracks(&Client::McpStdio, &request)
+                .unwrap_err();
             assert_eq!(
                 failure.code,
                 match case {
@@ -338,7 +408,11 @@ fn invalid_source_audience_and_scalar_queue_proofs_reject_every_group_before_wri
             );
             assert!(house.writes(start).is_empty(), "case {case}: {failure:?}");
             if matches!(case, 1..=4) {
-                assert!(!house.sim.soap_log()[start..].iter().any(|call| call.action == "Browse"));
+                assert!(
+                    !house.sim.soap_log()[start..]
+                        .iter()
+                        .any(|call| call.action == "Browse")
+                );
             }
         }
     }
@@ -352,7 +426,13 @@ struct ChangeDestinationDuringSourceRead {
 }
 
 impl Transport for ChangeDestinationDuringSourceRead {
-    fn soap_post(&self, host: IpAddr, path: &str, action: &str, body: &str) -> Result<String, ProtoError> {
+    fn soap_post(
+        &self,
+        host: IpAddr,
+        path: &str,
+        action: &str,
+        body: &str,
+    ) -> Result<String, ProtoError> {
         let response = self.inner.soap_post(host, path, action, body)?;
         if host == self.source
             && action.ends_with("#Browse\"")
@@ -392,7 +472,9 @@ fn all_destination_proofs_are_rechecked_after_native_source_reads_before_the_fir
             Policy::default(),
         );
         let start = house.sim.soap_log().len();
-        let failure = surface.sonos_playlist_tracks(&Client::McpStdio, &request).unwrap_err();
+        let failure = surface
+            .sonos_playlist_tracks(&Client::McpStdio, &request)
+            .unwrap_err();
         assert_eq!(failure.code, ErrorCode::QueueChanged);
         let writes = house.writes(start);
         assert_eq!(writes.len(), 1, "only the external queue change is allowed");
@@ -412,7 +494,13 @@ struct RefuseDestinationAdd {
 }
 
 impl Transport for RefuseDestinationAdd {
-    fn soap_post(&self, host: IpAddr, path: &str, action: &str, body: &str) -> Result<String, ProtoError> {
+    fn soap_post(
+        &self,
+        host: IpAddr,
+        path: &str,
+        action: &str,
+        body: &str,
+    ) -> Result<String, ProtoError> {
         if host == self.destination && action.ends_with("#AddURIToQueue\"") {
             let at = self.adds.fetch_add(1, Ordering::SeqCst);
             if !self.after_prefix || at == 1 {
@@ -443,7 +531,9 @@ fn native_target_write_failures_keep_success_receipts_without_claiming_uncertain
             Policy::default(),
         );
         let start = house.sim.soap_log().len();
-        let selected = surface.sonos_playlist_tracks(&Client::McpStdio, &request).unwrap();
+        let selected = surface
+            .sonos_playlist_tracks(&Client::McpStdio, &request)
+            .unwrap();
         assert!(!selected.complete());
         let batch = selected.queue_batch.unwrap();
         assert!(!batch.complete && batch.logged);
@@ -456,9 +546,16 @@ fn native_target_write_failures_keep_success_receipts_without_claiming_uncertain
         // write with a failed outcome as uncertain, including a first SOAP fault.
         assert_eq!(batch.failed[0].error.code, ErrorCode::OutcomeUncertain);
         assert_eq!(house.queue("Den@S2").len(), original.len() + 3);
-        assert_eq!(house.queue("Office@S2").len(), original.len() + usize::from(after_prefix));
         assert_eq!(
-            house.writes(start).iter().filter(|call| call.action == "AddURIToQueue").count(),
+            house.queue("Office@S2").len(),
+            original.len() + usize::from(after_prefix)
+        );
+        assert_eq!(
+            house
+                .writes(start)
+                .iter()
+                .filter(|call| call.action == "AddURIToQueue")
+                .count(),
             3 + usize::from(after_prefix)
         );
         assert!(!batch.undoable);
@@ -467,17 +564,11 @@ fn native_target_write_failures_keep_success_receipts_without_claiming_uncertain
     }
 }
 
-
 #[test]
 fn an_uncertain_single_target_without_confirmed_rows_still_reports_attempted_changes() {
     let house = House::new();
     let surface = house.surface(Box::new(house.sim.lan()), Policy::default());
-    let request = house.request(
-        &surface,
-        "S2",
-        "Office@S2",
-        SonosPlaylistTrackMode::Append,
-    );
+    let request = house.request(&surface, "S2", "Office@S2", SonosPlaylistTrackMode::Append);
     let original = house.queue("Office@S2");
     house
         .sim
@@ -492,7 +583,10 @@ fn an_uncertain_single_target_without_confirmed_rows_still_reports_attempted_cha
         .sonos_playlist_tracks(&Client::McpStdio, &request)
         .unwrap();
     assert!(!selected.complete());
-    assert!(selected.changed, "an uncertain attempted write requires a fresh queue read");
+    assert!(
+        selected.changed,
+        "an uncertain attempted write requires a fresh queue read"
+    );
     assert_eq!((selected.first, selected.count), (None, None));
     let batch = selected.queue_batch.unwrap();
     assert!(!batch.complete && batch.logged && !batch.undoable);
@@ -523,7 +617,13 @@ struct RenameSourceAfterFirstGroup {
 }
 
 impl Transport for RenameSourceAfterFirstGroup {
-    fn soap_post(&self, host: IpAddr, path: &str, action: &str, body: &str) -> Result<String, ProtoError> {
+    fn soap_post(
+        &self,
+        host: IpAddr,
+        path: &str,
+        action: &str,
+        body: &str,
+    ) -> Result<String, ProtoError> {
         let response = self.inner.soap_post(host, path, action, body)?;
         if action.ends_with("#AddURIToQueue\"") && self.adds.fetch_add(1, Ordering::SeqCst) == 2 {
             fsonos_proto::content::rename_object(
@@ -559,7 +659,9 @@ fn native_source_changes_between_groups_keep_the_first_receipt_and_refuse_the_se
         Policy::default(),
     );
     let start = house.sim.soap_log().len();
-    let selected = surface.sonos_playlist_tracks(&Client::McpStdio, &request).unwrap();
+    let selected = surface
+        .sonos_playlist_tracks(&Client::McpStdio, &request)
+        .unwrap();
     assert!(!selected.complete());
     let batch = selected.queue_batch.unwrap();
     assert_eq!(batch.added.len(), 1);
@@ -572,7 +674,11 @@ fn native_source_changes_between_groups_keep_the_first_receipt_and_refuse_the_se
     assert_eq!(house.queue(&successful).len(), original.len() + 3);
     assert_eq!(house.queue(&refused), original);
     assert_eq!(
-        house.writes(start).iter().filter(|call| call.action == "AddURIToQueue").count(),
+        house
+            .writes(start)
+            .iter()
+            .filter(|call| call.action == "AddURIToQueue")
+            .count(),
         3
     );
     house.undo(&surface);

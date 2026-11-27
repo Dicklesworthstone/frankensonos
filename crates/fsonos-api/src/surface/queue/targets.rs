@@ -180,8 +180,7 @@ impl Surface {
         if let Some(revision) = &request.expected_target_revision {
             confirm_revision(&rooms, request.target(), revision)?;
         }
-        let targets =
-            targets(&rooms, request.target()).map_err(|failure| self.explain(failure))?;
+        let targets = targets(&rooms, request.target()).map_err(|failure| self.explain(failure))?;
         if targets.len() > 1 && request.expected_queue_revision.is_some() {
             return Err(Failure::invalid(
                 "expected_queue_revision requires one destination group; use expected_target_revision to bind a room set",
@@ -191,11 +190,8 @@ impl Surface {
             .iter()
             .map(|target| target.coordinator.clone())
             .collect::<Vec<_>>();
-        let source = NativePlaylistSelection::source_for(
-            &rooms,
-            request.zone.trim(),
-            &coordinators,
-        )?;
+        let source =
+            NativePlaylistSelection::source_for(&rooms, request.zone.trim(), &coordinators)?;
         // All destinations are retained before any saved occurrence is read.
         let prepared = self.prepare_queue_targets(&households, targets, true)?;
         for group in &prepared {
