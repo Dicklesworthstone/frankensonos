@@ -43,9 +43,7 @@ use fsonos_core::playback::PlayerPlayback;
 use fsonos_core::store::{Store, StoreError};
 use fsonos_core::{CoreError, HouseholdState, control, moving};
 use fsonos_proto::content::{QUEUE, browse_all};
-use fsonos_proto::didl::{
-    SpotifyRenderParams, spotify_queue_uri, spotify_track_didl, spotify_uri_from_renderer_uri,
-};
+use fsonos_proto::didl::{SpotifyRenderParams, spotify_uri_from_renderer_uri};
 use fsonos_proto::soap::{self, AV_TRANSPORT};
 use fsonos_proto::{ProtoError, Transport};
 use fsonos_types::PlayerId;
@@ -62,6 +60,8 @@ mod mode;
 mod readiness;
 mod reconcile;
 mod recovery;
+mod render;
+use render::add_movement;
 mod stop;
 pub use recovery::{RecoveryBudget, RecoveryNotice};
 mod navigation {
@@ -1301,19 +1301,23 @@ impl QueueFeed {
         index: usize,
         proof: &mut enqueue::Batch,
     ) -> Result<(), FeedError> {
-        let params = render_params(at, store, now)?;
+        let mut params = render_params(at, store, now)?;
         let host = host_of(at)?;
         while let Some(m) = self.queued[index].movements.iter().position(|m| !m.added) {
             let desired = self.queued[index].last().map_or(0, |last| last + 1);
+            let previous_params = params.clone();
             let result = add_movement(
                 at.transport,
                 host,
-                &params,
+                &mut params,
                 &self.queued[index].movements[m],
                 desired,
                 proof,
             )
             .map_err(|e| render_refused(at, e));
+            if params != previous_params {
+                remember_render_params(at, store, &params, now);
+            }
             let (position, len) = self.add_result(result, proof)?;
             // Inserted ahead of something (rather than appended): that
             // something moved down one.
@@ -1366,7 +1370,7 @@ impl QueueFeed {
         if plan.pool.is_empty() {
             return Err(FeedError::EmptyPool);
         }
-        let params = render_params(at, store, plan.now)?;
+        let mut params = render_params(at, store, plan.now)?;
         let host = host_of(at)?;
         let mut history = self.history(&*store, plan.now)?;
         let elsewhere = self.elsewhere(&*store, &plan)?;
@@ -1404,7 +1408,13 @@ impl QueueFeed {
                     .iter()
                     .map(|m| PlayRecord::at(m.uri.clone(), plan.now)),
             );
-            let added = self.append(at.transport, host, &params, &mut work, proof);
+            let previous_params = params.clone();
+            let added = self.append(at.transport, host, &mut params, &mut work, proof);
+            if params != previous_params {
+                // Recovery updates params only after an observed insertion.
+                // Keep that usable account even if a later movement failed.
+                remember_render_params(at, store, &params, plan.now);
+            }
             if self.active && work.first().is_some() {
                 self.queued.push(work);
             }
@@ -1431,7 +1441,7 @@ impl QueueFeed {
         &mut self,
         t: &T,
         host: IpAddr,
-        params: &SpotifyRenderParams,
+        params: &mut SpotifyRenderParams,
         work: &mut QueuedWork,
         proof: &mut enqueue::Batch,
     ) -> Result<(), FeedError> {
@@ -1585,16 +1595,7 @@ fn read_render_params<T: Transport + ?Sized, S: Store + ?Sized>(
     at: &Speakers<'_, T>,
     store: &S,
 ) -> Result<(SpotifyRenderParams, Option<String>), FeedError> {
-    let household = at
-        .households
-        .iter()
-        .find(|h| h.players.iter().any(|p| p.id == *at.coordinator))
-        .map(|h| {
-            h.id.as_ref()
-                .map(|id| id.0.as_str())
-                .filter(|s| !s.is_empty())
-                .unwrap_or(at.coordinator.0.as_str())
-        });
+    let household = household_of(at);
     if let Some(params) = control::spotify_params(at.transport, at.households, at.coordinator)? {
         return Ok((params, household.map(str::to_owned)));
     }
@@ -1604,6 +1605,29 @@ fn read_render_params<T: Transport + ?Sized, S: Store + ?Sized>(
         return Ok((params, None));
     }
     Err(FeedError::NoRenderParams)
+}
+
+fn household_of<'a, T: ?Sized>(at: &'a Speakers<'_, T>) -> Option<&'a str> {
+    at.households
+        .iter()
+        .find(|h| h.players.iter().any(|p| p.id == *at.coordinator))
+        .map(|h| {
+            h.id.as_ref()
+                .map(|id| id.0.as_str())
+                .filter(|s| !s.is_empty())
+                .unwrap_or(at.coordinator.0.as_str())
+        })
+}
+
+fn remember_render_params<T: ?Sized, S: Store + ?Sized>(
+    at: &Speakers<'_, T>,
+    store: &mut S,
+    params: &SpotifyRenderParams,
+    now: i64,
+) {
+    if let Some(household) = household_of(at) {
+        let _ = store.save_render_params(household, params, now);
+    }
 }
 
 /// Where the track an event names is in `queue` (as just read): at the
@@ -1645,54 +1669,6 @@ fn host_of<T: Transport + ?Sized>(at: &Speakers<'_, T>) -> Result<IpAddr, FeedEr
     Ok(control::locate(at.households, at.coordinator)?.ip)
 }
 
-/// Add one movement to the queue at position `desired` (0: the end), the
-/// way the Sonos app does (`AddURIToQueue`). Returns the confirmed occurrence
-/// and observed queue length; the scoped proof can serve the next movement.
-fn add_movement<T: Transport + ?Sized>(
-    t: &T,
-    host: IpAddr,
-    params: &SpotifyRenderParams,
-    m: &Movement,
-    desired: u32,
-    proof: &mut enqueue::Batch,
-) -> Result<(u32, Option<u32>), FeedError> {
-    proof.confirmed(t, host, &m.uri, desired, || {
-        let response = soap::call(
-            t,
-            host,
-            &AV_TRANSPORT,
-            "AddURIToQueue",
-            &soap::args_xml(&[
-                ("InstanceID", "0"),
-                ("EnqueuedURI", &spotify_queue_uri(&m.uri)),
-                (
-                    "EnqueuedURIMetaData",
-                    &spotify_track_didl(&m.uri, &m.title, params),
-                ),
-                ("DesiredFirstTrackNumberEnqueued", &desired.to_string()),
-                ("EnqueueAsNext", "0"),
-            ]),
-        )?;
-        let position = response.require_u32("FirstTrackNumberEnqueued")?;
-        let count = response.require_u32("NumTracksAdded")?;
-        let len = response
-            .get("NewQueueLength")
-            .map(|n| {
-                n.trim().parse::<u32>().map_err(|_| {
-                    ProtoError::Malformed("non-numeric NewQueueLength in enqueue reply".into())
-                })
-            })
-            .transpose()?;
-        if position == 0 || count != 1 || len.is_some_and(|n| n < position) {
-            return Err(ProtoError::Malformed(
-                "inconsistent counters in single-movement enqueue reply".into(),
-            )
-            .into());
-        }
-        Ok((position, len))
-    })
-}
-
 #[cfg(test)]
 mod tests {
     //! End to end against `fsonos-sim` over real loopback sockets: the DJ's
@@ -1710,6 +1686,7 @@ mod tests {
     use fsonos_core::resolve_room;
     use fsonos_core::store::MemStore;
     use fsonos_proto::control::{add_uri_to_queue, remove_all_tracks_from_queue};
+    use fsonos_proto::didl::{spotify_queue_uri, spotify_track_didl};
     use fsonos_proto::gena::Notify;
     use fsonos_proto::net::{EventSink, Lan};
     use fsonos_proto::topology::get_zone_group_state;
@@ -1725,6 +1702,7 @@ mod tests {
     mod navigation;
     mod ownership;
     mod recovery;
+    mod render;
     mod source;
     mod start;
     mod stop;

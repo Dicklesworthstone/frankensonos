@@ -242,6 +242,7 @@ pub(super) struct Batch {
     queue: Option<Queue>,
     continuity: Option<Continuity>,
     unowned: bool,
+    refused: bool,
 }
 
 impl Batch {
@@ -253,6 +254,7 @@ impl Batch {
             queue: None,
             continuity: None,
             unowned: false,
+            refused: false,
         }
     }
 
@@ -275,6 +277,13 @@ impl Batch {
         self.continuity.clone()
     }
 
+    /// A definite refusal and complete unchanged read-back retain one bounded
+    /// queue for a freshly learned template. The next send rechecks its owner
+    /// and exact revision instead of rebasing onto an intervening owner edit.
+    pub(super) fn retains_refused_queue(&self) -> bool {
+        self.refused && self.queue.is_some()
+    }
+
     /// Send at most once. A preflight failure sends nothing; any uncertainty
     /// after the send relinquishes feeding without stopping existing music.
     pub(super) fn confirmed<T: Transport + ?Sized>(
@@ -285,7 +294,9 @@ impl Batch {
         desired: u32,
         send: impl FnOnce() -> Result<(u32, Option<u32>), FeedError>,
     ) -> Result<(u32, Option<u32>), FeedError> {
-        // Taking the cached observation first invalidates it on every error.
+        // Errors invalidate cached evidence unless a definitive refusal is
+        // followed by a complete, unchanged queue and owner confirmation.
+        self.refused = false;
         let retained = self.queue.take();
         let continuity = self.continuity.take();
         let unowned = std::mem::take(&mut self.unowned);
@@ -352,6 +363,17 @@ impl Batch {
         current(transport, host, &read_back.queue)
             .map_err(|error| uncertain(read_back.rejection.as_ref(), error))?;
         if let Some(error) = read_back.rejection {
+            if matches!(
+                &error,
+                FeedError::Proto(ProtoError::SoapFault { code: 800, .. })
+            ) && owner.reusable()
+                && read_back.queue.cacheable()
+            {
+                self.queue = Some(read_back.queue);
+                self.continuity = continuity;
+                self.unowned = unowned;
+                self.refused = true;
+            }
             return Err(error);
         }
         // A full read-back can confirm the added item after an irregular

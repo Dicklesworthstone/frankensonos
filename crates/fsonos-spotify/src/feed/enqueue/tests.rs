@@ -225,13 +225,13 @@ fn lost_and_malformed_replies_are_recovered_over_s1_and_s2_sockets() {
         ] {
             let (sim, _, coordinator) = fixture(generation);
             let host = sim.player("Den").unwrap().ip;
-            let params = sim.render_params(generation).unwrap();
+            let mut params = sim.render_params(generation).unwrap();
             let transport = Replies::new(&sim, fault);
             assert_eq!(
                 add_movement(
                     &transport,
                     host,
-                    &params,
+                    &mut params,
                     &movement(),
                     0,
                     &mut Batch::new(&coordinator),
@@ -251,12 +251,12 @@ fn lost_reply_during_insertion_keeps_neighboring_owner_items() {
     let host = sim.player("Den").unwrap().ip;
     control::add_uri_to_queue(&sim.lan(), host, OWNER, "", false).unwrap();
     let transport = Replies::new(&sim, Fault::LostReply);
-    let params = sim.render_params(2).unwrap();
+    let mut params = sim.render_params(2).unwrap();
     assert_eq!(
         add_movement(
             &transport,
             host,
-            &params,
+            &mut params,
             &movement(),
             1,
             &mut Batch::new(&coordinator),
@@ -273,12 +273,12 @@ fn an_explicit_rejection_remains_retryable_without_a_duplicate() {
     let (sim, _, coordinator) = fixture(2);
     let host = sim.player("Den").unwrap().ip;
     let transport = Replies::new(&sim, Fault::Rejected);
-    let params = sim.render_params(2).unwrap();
+    let mut params = sim.render_params(2).unwrap();
     assert!(matches!(
         add_movement(
             &transport,
             host,
-            &params,
+            &mut params,
             &movement(),
             0,
             &mut Batch::new(&coordinator),
@@ -290,7 +290,7 @@ fn an_explicit_rejection_remains_retryable_without_a_duplicate() {
         add_movement(
             &transport,
             host,
-            &params,
+            &mut params,
             &movement(),
             0,
             &mut Batch::new(&coordinator),
@@ -309,7 +309,7 @@ fn an_unchanged_queue_after_a_timeout_does_not_authorize_a_repeat() {
     let result = add_movement(
         &transport,
         host,
-        &sim.render_params(2).unwrap(),
+        &mut sim.render_params(2).unwrap(),
         &movement(),
         0,
         &mut Batch::new(&coordinator),
@@ -328,7 +328,7 @@ fn failed_preflight_never_sends_the_mutation() {
     let result = add_movement(
         &transport,
         host,
-        &sim.render_params(2).unwrap(),
+        &mut sim.render_params(2).unwrap(),
         &movement(),
         0,
         &mut Batch::new(&coordinator),
