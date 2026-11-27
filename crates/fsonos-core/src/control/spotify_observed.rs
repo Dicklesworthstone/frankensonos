@@ -89,6 +89,28 @@ fn current_source(
     Ok(Identity::render_params(uri, metadata)?.as_ref() == Some(params))
 }
 
+/// Prefer the current native track. A direct source can retain its complete
+/// metadata when the player omits TrackMetaData; keep that URI and metadata
+/// together rather than borrowing any missing fields from the track.
+fn observed_params(
+    source: &soap::MediaInfo,
+    position: &soap::PositionInfo,
+    metadata: &str,
+    coordinator: &PlayerId,
+) -> Result<Option<SpotifyRenderParams>, CoreError> {
+    if let Some(params) = Identity::render_params(&position.uri, metadata)? {
+        return Ok(
+            current_source(&source.uri, coordinator, position.track, metadata, &params)?
+                .then_some(params),
+        );
+    }
+    let metadata = source.uri_metadata.trim();
+    if matches!(metadata, "" | "NOT_IMPLEMENTED") {
+        return Ok(None);
+    }
+    Ok(Identity::render_params(&source.uri, metadata)?)
+}
+
 fn current<T: Transport + ?Sized>(
     transport: &T,
     host: IpAddr,
@@ -110,26 +132,17 @@ fn current<T: Transport + ?Sized>(
     }
     let before_source = soap::get_media_info(transport, source_host)?;
     let (before, metadata) = soap::get_position_info_with_metadata(transport, source_host)?;
-    let Some(params) = Identity::render_params(&before.uri, &metadata)? else {
+    let Some(params) = observed_params(&before_source, &before, &metadata, &group.coordinator)?
+    else {
         return Ok(None);
     };
-    // PositionInfo may retain an old track after selecting a stream or
-    // another group's queue. The current source must own this observation.
-    if !current_source(
-        &before_source.uri,
-        &group.coordinator,
-        before.track,
-        &metadata,
-        &params,
-    )? {
-        return Ok(None);
-    }
     let after_source = soap::get_media_info(transport, source_host)?;
     let (after, metadata) = soap::get_position_info_with_metadata(transport, source_host)?;
     if after_source.uri != before_source.uri
         || after.track != before.track
         || after.uri != before.uri
-        || Identity::render_params(&after.uri, &metadata)?.as_ref() != Some(&params)
+        || observed_params(&after_source, &after, &metadata, &group.coordinator)?.as_ref()
+            != Some(&params)
     {
         return Err(changed());
     }
@@ -237,5 +250,66 @@ mod tests {
             )
             .is_err()
         );
+    }
+    fn direct_source(params: &SpotifyRenderParams) -> (soap::MediaInfo, soap::PositionInfo) {
+        let track = "spotify:track:ObservedTrack";
+        let uri = spotify_track_uri(track, params);
+        (
+            soap::MediaInfo {
+                tracks: 1,
+                uri: uri.clone(),
+                uri_metadata: spotify_track_didl(track, "Observed", params),
+            },
+            soap::PositionInfo {
+                track: 0,
+                duration_secs: None,
+                position_secs: Some(37),
+                uri,
+                metadata: None,
+            },
+        )
+    }
+
+    #[test]
+    fn direct_source_metadata_supplies_an_omitted_track_template() {
+        let params = params();
+        let coordinator = PlayerId("RINCON_OBSERVED".into());
+        let (mut source, position) = direct_source(&params);
+        assert_eq!(
+            observed_params(&source, &position, "", &coordinator).unwrap(),
+            Some(params)
+        );
+        // The source fallback is not a way to fill an incomplete queue item.
+        source.uri = format!("x-rincon-queue:{}#0", coordinator.0);
+        assert_eq!(
+            observed_params(&source, &position, "", &coordinator).unwrap(),
+            None
+        );
+    }
+
+    #[test]
+    fn absent_direct_metadata_stays_absent_and_conflicting_metadata_is_an_error() {
+        let params = params();
+        let coordinator = PlayerId("RINCON_OBSERVED".into());
+        let (mut source, position) = direct_source(&params);
+        let complete = source.uri_metadata.clone();
+        for absent in ["", " \n", "NOT_IMPLEMENTED", " NOT_IMPLEMENTED \n"] {
+            source.uri_metadata = absent.into();
+            assert_eq!(
+                observed_params(&source, &position, "", &coordinator).unwrap(),
+                None
+            );
+        }
+        for malformed in [
+            "<not-xml".into(),
+            complete.replace("ObservedTrack", "DifferentTrack"),
+        ] {
+            source.uri_metadata = malformed;
+            assert!(observed_params(&source, &position, "", &coordinator).is_err());
+        }
+        // Valid source metadata cannot hide contradictory track evidence.
+        source.uri_metadata = complete.clone();
+        let contradictory = complete.replace("ObservedTrack", "DifferentTrack");
+        assert!(observed_params(&source, &position, &contradictory, &coordinator).is_err());
     }
 }

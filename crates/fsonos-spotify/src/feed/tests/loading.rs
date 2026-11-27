@@ -423,3 +423,113 @@ fn legacy_feed_snapshots_remain_unsuspended() {
     .unwrap();
     assert!(!snapshot.suspended);
 }
+
+/// Real players may retain native source metadata while omitting the track's
+/// metadata or reporting it as unsupported.
+struct SourceMetadataOnly<'a> {
+    inner: &'a SimLan,
+    missing: &'a str,
+}
+
+impl Transport for SourceMetadataOnly<'_> {
+    fn soap_post(
+        &self,
+        host: IpAddr,
+        path: &str,
+        action: &str,
+        body: &str,
+    ) -> Result<String, ProtoError> {
+        let reply = self.inner.soap_post(host, path, action, body)?;
+        if action.contains("#GetPositionInfo") {
+            let (before, rest) = reply.split_once("<TrackMetaData>").unwrap();
+            let (_, after) = rest.split_once("</TrackMetaData>").unwrap();
+            return Ok(format!(
+                "{before}<TrackMetaData>{}</TrackMetaData>{after}",
+                self.missing,
+            ));
+        }
+        Ok(reply)
+    }
+}
+
+#[test]
+fn direct_source_metadata_prepares_and_resumes_silent_dj_without_favorites_or_track_metadata() {
+    for s2 in [false, true] {
+        for missing in ["", "NOT_IMPLEMENTED"] {
+            let rig = Rig::generation(s2);
+            let generation = if s2 { 2 } else { 1 };
+            let params = rig.sim.render_params(generation).unwrap();
+            let uri = "spotify:track:MnOpQr0123456789StUvWx";
+            transport::set_av_transport_uri(
+                &rig.lan,
+                rig.host(),
+                &fsonos_proto::didl::spotify_track_uri(uri, &params),
+                &spotify_track_didl(uri, "Selected native music", &params),
+            )
+            .unwrap();
+            transport::play(&rig.lan, rig.host()).unwrap();
+            transport::seek_position(&rig.lan, rig.host(), 37).unwrap();
+            transport::pause(&rig.lan, rig.host()).unwrap();
+            rig.sim.retain_favorites(generation, |_| false).unwrap();
+            let source_only = SourceMetadataOnly {
+                inner: &rig.lan,
+                missing,
+            };
+            let speakers = rig.speakers(&source_only);
+            let household = household_of(&speakers).unwrap();
+            let pool = multi_movement_pool();
+            let mut store = MemStore::default();
+            let mut feed = QueueFeed::new(&rig.coordinator, DjConfig::default(), 7);
+            let before = rig.sim.soap_log().len();
+
+            feed.load_ready(&speakers, plan(&pool, MIDNIGHT), &store)
+                .unwrap();
+            assert!(writes(&rig, before).is_empty());
+            assert!(store.render_params(household).unwrap().is_none());
+            assert!(!feed.is_active());
+            let selected = transport::get_position_info(&rig.lan, rig.host()).unwrap();
+            assert_eq!(selected.position_secs, Some(37));
+            assert_eq!(
+                spotify_uri_from_renderer_uri(&selected.uri).as_deref(),
+                Some(uri)
+            );
+
+            let before = rig.sim.soap_log().len();
+            feed.load(&speakers, plan(&pool, MIDNIGHT), &mut store)
+                .unwrap();
+            assert!(!writes(&rig, before).iter().any(|action| action == "Play"));
+            inactive(&rig);
+            assert!(feed.is_active() && feed.is_suspended());
+            assert!(feed.queued().iter().all(QueuedWork::is_whole));
+            assert_eq!(store.render_params(household).unwrap().unwrap().0, params);
+            assert!(plays(&store).is_empty());
+            let queue = rig.queue();
+            let position = rig.position();
+
+            let mut restored =
+                QueueFeed::restore(feed.snapshot().unwrap(), DjConfig::default(), 11);
+            let before = rig.sim.soap_log().len();
+            restored
+                .start(&speakers, plan(&pool, MIDNIGHT + 10), &mut store)
+                .unwrap();
+            assert_eq!(rig.queue(), queue);
+            assert_eq!(rig.position(), position);
+            assert_eq!(writes(&rig, before), ["SetPlayMode", "Play"]);
+            assert_eq!(sample(&rig).transport, Some(TransportState::Playing));
+            assert!(!restored.is_suspended());
+
+            // The original direct source is gone and TrackMetaData is still
+            // absent. The accepted household cache must sustain later refills.
+            let next = restored.queued()[1].first().unwrap();
+            transport::seek_track(&rig.lan, rig.host(), next).unwrap();
+            let event = sample(&rig);
+            assert_eq!(
+                restored
+                    .on_playback(&speakers, plan(&pool, MIDNIGHT + 20), &mut store, &event)
+                    .unwrap(),
+                1
+            );
+            assert!(restored.queued().iter().all(QueuedWork::is_whole));
+        }
+    }
+}
