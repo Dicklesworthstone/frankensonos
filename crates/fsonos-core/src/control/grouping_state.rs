@@ -3,7 +3,7 @@
 
 use super::{LEAVE_POLL, LEAVE_WAIT};
 use crate::{CoreError, HouseholdState};
-use fsonos_proto::topology::{ZoneGroupInfo, ZoneGroupState, get_zone_group_state};
+use fsonos_proto::topology::{ZoneGroupInfo, ZoneGroupState, ZoneMember, get_zone_group_state};
 use fsonos_proto::{ProtoError, Transport};
 use fsonos_types::PlayerId;
 use std::collections::HashSet;
@@ -34,12 +34,17 @@ fn household<'a>(
 }
 
 fn player_at(state: &ZoneGroupState, player: &PlayerId, host: IpAddr) -> bool {
+    described(state, player)
+        .is_some_and(|member| member.ip() == Some(host) && !member.is_zone_bridge)
+}
+
+fn described<'a>(state: &'a ZoneGroupState, player: &PlayerId) -> Option<&'a ZoneMember> {
     state
         .groups
         .iter()
         .flat_map(|group| &group.members)
         .flat_map(|member| std::iter::once(member).chain(&member.satellites))
-        .any(|member| member.uuid == *player && member.ip() == Some(host) && !member.is_zone_bridge)
+        .find(|member| member.uuid == *player)
 }
 
 /// A topology is household-wide: finding the requested player somewhere in
@@ -299,6 +304,22 @@ pub(super) fn left<T: Transport + ?Sized>(
     .is_some()
 }
 
+/// A member's self-join can leave its bonded half with the old coordinator,
+/// just as a coordinator handoff can. Admit that partial departure only when
+/// the original group's complete audience is still accounted for, so the
+/// caller can reunite the room without borrowing a player from another group.
+pub(super) fn departed<T: Transport + ?Sized>(
+    t: &T,
+    households: &[HouseholdState],
+    member: &PlayerId,
+) -> Option<ZoneGroupState> {
+    let household = households.iter().find(|h| h.player(member).is_some())?;
+    let previous = household.coordinator_of(member)?;
+    observe(t, household, &[previous, member], LEAVE_WAIT, |state| {
+        departure_matches(household, member, previous, state)
+    })
+}
+
 /// Retain the observed handoff for reuniting the old leader's bonded players.
 /// Both acknowledged and uncertain replies need the same actual transition.
 pub(super) fn delegated<T: Transport + ?Sized>(
@@ -308,24 +329,94 @@ pub(super) fn delegated<T: Transport + ?Sized>(
     heir: &PlayerId,
 ) -> Option<ZoneGroupState> {
     let household = households.iter().find(|h| h.player(member).is_some())?;
-    let original = household.groups.iter().find(|g| g.coordinator == *member)?;
-    let original: Members = original.members.iter().cloned().collect();
-    let own = room(household, member)?;
-    let retained: Members = original.difference(&own).cloned().collect();
-    if !retained.contains(heir) {
-        return None;
-    }
     observe(t, household, &[heir, member], LEAVE_WAIT, |state| {
-        let (Some(left), Some(remaining)) = (group(state, member), group(state, heir)) else {
-            return false;
-        };
-        // S1 can leave the old leader's hidden half with the heir. It is
-        // reunited by the existing leave path, then the whole room is checked.
-        left.is_subset(&own)
+        departure_matches(household, member, heir, state)
+    })
+}
+
+fn departure_matches(
+    household: &HouseholdState,
+    member: &PlayerId,
+    remaining_coordinator: &PlayerId,
+    state: &ZoneGroupState,
+) -> bool {
+    let Some(own) = room(household, member) else {
+        return false;
+    };
+    let Some(left) = group(state, member) else {
+        return false;
+    };
+    if remaining_coordinator == member {
+        return left == own;
+    }
+    let Some(original) = household.groups.iter().find(|g| g.members.contains(member)) else {
+        return false;
+    };
+    let original: Members = original.members.iter().cloned().collect();
+    let retained: Members = original.difference(&own).cloned().collect();
+    group(state, remaining_coordinator).is_some_and(|remaining| {
+        retained.contains(remaining_coordinator)
+            && left.is_subset(&own)
             && retained.is_subset(&remaining)
             && left.is_disjoint(&remaining)
             && left.union(&remaining).cloned().collect::<Members>() == original
     })
+}
+
+/// Recheck the missing player's own endpoint immediately before its one-shot
+/// reunion. A later regroup, reboot, address move or bond edit cannot turn the
+/// retained departure into authority over a new room. Automatic reunification
+/// is already success and needs no redundant write.
+pub(super) fn needs_reunion<T: Transport + ?Sized>(
+    t: &T,
+    households: &[HouseholdState],
+    member: &PlayerId,
+    companion: &PlayerId,
+    departed: &ZoneGroupState,
+) -> Result<bool, CoreError> {
+    let (index, household) = household(households, member)?;
+    let host = household
+        .player(companion)
+        .ok_or_else(|| CoreError::UnknownPlayer(companion.0.clone()))?
+        .ip;
+    let remaining = departed
+        .groups
+        .iter()
+        .find(|g| members(g).contains(companion))
+        .ok_or_else(|| changed("the bonded player's departure was not observed"))?;
+    let current = crate::topology::read_at(t, host, companion)?;
+    validate(households, index, &current, companion, host)?;
+    if !departure_matches(household, member, &remaining.coordinator, &current) {
+        return Err(changed(
+            "the original groups changed before bonded-room reunion",
+        ));
+    }
+    let original = household
+        .groups
+        .iter()
+        .find(|g| g.members.contains(member))
+        .ok_or_else(|| changed("the original group is unavailable"))?;
+    for id in &original.members {
+        let (Some(before), Some(after)) = (described(departed, id), described(&current, id)) else {
+            return Err(changed(
+                "a retained player vanished before bonded-room reunion",
+            ));
+        };
+        if before.ip() != after.ip()
+            || before
+                .boot_seq
+                .is_some_and(|boot| after.boot_seq != Some(boot))
+            || before.invisible != after.invisible
+            || before.is_zone_bridge != after.is_zone_bridge
+            || before.channel_map != after.channel_map
+            || before.ht_sat_chan_map != after.ht_sat_chan_map
+        {
+            return Err(changed(
+                "a retained player's identity or bond changed before reunion",
+            ));
+        }
+    }
+    Ok(!group(&current, member).is_some_and(|own| own.contains(companion)))
 }
 
 #[cfg(test)]

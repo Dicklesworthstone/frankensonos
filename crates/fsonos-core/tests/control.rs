@@ -1145,6 +1145,8 @@ fn a_pair_that_hands_its_group_on_takes_its_hidden_half_back() {
 /// leave verb itself is answered with the benign 402.
 struct StaleSelf {
     study: IpAddr,
+    reunited: Cell<bool>,
+    writes: RefCell<Vec<IpAddr>>,
 }
 
 impl Transport for StaleSelf {
@@ -1156,6 +1158,15 @@ impl Transport for StaleSelf {
         _: &str,
     ) -> Result<String, ProtoError> {
         if action.ends_with("#SetAVTransportURI\"") {
+            self.writes.borrow_mut().push(host);
+            if host == ip("192.0.2.11") {
+                self.reunited.set(true);
+                return Ok(soap::envelope(
+                    &soap::AV_TRANSPORT,
+                    "SetAVTransportURIResponse",
+                    "",
+                ));
+            }
             return Err(ProtoError::SoapFault {
                 code: 402,
                 reason: "asked to leave its group, the player is still in it".into(),
@@ -1164,6 +1175,8 @@ impl Transport for StaleSelf {
         assert!(action.ends_with("#GetZoneGroupState\""), "{action}");
         Ok(if host == self.study {
             ZGS_S1.to_string()
+        } else if self.reunited.get() {
+            grouping_fixture::relocate(ZGS_S1_STUDY_LEFT, &pid(4), &pid(5))
         } else {
             ZGS_S1_STUDY_LEFT.to_string()
         })
@@ -1175,9 +1188,17 @@ fn a_stale_own_read_back_is_confirmed_by_a_witness_player() {
     let h = house();
     let t = StaleSelf {
         study: ip("192.0.2.12"),
+        reunited: Cell::new(false),
+        writes: RefCell::new(Vec::new()),
     };
     let started = std::time::Instant::now();
     control::leave(&t, &h, &pid(5)).expect("the witness read confirms the leave");
+    assert!(t.reunited.get(), "the study's bonded half follows it out");
+    assert_eq!(
+        *t.writes.borrow(),
+        [ip("192.0.2.12"), ip("192.0.2.11")],
+        "one self-join and one reunion, without repeating either"
+    );
     assert!(
         started.elapsed() < std::time::Duration::from_secs(2),
         "confirmed on the first poll, not after the wait: {:?}",

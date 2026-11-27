@@ -977,7 +977,7 @@ pub(crate) fn join_checked<T: Transport + ?Sized>(
 /// A lost delegation or self-join reply is reconciled from topology without
 /// replaying the write. Every completed leave requires the room's bonded
 /// players too, including when the handoff itself was acknowledged. Failed
-/// reunification reports a partial handoff, never a replayable preflight error.
+/// reunification reports a partial leave, never a replayable preflight error.
 /// Read the current household before choosing an heir: earlier rooms in an
 /// ungroup set may have left or inherited coordination since it was planned.
 pub fn leave<T: Transport + ?Sized>(
@@ -988,13 +988,13 @@ pub fn leave<T: Transport + ?Sized>(
     let current = grouping_state::prepare_leave(t, households, member)?;
     let households = std::slice::from_ref(&current);
     let host = addr(households, member)?;
-    let mut lost_delegation = None;
+    let mut lost_departure = None;
     let delegated = match heir_of(households, member) {
         Some(heir) => match soap::delegate_group(t, host, &heir) {
             Ok(()) => {
                 let state =
                     grouping_state::delegated(t, households, member, &heir).ok_or_else(|| {
-                        incomplete_handoff("the acknowledged group handoff could not be confirmed")
+                        incomplete_leave("the acknowledged group handoff could not be confirmed")
                     })?;
                 Some(state)
             }
@@ -1004,63 +1004,61 @@ pub fn leave<T: Transport + ?Sized>(
                 let Some(state) = grouping_state::delegated(t, households, member, &heir) else {
                     return Err(cause.into());
                 };
-                lost_delegation = Some(cause);
+                lost_departure = Some(cause);
                 Some(state)
             }
             Err(e) => return Err(e.into()),
         },
         None => None,
     };
-    let Some(departed) = delegated else {
+    let departed = if let Some(departed) = delegated {
+        departed
+    } else {
         match soap::leave_group(t, host, member) {
             Ok(result) => {
-                if grouping_state::left(t, households, member) {
-                    return Ok(());
-                }
-                return Err(match result {
+                grouping_state::departed(t, households, member).ok_or_else(|| match result {
                     soap::Leaving::Done => CoreError::Uncertain(
-                        "group leave was acknowledged, but the complete room could not be \
-                         confirmed alone; inspect the groups before trying again"
+                        "group leave was acknowledged, but the room's departure could not be \
+                         confirmed; inspect the groups before trying again"
                             .into(),
                     ),
                     soap::Leaving::Unconfirmed => ProtoError::SoapFault {
                         code: 402,
-                        reason:
-                            "asked to leave its group, the complete room is not confirmed alone"
-                                .into(),
+                        reason: "asked to leave its group, the room's departure is not confirmed"
+                            .into(),
                     }
                     .into(),
-                });
+                })?
             }
-            Err(cause)
-                if grouping_state::uncertain(&cause)
-                    && grouping_state::left(t, households, member) =>
-            {
-                tracing::warn!(cause = %cause, "group leave confirmed by topology; not repeated");
-                return Ok(());
+            Err(cause) if grouping_state::uncertain(&cause) => {
+                let Some(state) = grouping_state::departed(t, households, member) else {
+                    return Err(cause.into());
+                };
+                lost_departure = Some(cause);
+                state
             }
             Err(e) => return Err(e.into()),
         }
     };
-    reunite_room(t, households, member, host, &departed).map_err(incomplete_handoff)?;
-    if let Some(cause) = lost_delegation {
-        tracing::warn!(cause = %cause, "group handoff and leave confirmed by topology; not repeated");
+    reunite_room(t, households, member, host, &departed).map_err(incomplete_leave)?;
+    if let Some(cause) = lost_departure {
+        tracing::warn!(cause = %cause, "whole-room leave confirmed by topology; not repeated");
     }
     Ok(())
 }
 
-fn incomplete_handoff(cause: impl std::fmt::Display) -> CoreError {
+fn incomplete_leave(cause: impl std::fmt::Display) -> CoreError {
     CoreError::Uncertain(format!(
-        "group handoff may have completed, but the room's bonded players are not confirmed \
+        "group departure may have completed, but the room's bonded players are not confirmed \
          together: {cause}; inspect the groups before trying again"
     ))
 }
 
-/// After a coordinator handed its group on, bring back the players of its
-/// own room that stayed in that group: an S1 stereo pair leaves its hidden
-/// half behind with the heir, and it rejoins its primary when asked to
-/// (verified live 2026-10-14). Retain the confirmed handoff, send each rejoin
-/// at most once, and require the complete room before reporting success.
+/// After a primary left or handed its group on, bring back the players of its
+/// own room that stayed in the old group: an S1 stereo pair can leave its hidden
+/// half behind, and it rejoins its primary when asked to (verified live
+/// 2026-10-14). Retain the confirmed departure, send each rejoin at most once,
+/// and require the complete room before reporting success.
 fn reunite_room<T: Transport + ?Sized>(
     t: &T,
     households: &[HouseholdState],
@@ -1075,6 +1073,7 @@ fn reunite_room<T: Transport + ?Sized>(
         .ok_or_else(|| CoreError::UnknownPlayer(member.0.clone()))?;
     let own = departed.groups.iter().find(|g| g.coordinator == *member);
     let mut lost_rejoin = None;
+    let mut missing = false;
     for p in room.players.iter().filter(|p| *p != member) {
         if own.is_some_and(|g| {
             g.members
@@ -1084,8 +1083,11 @@ fn reunite_room<T: Transport + ?Sized>(
         }) {
             continue;
         }
+        missing = true;
         let ip = addr(households, p)?;
-        require_player(t, ip, p)?;
+        if !grouping_state::needs_reunion(t, households, member, p, departed)? {
+            continue;
+        }
         require_coordinator_after_leave(t, households, host, member)?;
         if let Err(cause) = soap::join_group(t, ip, member) {
             if !grouping_state::uncertain(&cause) {
@@ -1094,7 +1096,7 @@ fn reunite_room<T: Transport + ?Sized>(
             lost_rejoin.get_or_insert(cause);
         }
     }
-    if !grouping_state::left(t, households, member) {
+    if missing && !grouping_state::left(t, households, member) {
         return Err(lost_rejoin.map_or_else(
             || {
                 CoreError::Uncertain(

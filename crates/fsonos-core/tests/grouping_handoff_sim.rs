@@ -1,5 +1,5 @@
 //! Whole-room leave completion over real S1/S2 loopback SOAP. A wire overlay
-//! reproduces S1's handoff with the hidden stereo half left with the heir;
+//! reproduces S1's departure with the hidden stereo half left with the old group;
 //! no simulator model changes or real speakers are needed.
 
 use fsonos_core::grouping;
@@ -25,10 +25,15 @@ struct Fixture {
     leader_host: IpAddr,
     hidden_host: IpAddr,
     heir_host: IpAddr,
+    member_leave: bool,
 }
 
 impl Fixture {
     fn new(generation: u8) -> Self {
+        Self::for_departure(generation, false)
+    }
+
+    fn for_departure(generation: u8, member_leave: bool) -> Self {
         let model = if generation == 1 {
             SimModel::Play5Gen1
         } else {
@@ -55,23 +60,28 @@ impl Fixture {
         let heir = PlayerId(other.uuid.clone());
         let (leader_host, hidden_host, heir_host) = (primary.ip, secondary.ip, other.ip);
         let lan = sim.lan();
-        for room in ["Heir", "Witness"] {
-            soap::join_group(&lan, sim.player(room).unwrap().ip, &leader).unwrap();
+        let (coordinator, coordinator_host, joining) = if member_leave {
+            (&heir, heir_host, "Leader")
+        } else {
+            (&leader, leader_host, "Heir")
+        };
+        for room in [joining, "Witness"] {
+            soap::join_group(&lan, sim.player(room).unwrap().ip, coordinator).unwrap();
         }
         for number in 1..=3 {
             soap::add_uri_to_queue(
                 &lan,
-                leader_host,
+                coordinator_host,
                 &format!("x-file-cifs://example.invalid/handoff-{number}.flac"),
                 "",
                 false,
             )
             .unwrap();
         }
-        soap::play_from_queue(&lan, leader_host, &leader).unwrap();
-        soap::seek_track(&lan, leader_host, 2).unwrap();
-        soap::seek_position(&lan, leader_host, 37).unwrap();
-        soap::play(&lan, leader_host).unwrap();
+        soap::play_from_queue(&lan, coordinator_host, coordinator).unwrap();
+        soap::seek_track(&lan, coordinator_host, 2).unwrap();
+        soap::seek_position(&lan, coordinator_host, 37).unwrap();
+        soap::play(&lan, coordinator_host).unwrap();
         let mut house = HouseholdState::default();
         house.apply_topology(&get_zone_group_state(&lan, leader_host).unwrap());
         Self {
@@ -83,6 +93,7 @@ impl Fixture {
             leader_host,
             hidden_host,
             heir_host,
+            member_leave,
         }
     }
 
@@ -127,7 +138,15 @@ impl Fixture {
 
     fn expected_writes(&self) -> [(String, String); 2] {
         [
-            (self.leader.0.clone(), "DelegateGroupCoordinationTo".into()),
+            (
+                self.leader.0.clone(),
+                if self.member_leave {
+                    "SetAVTransportURI"
+                } else {
+                    "DelegateGroupCoordinationTo"
+                }
+                .into(),
+            ),
             (self.hidden.0.clone(), "SetAVTransportURI".into()),
         ]
     }
@@ -143,6 +162,15 @@ enum Rejoin {
     Unreadable,
 }
 
+#[derive(Debug, Clone, Copy)]
+enum ReunionChange {
+    AddedRoom,
+    Reboot,
+    Bond,
+    Address,
+    Completed,
+}
+
 struct SplitPair<'a> {
     fixture: &'a Fixture,
     lan: SimLan,
@@ -153,10 +181,19 @@ struct SplitPair<'a> {
     reunited: Cell<bool>,
     rejoins: Cell<usize>,
     initial: RefCell<Option<String>>,
+    reunion_change: Option<ReunionChange>,
 }
 
 impl<'a> SplitPair<'a> {
     fn new(fixture: &'a Fixture, rejoin: Rejoin) -> Self {
+        // The simulator keeps a pair together; this overlay alone presents the
+        // captured S1 split. Record the hidden half's real SOAP request, then
+        // let the overlay model its reunion instead of the simulator's general
+        // refusal of commands sent to a secondary.
+        fixture
+            .sim
+            .ignore_action(&fixture.hidden.0, "SetAVTransportURI")
+            .unwrap();
         Self {
             fixture,
             lan: fixture.sim.lan(),
@@ -167,6 +204,7 @@ impl<'a> SplitPair<'a> {
             reunited: Cell::new(false),
             rejoins: Cell::new(0),
             initial: RefCell::new(None),
+            reunion_change: None,
         }
     }
 
@@ -194,7 +232,9 @@ impl Transport for SplitPair<'_> {
             return Err(Self::lost("post-reunion topology unavailable"));
         }
         let reply = self.lan.soap_post(host, path, action, body)?;
-        if name == "DelegateGroupCoordinationTo" {
+        if name == "DelegateGroupCoordinationTo"
+            || (name == "SetAVTransportURI" && host == self.fixture.leader_host)
+        {
             self.handed_over.set(true);
             if self.lose_handoff {
                 return Err(Self::lost("handoff reply lost"));
@@ -232,11 +272,31 @@ impl Transport for SplitPair<'_> {
             return Ok(self.initial.borrow().as_ref().unwrap().clone());
         }
         if !self.reunited.get() {
-            return Ok(grouping_fixture::relocate(
-                &reply,
-                &self.fixture.hidden,
-                &self.fixture.heir,
-            ));
+            let split =
+                grouping_fixture::relocate(&reply, &self.fixture.hidden, &self.fixture.heir);
+            if host == self.fixture.hidden_host && self.rejoins.get() == 0 {
+                let changed = match self.reunion_change {
+                    Some(ReunionChange::AddedRoom) => grouping_fixture::relocate(
+                        &split,
+                        &PlayerId(self.fixture.sim.player("Witness").unwrap().uuid.clone()),
+                        &self.fixture.leader,
+                    ),
+                    Some(ReunionChange::Reboot) => {
+                        split.replace("BootSeq=&quot;1&quot;", "BootSeq=&quot;2&quot;")
+                    }
+                    Some(ReunionChange::Bond) => split.replace(":RF,RF", ":LF,RF"),
+                    Some(ReunionChange::Address) => {
+                        split.replace(&self.fixture.hidden_host.to_string(), "192.0.2.240")
+                    }
+                    Some(ReunionChange::Completed) => {
+                        self.reunited.set(true);
+                        reply
+                    }
+                    None => split,
+                };
+                return Ok(changed);
+            }
+            return Ok(split);
         }
         Ok(reply)
     }
@@ -276,29 +336,96 @@ fn a_stale_self_view_cannot_hide_a_missing_stereo_half() {
 }
 
 #[test]
+fn ordinary_member_departures_reunite_the_whole_room_without_repeating_writes() {
+    for generation in [1, 2] {
+        for lose_handoff in [false, true] {
+            for rejoin in [Rejoin::Applied, Rejoin::Lost, Rejoin::Malformed] {
+                let f = Fixture::for_departure(generation, true);
+                let mut transport = SplitPair::new(&f, rejoin);
+                transport.lose_handoff = lose_handoff;
+                transport.stale_self = true;
+                let before = f.sim.soap_log().len();
+                control::leave(&transport, &f.houses, &f.leader).unwrap();
+                assert!(f.whole_room(&transport), "S{generation} {rejoin:?}");
+                assert_eq!(transport.rejoins.get(), 1);
+                assert_eq!(f.writes_since(before), f.expected_writes());
+                f.queue_preserved();
+            }
+        }
+    }
+}
+
+#[test]
+fn a_changed_audience_or_player_before_reunion_is_left_untouched() {
+    for generation in [1, 2] {
+        for member_leave in [false, true] {
+            for change in [
+                ReunionChange::AddedRoom,
+                ReunionChange::Reboot,
+                ReunionChange::Bond,
+                ReunionChange::Address,
+            ] {
+                let f = Fixture::for_departure(generation, member_leave);
+                let mut transport = SplitPair::new(&f, Rejoin::Applied);
+                transport.reunion_change = Some(change);
+                let before = f.sim.soap_log().len();
+                let result = control::leave(&transport, &f.houses, &f.leader);
+                assert!(
+                    matches!(&result, Err(CoreError::Uncertain(message))
+                        if message.contains("bonded players")),
+                    "S{generation}, member={member_leave}, {change:?}: {result:?}"
+                );
+                assert_eq!(transport.rejoins.get(), 0);
+                assert_eq!(f.writes_since(before), f.expected_writes()[..1]);
+                f.queue_preserved();
+            }
+        }
+    }
+}
+
+#[test]
+fn an_automatic_reunion_is_observed_without_a_redundant_join() {
+    for generation in [1, 2] {
+        for member_leave in [false, true] {
+            let f = Fixture::for_departure(generation, member_leave);
+            let mut transport = SplitPair::new(&f, Rejoin::Applied);
+            transport.reunion_change = Some(ReunionChange::Completed);
+            let before = f.sim.soap_log().len();
+            control::leave(&transport, &f.houses, &f.leader).unwrap();
+            assert!(f.whole_room(&transport));
+            assert_eq!(transport.rejoins.get(), 0);
+            assert_eq!(f.writes_since(before), f.expected_writes()[..1]);
+            f.queue_preserved();
+        }
+    }
+}
+
+#[test]
 fn refused_or_unobserved_reunions_report_partial_failure() {
     for generation in [1, 2] {
-        for rejoin in [Rejoin::Refused, Rejoin::Ignored, Rejoin::Unreadable] {
-            let f = Fixture::new(generation);
-            let transport = SplitPair::new(&f, rejoin);
-            let target = resolve_room(&f.houses, "Leader").unwrap();
-            let before = f.sim.soap_log().len();
-            let result = grouping::ungroup(&transport, &f.houses, &[target]);
-            assert!(result.moved.is_empty(), "S{generation} {rejoin:?}");
-            assert!(!result.is_complete());
-            assert_eq!(result.failed.len(), 1);
-            assert!(
-                matches!(&result.failed[0].1, CoreError::Uncertain(message)
-                    if message.contains("bonded players") && message.contains("inspect")),
-                "{:?}",
-                result.failed
-            );
-            assert_eq!(transport.rejoins.get(), 1);
-            assert_eq!(f.writes_since(before), f.expected_writes());
-            if !matches!(rejoin, Rejoin::Unreadable) {
-                assert!(!f.whole_room(&transport));
+        for member_leave in [false, true] {
+            for rejoin in [Rejoin::Refused, Rejoin::Ignored, Rejoin::Unreadable] {
+                let f = Fixture::for_departure(generation, member_leave);
+                let transport = SplitPair::new(&f, rejoin);
+                let target = resolve_room(&f.houses, "Leader").unwrap();
+                let before = f.sim.soap_log().len();
+                let result = grouping::ungroup(&transport, &f.houses, &[target]);
+                assert!(result.moved.is_empty(), "S{generation} {rejoin:?}");
+                assert!(!result.is_complete());
+                assert_eq!(result.failed.len(), 1);
+                assert!(
+                    matches!(&result.failed[0].1, CoreError::Uncertain(message)
+                        if message.contains("bonded players") && message.contains("inspect")),
+                    "{:?}",
+                    result.failed
+                );
+                assert_eq!(transport.rejoins.get(), 1);
+                assert_eq!(f.writes_since(before), f.expected_writes());
+                if !matches!(rejoin, Rejoin::Unreadable) {
+                    assert!(!f.whole_room(&transport));
+                }
+                f.queue_preserved();
             }
-            f.queue_preserved();
         }
     }
 }
