@@ -117,19 +117,58 @@ const SourcePlayerRemote = (() => {
       offset, nextOffset });
   }
 
+  function catalogSelection(basket) {
+    if (!Array.isArray(basket) || !basket.length || basket.length > MAX_PLAYLIST_TRACKS) {
+      throw new Error(`Choose 1 to ${MAX_PLAYLIST_TRACKS} Spotify tracks or episodes.`);
+    }
+    return Object.freeze(basket.map(entry => {
+      const item = entry?.item, query = entry?.query, parsed = source(item?.source_uri);
+      if (!query || !['track', 'episode'].includes(query.kind) || parsed.kind !== query.kind
+          || parsed.uri !== item.source_uri || typeof item.title !== 'string' || !item.title.trim()
+          || typeof item.subtitle !== 'string' || !Number.isInteger(query.offset) || query.offset < 0 || query.offset > MAX_CATALOG_OFFSET
+          || query.limit !== CATALOG_LIMIT || catalogQuery(query.q, query.kind).q !== query.q) {
+        throw new Error('Choose tracks or episodes from an observed Spotify search page.');
+      }
+      return Object.freeze({ source_uri: item.source_uri, title: item.title });
+    }));
+  }
+
+  async function verifyCatalogSelection({ call, basket, valid = () => {} }) {
+    catalogSelection(basket);
+    const pages = new Map();
+    for (const entry of basket) {
+      const key = JSON.stringify([entry.query.q, entry.query.kind, entry.query.offset, entry.query.limit]);
+      if (!pages.has(key)) pages.set(key, { query: entry.query, items: [] });
+      pages.get(key).items.push(entry.item);
+    }
+    for (const { query, items } of pages.values()) {
+      valid();
+      const value = await call('sourceSpotifySearch', { query });
+      valid();
+      const page = catalogPage(value, query);
+      if (items.some(item => !page.items.some(fresh => fresh.source_uri === item.source_uri
+          && fresh.title === item.title && fresh.subtitle === item.subtitle))) {
+        throw new Error('A selected Spotify search result changed or is no longer available on its original page. Search again and update the selection.');
+      }
+    }
+  }
+
+  const catalogOrigin = entry => `${entry.query.kind === 'episode' ? 'Episode' : 'Track'} · Search “${entry.query.q}” · results from ${entry.query.offset + 1}`;
+
   // Both surfaces use the same read-only search lane. Editing, changing rooms
   // or closing retires an outstanding read even if the provider ignores abort.
-  function catalogModel({ call, available, changed = () => {} }) {
+  function catalogModel({ call, available, changed = () => {}, invalidated = () => {} }) {
     let version = 0, reading = null, observedQuery = null;
     const state = { query: '', kind: 'track', status: 'idle', items: [], more: false, message: '',
-      offset: 0, nextOffset: null, previousOffsets: [] };
-    function retire() {
+      offset: 0, nextOffset: null, previousOffsets: [], basket: Object.freeze([]) };
+    function retire(clearSelection = true) {
       ++version; reading?.abort(); reading = null; observedQuery = null;
       state.status = 'idle'; state.items = []; state.more = false; state.message = '';
       state.offset = 0; state.nextOffset = null; state.previousOffsets = [];
+      if (clearSelection) state.basket = Object.freeze([]);
     }
     async function readPage(query, offset, previousOffsets) {
-      retire();
+      invalidated(); retire(false);
       const request = offset === 0 ? query : Object.freeze({ ...query, offset });
       const v = version, abort = new AbortController();
       reading = abort; state.status = 'loading'; state.message = 'Searching the Spotify catalog…'; changed();
@@ -163,7 +202,7 @@ const SourcePlayerRemote = (() => {
       if (!available()) return false;
       let query;
       try { query = catalogQuery(state.query, state.kind); }
-      catch (error) { retire(); state.status = 'error'; state.message = problem(error); changed(); return false; }
+      catch (error) { invalidated(); retire(false); state.status = 'error'; state.message = problem(error); changed(); return false; }
       return readPage(query, 0, []);
     }
     const pageable = () => available() && state.status === 'ready' && observedQuery !== null
@@ -180,17 +219,50 @@ const SourcePlayerRemote = (() => {
       edit(field, value) {
         if (!available() || !['query', 'kind'].includes(field) || typeof value !== 'string'
             || (field === 'kind' && !Object.hasOwn(catalogKinds, value))) return false;
-        retire(); state[field] = value; changed(); return true;
+        invalidated(); retire(false); state[field] = value; changed(); return true;
       },
       select(item, items = state.items) {
         if (!available() || state.status !== 'ready' || items !== state.items || !items.includes(item)) return null;
         return offeredSource({ source_uri: item.source_uri, title: [...item.title].slice(0, MAX_TITLE).join('') });
       },
-      cancel() { retire(); state.message = 'Spotify search cancelled.'; changed(); },
+      toggle(item, items = state.items) {
+        if (!available() || state.status !== 'ready' || !observedQuery || items !== state.items || !items.includes(item)
+            || !['track', 'episode'].includes(observedQuery.kind)) return false;
+        const selected = state.basket.some(entry => entry.item.source_uri === item.source_uri);
+        if (!selected && state.basket.length >= MAX_PLAYLIST_TRACKS) {
+          state.message = `Select at most ${MAX_PLAYLIST_TRACKS} tracks or episodes, including repeats.`; changed(); return false;
+        }
+        const entry = Object.freeze({ item, query: Object.freeze({ ...observedQuery, offset: state.offset }) });
+        invalidated(); state.basket = Object.freeze(selected ? state.basket.filter(entry => entry.item.source_uri !== item.source_uri)
+          : [...state.basket, entry]);
+        changed(); return true;
+      },
+      editSelection(action, index, basket = state.basket) {
+        if (!available() || state.status === 'loading' || basket !== state.basket || !Number.isInteger(index)
+            || index < 0 || index >= basket.length || !['up', 'down', 'remove', 'repeat'].includes(action)) return false;
+        const next = [...basket];
+        if (action === 'remove') next.splice(index, 1);
+        else if (action === 'repeat') {
+          if (next.length >= MAX_PLAYLIST_TRACKS) { state.message = `Select at most ${MAX_PLAYLIST_TRACKS} tracks or episodes, including repeats.`; changed(); return false; }
+          next.splice(index + 1, 0, Object.freeze({ ...next[index] }));
+        } else {
+          const to = index + (action === 'up' ? -1 : 1);
+          if (to < 0 || to >= next.length) return false;
+          [next[index], next[to]] = [next[to], next[index]];
+        }
+        invalidated(); state.basket = Object.freeze(next); changed(); return true;
+      },
+      clearSelection() {
+        if (!available() || state.status === 'loading') return false;
+        invalidated(); state.basket = Object.freeze([]); changed(); return true;
+      },
+      cancel() { invalidated(); retire(false); state.message = 'Spotify search cancelled.'; changed(); },
     };
   }
 
-  function renderCatalog(list, state, doc, { choose, disabled = false }) {
+  function renderCatalog(list, state, doc, { choose, select, disabled = false }) {
+    const focused = list.contains?.(doc.activeElement) ? doc.activeElement?.getAttribute('data-catalog-select') : null;
+    let focus;
     list.replaceChildren();
     const items = state.items;
     for (const item of items) {
@@ -199,8 +271,65 @@ const SourcePlayerRemote = (() => {
       if (item.subtitle) { const byline = doc.createElement('span'); byline.textContent = item.subtitle; row.append(byline); }
       const button = doc.createElement('button'); button.type = 'button'; button.textContent = 'Use this source';
       button.disabled = disabled;
-      button.addEventListener('click', () => choose(item, items)); row.append(button); list.append(row);
+      button.addEventListener('click', () => choose(item, items)); row.append(button);
+      if (select && ['track', 'episode'].includes(state.kind)) {
+        const selected = state.basket?.some(entry => entry.item.source_uri === item.source_uri);
+        const toggle = doc.createElement('button'); toggle.type = 'button'; toggle.textContent = selected ? 'Unselect' : 'Select';
+        toggle.setAttribute('aria-label', `${selected ? 'Unselect' : 'Select'} ${item.title}`);
+        toggle.setAttribute('aria-pressed', String(!!selected)); toggle.setAttribute('data-catalog-select', item.source_uri);
+        toggle.disabled = disabled || !selected && state.basket?.length >= MAX_PLAYLIST_TRACKS;
+        toggle.addEventListener('click', () => { if (!toggle.disabled) select(item, items); }); row.append(toggle);
+        if (focused === item.source_uri) focus = toggle;
+      }
+      list.append(row);
     }
+    if (focus && !focus.disabled) focus.focus?.({ preventScroll: true });
+  }
+
+  function catalogSelectionPanel(doc, { review, clear, changeSelection }) {
+    const node = doc.createElement('section'), help = doc.createElement('p'), list = doc.createElement('ol');
+    node.className = 'source-track-selection'; node.setAttribute('aria-label', 'Selected Spotify tracks and episodes');
+    help.className = 'source-help'; help.setAttribute('role', 'status');
+    list.className = 'source-selected-tracks'; list.setAttribute('aria-label', 'Spotify selection in playback order');
+    const actions = doc.createElement('div'); actions.className = 'source-track-actions';
+    let current = Object.freeze([]), shown = null, shownDisabled = null;
+    const buttons = [['play', 'Play selected now'], ['next', 'Play selected next'], ['end', 'Add selected to queue']].map(([mode, label]) => {
+      const button = doc.createElement('button'); button.type = 'button'; button.textContent = label;
+      button.addEventListener('click', () => { if (!button.disabled) void review(mode, current); }); actions.append(button); return button;
+    });
+    const reset = doc.createElement('button'); reset.type = 'button'; reset.textContent = 'Clear Spotify selection';
+    reset.addEventListener('click', () => { if (!reset.disabled) clear(); }); actions.append(reset);
+    node.append(help, list, actions);
+    return { node, render(basket, disabled, reviewDisabled = disabled) {
+      current = basket; node.hidden = !basket.length;
+      help.textContent = `${basket.length} of ${MAX_PLAYLIST_TRACKS} selected. Keep choosing tracks or episodes across search pages and queries, then review where to play them. Each original Spotify search page is checked again before sending.`;
+      for (const button of buttons) button.disabled = reviewDisabled || !basket.length;
+      reset.disabled = disabled || !basket.length;
+      if (shown === basket && shownDisabled === disabled) return;
+      const focused = list.contains?.(doc.activeElement) ? doc.activeElement : null;
+      const action = focused?.getAttribute('data-catalog-basket-action'), index = Number(focused?.getAttribute('data-catalog-basket-index'));
+      const selected = shown?.[index]; let restore, fallback;
+      const retained = basket.indexOf(selected), nextFocus = retained < 0 ? Math.min(index, basket.length - 1) : retained;
+      shown = basket; shownDisabled = disabled; list.replaceChildren();
+      for (const [position, entry] of basket.entries()) {
+        const row = doc.createElement('li'), title = doc.createElement('strong'), uri = doc.createElement('div'), origin = doc.createElement('div');
+        title.textContent = entry.item.title; uri.textContent = entry.item.source_uri; origin.textContent = catalogOrigin(entry); row.append(title, uri, origin);
+        const controls = doc.createElement('div'); controls.className = 'source-track-actions';
+        for (const [verb, label] of [['up', 'Move up'], ['down', 'Move down'], ['repeat', 'Repeat'], ['remove', 'Remove']]) {
+          const button = doc.createElement('button'); button.type = 'button'; button.textContent = label;
+          button.setAttribute('aria-label', `${label} selected Spotify item ${position + 1}: ${entry.item.title}`);
+          button.setAttribute('data-catalog-basket-action', verb); button.setAttribute('data-catalog-basket-index', String(position));
+          button.disabled = disabled || verb === 'up' && position === 0 || verb === 'down' && position === basket.length - 1
+            || verb === 'repeat' && basket.length >= MAX_PLAYLIST_TRACKS;
+          button.addEventListener('click', () => { if (!button.disabled) changeSelection(verb, position, basket); });
+          if (action === verb && nextFocus === position) restore = button;
+          if (action && nextFocus === position && !button.disabled && !fallback) fallback = button;
+          controls.append(button);
+        }
+        row.append(controls); list.append(row);
+      }
+      (restore && !restore.disabled ? restore : fallback)?.focus?.({ preventScroll: true });
+    } };
   }
 
   function groups(value) {
@@ -1241,6 +1370,7 @@ const SourcePlayerRemote = (() => {
       call: (query, options) => call('sourceSpotifySearch', { query, signal: options.signal }),
       available: () => !disposed && state.open && state.sourceType === 'catalog' && !state.reading && !state.writing,
       changed: publish,
+      invalidated: () => { invalidate(true, null); publish(); },
     });
     state.catalog = catalog.state;
     const selected = () => state.groups.find((group) => group.target === state.target);
@@ -1261,10 +1391,10 @@ const SourcePlayerRemote = (() => {
     state.managing = manager.state;
     const blocked = () => state.writing || manager.state.writing;
     const current = (version) => !disposed && state.open && epoch === version;
-    const invalidate = (manage = true) => {
+    const invalidate = (manage = true, clearCatalog = false) => {
       ++epoch; setReader?.abort(); setReader = null; state.pending = null; state.reading = false;
       if (manage) manager.invalidate();
-      catalog.retire();
+      if (clearCatalog !== null) catalog.retire(clearCatalog);
       if (state.playlistStatus === 'loading') state.playlistStatus = 'idle';
       if (state.lineInStatus === 'loading') state.lineInStatus = 'idle';
     };
@@ -1303,7 +1433,7 @@ const SourcePlayerRemote = (() => {
       if (field === 'playlist' && (state.playlistTarget !== state.target || !state.playlists.some(item => item.id === value))) return false;
       if (field === 'lineIn' && (state.lineInStatus !== 'ready' || state.lineInTarget !== lineInTarget()
           || !state.lineInSources.some(item => item.player === value))) return false;
-      invalidate();
+      invalidate(true, field === 'sourceType');
       if (['target', 'targetMode', 'targetQuery', 'sourceType'].includes(field)) { clearPlaylists(); clearLineIn(); }
       if (field === 'sourceType' && value === 'line_in') state.mode = 'play';
       if (field === 'playlist') clearContents();
@@ -1325,7 +1455,7 @@ const SourcePlayerRemote = (() => {
     function chooseCatalog(item, items) {
       const incoming = catalog.select(item, items);
       if (!incoming) return false;
-      invalidate(); clearPlaylists(); clearLineIn(); state.sourceType = 'link';
+      invalidate(true, true); clearPlaylists(); clearLineIn(); state.sourceType = 'link';
       state.input = incoming.input; state.title = incoming.title;
       state.message = 'Spotify source selected. Review the destination and action before sending it.';
       publish(); return true;
@@ -1397,11 +1527,12 @@ const SourcePlayerRemote = (() => {
       try { incoming = offeredSource(value); }
       catch (error) { state.message = problem(error); publish(); return false; }
       state.open = true;
-      if (blocked() || state.reading || manager.busy() || manager.state.cached || state.pending || state.input.trim() || state.title.trim() || state.nativeQuery.trim() || state.playlist || state.lineIn) {
+      if (blocked() || state.reading || manager.busy() || manager.state.cached || state.pending || catalog.state.basket.length
+          || state.input.trim() || state.title.trim() || state.nativeQuery.trim() || state.playlist || state.lineIn) {
         state.message = 'Finish the current source action, or explicitly clear its draft before importing another source.';
         publish(); return false;
       }
-      invalidate(); state.input = incoming.input; state.title = incoming.title;
+      invalidate(true, true); state.input = incoming.input; state.title = incoming.title;
       state.target = ''; state.targetMode = 'group'; state.targetQuery = ''; state.nativeQuery = ''; state.mode = 'play'; state.sourceType = 'link'; clearPlaylists(); clearLineIn();
       // Refresh only the selectable destinations. Review and confirmation remain
       // separate user actions, and share the existing write coordination lane.
@@ -1409,7 +1540,7 @@ const SourcePlayerRemote = (() => {
     }
 
     async function offerTracks(value) {
-      if (disposed || blocked() || state.reading || manager.busy() || manager.state.recovery || manager.state.cached || state.pending
+      if (disposed || blocked() || state.reading || manager.busy() || manager.state.recovery || manager.state.cached || state.pending || catalog.state.basket.length
           || state.input.trim() || state.title.trim() || state.nativeQuery.trim() || state.targetQuery.trim() || state.playlist || state.lineIn) return false;
       let incoming;
       try { incoming = cachedPlaylistSelection(value); }
@@ -1443,7 +1574,7 @@ const SourcePlayerRemote = (() => {
         incoming = { target: value.target, signature: value.signature, playlist: playlists([value.playlist])[0] };
       } catch (error) { state.message = problem(error); publish(); return false; }
       state.open = true;
-      if (blocked() || state.reading || manager.busy() || manager.state.cached || state.pending || state.input.trim() || state.title.trim()
+      if (blocked() || state.reading || manager.busy() || manager.state.cached || state.pending || catalog.state.basket.length || state.input.trim() || state.title.trim()
           || state.targetQuery.trim() || state.nativeQuery.trim() || state.playlist || state.lineIn) {
         state.message = 'Finish the current source action, or explicitly clear its draft before browsing the saved playlist.';
         publish(); return false;
@@ -1473,7 +1604,7 @@ const SourcePlayerRemote = (() => {
     function clearDraft() {
       if (disposed || blocked()) return false;
       if (!manager.clearCached()) return false;
-      invalidate(); clearPlaylists(); clearLineIn(); state.input = ''; state.title = ''; state.target = '';
+      invalidate(true, true); clearPlaylists(); clearLineIn(); state.input = ''; state.title = ''; state.target = '';
       state.targetMode = 'group'; state.targetQuery = ''; state.nativeQuery = ''; state.mode = 'play'; state.sourceType = 'link';
       state.message = 'Source draft cleared. No playback command was sent.';
       // A previous uncertain outcome is still useful evidence, not erased here.
@@ -1503,8 +1634,40 @@ const SourcePlayerRemote = (() => {
       ]) });
     }
 
+    async function reviewCatalog(mode, basket = catalog.state.basket) {
+      if (disposed || !state.open || blocked() || state.reading || manager.state.cached || state.sourceType !== 'catalog'
+          || catalog.state.status === 'loading' || basket !== catalog.state.basket) return false;
+      invalidate(true, null);
+      const version = epoch, group = selected(), set = state.targetMode === 'set', target = set ? state.targetQuery : group?.target;
+      const abort = new AbortController(); setReader = abort;
+      const valid = () => {
+        if (!current(version) || abort.signal.aborted || basket !== catalog.state.basket) throw new Error('The Spotify selection or destination changed. Review it again.');
+      };
+      state.reading = true; state.message = ''; publish();
+      try {
+        if (!set && !group) throw new Error('Choose the group that should play this Spotify selection.');
+        targets().query(target);
+        const prepared = { ...targets().prepareTracks(catalogSelection(basket), mode), title: `${basket.length} selected Spotify track(s) or episode(s)` };
+        if (!set) {
+          const fresh = groups(await call('zones', { signal: abort.signal })); valid();
+          if (!fresh.some(entry => entry.signature === group.signature)) throw new Error('The selected group changed. Refresh rooms and review again.');
+        }
+        await verifyCatalogSelection({ call: (route, args) => call(route, { ...args, signal: abort.signal }), basket, valid });
+        const reviewed = await targets().inspect({ call, player: SourcePlayerRemote, target, item: prepared.item, mode, signal: abort.signal, valid });
+        valid();
+        if (!set && (reviewed.groups.length !== 1 || reviewed.groups[0].signature !== group.signature)) {
+          throw new Error('The selected group changed. Refresh rooms and review again.');
+        }
+        const request = targets().request(prepared, reviewed, SourcePlayerRemote);
+        state.pending = Object.freeze({ ...prepared, catalogBasket: basket, targets: reviewed, body: request.body, route: request.route });
+        return true;
+      } catch (error) { if (current(version)) state.message = problem(error); return false; }
+      finally { if (current(version)) { setReader = null; state.reading = false; publish(); } }
+    }
+
     async function review(choice = null) {
-      if (disposed || !state.open || blocked() || state.reading || manager.state.cached || state.sourceType === 'catalog') return false;
+      if (state.sourceType === 'catalog') return choice ? false : reviewCatalog(state.mode);
+      if (disposed || !state.open || blocked() || state.reading || manager.state.cached) return false;
       invalidate();
       const version = epoch, group = selected(), mode = choice?.mode || state.mode;
       if (collective()) {
@@ -1624,6 +1787,12 @@ const SourcePlayerRemote = (() => {
           let before;
           if (pending.targets) {
             const abort = new AbortController(); setReader = abort;
+            if (pending.catalogBasket) {
+              await verifyCatalogSelection({ call: (route, args) => call(route, { ...args, signal: abort.signal }), basket: pending.catalogBasket,
+                valid: () => {
+                  if (!current(version) || pending.catalogBasket !== catalog.state.basket) throw new Error('The Spotify selection closed or changed before sending.');
+                } });
+            }
             before = await targets().inspect({ call, player: SourcePlayerRemote, target: pending.targets.target,
               sourceGroup: pending.targets.sourceGroup, item: pending.item, mode: pending.mode, signal: abort.signal, valid: () => {
                 if (!current(version)) throw new Error('The source review closed or changed before sending.');
@@ -1665,7 +1834,7 @@ const SourcePlayerRemote = (() => {
     }
 
     return { state, manager, catalog, chooseCatalog, refresh, edit, loadTargetSuggestions, loadPlaylists, loadLineInSources, loadContents,
-      review, reviewTrack, selectTrack, changeTrackSelection, reviewTracks, clearTrackSelection, confirm, offer, offerTracks, browseSaved, clearDraft,
+      review, reviewCatalog, reviewTrack, selectTrack, changeTrackSelection, reviewTracks, clearTrackSelection, confirm, offer, offerTracks, browseSaved, clearDraft,
       catalogChanged(change = null) {
         manager.catalogChanged(change);
         if (disposed || !['playlist', 'favorite'].includes(state.sourceType)
@@ -1675,9 +1844,9 @@ const SourcePlayerRemote = (() => {
         state.message = 'The saved household sources changed. Read the current sources and review again.';
         publish();
       },
-      cancel() { if (!blocked() && !disposed) { invalidate(); state.message = ''; publish(); } },
-      close() { state.open = false; invalidate(); state.message = ''; publish(); },
-      dispose() { disposed = true; state.open = false; invalidate(); },
+      cancel() { if (!blocked() && !disposed) { invalidate(true, null); state.message = ''; publish(); } },
+      close() { state.open = false; invalidate(true, true); state.message = ''; publish(); },
+      dispose() { disposed = true; state.open = false; invalidate(true, true); },
     };
   }
 
@@ -1759,9 +1928,12 @@ const SourcePlayerRemote = (() => {
         modeField, el('div', { class: 'row' }, refresh, review, clear), message, managerHost, consent, result));
     const node = el('section', { class: 'scenes', 'aria-label': 'Spotify, links, Sonos playlists and line-in' }, details);
     let shownGroups = null, shownPlaylists = null, shownPlaylistStatus = '', shownReview = null, shownContents = null, shownContentsBusy = null, shownContentsSelection = null, confirmButton = null;
-    let shownCatalog = null, shownCatalogBusy = null, shownSuggestions = null;
+    let shownCatalog = null, shownCatalogBusy = null, shownCatalogBasket = null, shownSuggestions = null;
     let shownLineIn = null, shownLineInStatus = '';
     const control = model({ call, execute, executeSet, changed: render });
+    const onlineSelection = catalogSelectionPanel(doc, { review: control.reviewCatalog, clear: control.catalog.clearSelection,
+      changeSelection: control.catalog.editSelection });
+    catalogFields.append(onlineSelection.node);
     const selectionPanel = playlistTrackSelectionPanel(doc, { review: control.reviewTracks, clear: control.clearTrackSelection,
       changeSelection: control.changeTrackSelection,
       destination: value => control.edit('selectionTarget', value), loadTargets: control.loadTargetSuggestions });
@@ -1802,9 +1974,12 @@ const SourcePlayerRemote = (() => {
       catalogNext.disabled = busy || state.catalog.status !== 'ready' || state.catalog.nextOffset === null;
       catalogMessage.textContent = state.catalog.message;
       catalogFields.setAttribute('aria-busy', String(state.catalog.status === 'loading'));
-      if (shownCatalog !== state.catalog.items || shownCatalogBusy !== busy) {
-        shownCatalog = state.catalog.items; shownCatalogBusy = busy;
-        renderCatalog(catalogList, state.catalog, doc, { choose: control.chooseCatalog, disabled: busy });
+      const catalogBusy = busy || state.catalog.status === 'loading';
+      onlineSelection.render(state.catalog.basket, catalogBusy,
+        catalogBusy || !(set ? state.targetQuery.trim() : state.target));
+      if (shownCatalog !== state.catalog.items || shownCatalogBusy !== catalogBusy || shownCatalogBasket !== state.catalog.basket) {
+        shownCatalog = state.catalog.items; shownCatalogBusy = catalogBusy; shownCatalogBasket = state.catalog.basket;
+        renderCatalog(catalogList, state.catalog, doc, { choose: control.chooseCatalog, select: control.catalog.toggle, disabled: catalogBusy });
       }
       if (shownPlaylists !== state.playlists || shownPlaylistStatus !== state.playlistStatus) {
         shownPlaylists = state.playlists; shownPlaylistStatus = state.playlistStatus;
@@ -1849,15 +2024,15 @@ const SourcePlayerRemote = (() => {
           edit: (position, page) => { if (page === state.contents) control.manager.chooseTrack(position, page); },
           selected: state.contentsSelection, disabled: busy || !!state.managing.cached });
       }
-      review.textContent = state.contentsSelection.length ? state.mode === 'play' ? 'Review selected playback' : 'Review selected queue addition'
+      review.textContent = state.contentsSelection.length || online && state.catalog.basket.length ? state.mode === 'play' ? 'Review selected playback' : 'Review selected queue addition'
         : state.mode === 'play' ? 'Review playback' : 'Review queue addition';
       for (const [field, element] of [['input', input], ['title', title]]) if (element.value !== state[field]) element.value = state[field];
       for (const element of [target, sourceType, input, title, mode]) element.disabled = writing;
       mode.disabled = writing || analog;
       clear.disabled = writing;
       if (state.managing.cached) { target.disabled = true; sourceType.disabled = true; }
-      refresh.disabled = busy; review.hidden = !!state.managing.cached; review.disabled = busy || !!state.managing.cached || online || !(set ? state.targetQuery.trim() : state.target)
-        || (nativeTitle ? !state.nativeQuery.trim() : saved ? !state.playlist || state.playlistStatus !== 'ready'
+      refresh.disabled = busy; review.hidden = !!state.managing.cached; review.disabled = busy || !!state.managing.cached || online && (catalogBusy || !state.catalog.basket.length) || !(set ? state.targetQuery.trim() : state.target)
+        || (online ? false : nativeTitle ? !state.nativeQuery.trim() : saved ? !state.playlist || state.playlistStatus !== 'ready'
         : analog ? !state.lineIn || state.lineInStatus !== 'ready' || state.lineInTarget !== (set ? state.targetQuery.trim() : state.target) : !state.input.trim());
       message.textContent = state.message || (state.reading ? 'Reading the destination…' : '');
       result.textContent = state.result?.detail || '';
@@ -1871,6 +2046,12 @@ const SourcePlayerRemote = (() => {
           cancel.addEventListener('click', () => control.cancel());
           if (pending.targets) {
             consent.append(el('p', { text: `${modes[pending.mode]}: ${pending.title || pending.item.uri} · ${pending.targets.groups.length} independent group(s)` }));
+            if (pending.catalogBasket) {
+              const selected = el('ol', { class: 'source-selected-tracks', 'aria-label': 'Reviewed Spotify selection in playback order' });
+              for (const entry of pending.catalogBasket) selected.append(el('li', {},
+                el('strong', { text: entry.item.title }), el('div', { text: entry.item.source_uri }), el('div', { text: catalogOrigin(entry) })));
+              consent.append(selected, el('p', { class: 'source-help', text: 'The original Spotify search pages are checked again before one request. Tracks and episodes keep the order shown, including repeats.' }));
+            }
             const affected = el('ul', { class: 'source-target-preview', 'aria-label': 'Reviewed source destinations' });
             for (const entry of pending.targets.entries) {
               const q = entry.before.queue;
@@ -2021,7 +2202,8 @@ const SourcePlayerRemote = (() => {
     preparePlaylistTracks, tracksQuery, verifyPlaylistTracks, readPlaylistTracks, tracksOutcome, renderSelectedTracks, playlistTrackSelectionPanel, MAX_PLAYLIST_TRACKS,
     playlistBasketPositions, verifyPlaylistBasket, togglePlaylistTrack, editPlaylistBasket, preparePlaylistBasket,
     commandBody, offeredSource, groups, playback, queue, queued, outcome, model, panel, routes, modes, MAX_BYTES, MAX_TITLE,
-    catalogKinds, catalogQuery, catalogPage, catalogModel, renderCatalog, CATALOG_LIMIT, MAX_QUERY_BYTES, MAX_CATALOG_OFFSET };
+    catalogKinds, catalogQuery, catalogPage, catalogModel, renderCatalog, catalogSelection, verifyCatalogSelection, catalogSelectionPanel, catalogOrigin,
+    CATALOG_LIMIT, MAX_QUERY_BYTES, MAX_CATALOG_OFFSET };
 })();
 
 if (typeof module !== 'undefined' && module.exports) module.exports = SourcePlayerRemote;

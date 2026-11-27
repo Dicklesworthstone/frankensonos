@@ -19,6 +19,35 @@ it does not restore stale selection authority. Editing the query or category,
 changing the destination, cancelling or closing retires paging and late replies.
 There is no automatic catalog crawl or background paging.
 
+### Build an ordered selection in either browser
+
+Select up to ten tracks or podcast episodes across search pages, queries and
+categories. The selected list shows each title, exact Spotify URI and original
+search. Move entries up or down, remove them or repeat an entry; repetitions
+count toward the ten-entry limit. Searching for more music keeps the list.
+Albums, artists, playlists and shows retain their individual **Use this source**
+action.
+
+Choose a listening group or a room set, then review **Play selected now**,
+**Play selected next**, or **Add selected to queue**. The review shows the
+complete sequence and every affected group's current source and queue.
+Changing the destination keeps the chosen music and retires the old review.
+Closing the source view, clearing its draft or leaving Spotify catalog clears
+the selection.
+
+Before review and again before confirmation, the remote rereads each distinct
+original search page and checks the selected URI, title and subtitle. Changed
+ranking within that page is allowed; a disappeared or changed result requires
+updating the selection. These reads also retain the normal Spotify sign-in,
+cooldown and error behavior. The dashboard's review lifetime starts after
+inspection completes, allowing bounded provider reads to finish while group,
+selection and destination checks remain active.
+
+Confirmation sends one ordered source-control request through the existing
+command lane. It preserves deliberate repeats, each group's result and queue
+insertion receipt, including partial or uncertain outcomes. A lost reply never
+causes an automatic playback or queue retry.
+
 ### Native iPhone and Mac app
 
 Open **Spotify online** in the **Music** library panel. Choose one of the same six categories,
@@ -165,7 +194,8 @@ cargo test -p fsonos-cli --test e2e_spotify_search
 Focused browser command:
 
 ~~~bash
-node --test scripts/test-remote-source-player.cjs scripts/test-dashboard-source.cjs
+node --test scripts/test-remote-source-player.cjs scripts/test-dashboard-source.cjs \
+  scripts/test-phone-catalog-basket.cjs scripts/test-dashboard-catalog-basket.cjs
 ~~~
 
 Pagination regressions cover filtered and duplicate raw positions, empty filtered
@@ -178,6 +208,12 @@ replies, query and kind changes, cancellation, stale item selection, and bounded
 raw progress. Phone and dashboard DOM-fixture tests exercise their actual paging
 buttons and verify that browsing pages only reads catalog data, without preparing
 a playback action or sending speaker writes.
+
+The browser basket suites also cover mixed tracks and episodes from multiple
+searches, reordered repeats, all three actions and multi-household destinations,
+exact original-page verification, stale controls, changed audiences and queues,
+partial receipts, lost replies and slow provider responses. They run the shared
+model, shipped controllers and DOM controls under Node.
 
 Focused native command:
 

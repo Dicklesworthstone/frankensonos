@@ -1564,6 +1564,17 @@ the requested page. Older first-page daemon responses remain readable without
 guessing another offset. See `docs/SPOTIFY_SEARCH.md` for the request contract
 and validation coverage.
 
+Both browser source selectors also compose ordered selections of up to ten
+live Spotify track or episode results across pages and searches. Their lists
+retain exact source identities, titles and query provenance, with reorder,
+repeat and removal controls. Review and confirmation reread every distinct
+selected source page, then inspect the selected group or room-set audience
+before one shared source-control request. Destination changes retain the chosen
+music while retiring the review; changed source evidence, audiences or queues
+block dispatch. Partial results and uncertain replies retain the existing
+no-replay behavior. Node coverage exercises both controllers and DOM panels,
+including successful slow provider reads and exact original-group checks.
+
 Native physical inputs are also available as explicit sources. `fsonos line-in
 <room>`, HTTP `GET /line-in`, MCP `list_line_in`, both browser source selectors,
 and the native Apple app's Music → Line-in panel read the destination household's
