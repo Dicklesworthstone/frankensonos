@@ -10,6 +10,8 @@ fn selection(s: &Surface, zone: &str, mode: SonosPlaylistTrackMode) -> SonosPlay
         .unwrap();
     SonosPlaylistTracksRequest {
         zone: zone.into(),
+        target: None,
+        expected_target_revision: None,
         playlist: page.playlist.id,
         positions: vec![3, 2, 3],
         expected_revision: page.revision,

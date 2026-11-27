@@ -54,6 +54,9 @@ pub enum VolumeScope {
 /// The speaker supplies their resource and DIDL; clients only name positions.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NativePlaylistSelection {
+    /// The original coordinator whose native catalog revision authorized these
+    /// occurrences. A playback destination cannot stand in for that reader.
+    pub source_coordinator: PlayerId,
     pub playlist: String,
     pub positions: Vec<u32>,
     pub expected_revision: String,
@@ -61,16 +64,49 @@ pub struct NativePlaylistSelection {
 }
 
 impl NativePlaylistSelection {
+    pub(crate) fn source_for(
+        rooms: &Rooms<'_>,
+        zone: &str,
+        destinations: &[PlayerId],
+    ) -> Result<PlayerId, Failure> {
+        let source = resolve(rooms, zone)?;
+        if destinations
+            .iter()
+            .any(|destination| source.household.player(destination).is_none())
+        {
+            return Err(Failure::new(
+                ErrorCode::CrossHouseholdGroup,
+                "saved playlist occurrences can only be sent to groups in their original Sonos household",
+            )
+            .with_hint(
+                "Choose rooms or a saved alias within the source household, or all@S1 / all@S2 for that household.",
+            ));
+        }
+        Ok(source.coordinator.id.clone())
+    }
+
     pub(crate) fn confirm<T: fsonos_proto::Transport + ?Sized>(
         &self,
         transport: &T,
         households: &[HouseholdState],
         coordinator: &PlayerId,
     ) -> Result<(), Failure> {
+        let source_house = households
+            .iter()
+            .find(|house| house.player(&self.source_coordinator).is_some())
+            .ok_or_else(|| {
+                Failure::new(ErrorCode::NotReady, "the saved playlist source disappeared")
+            })?;
+        if source_house.player(coordinator).is_none() {
+            return Err(Failure::new(
+                ErrorCode::CrossHouseholdGroup,
+                "native playlist metadata cannot be used outside its original household",
+            ));
+        }
         let current = fsonos_core::playlists::select_tracks(
             transport,
             households,
-            coordinator,
+            &self.source_coordinator,
             &self.playlist,
             &self.positions,
             &self.expected_revision,

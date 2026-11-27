@@ -11,15 +11,26 @@ use super::{SonosPlaylistTrackMode, SonosPlaylistTrackRequest, Surface};
 use crate::guard::Note;
 use crate::heal::Observed;
 use crate::plan::{Command, NativePlaylistSelection};
-use crate::surface::queue::{ADD, confirm_destination_revision};
+use crate::surface::queue::{ADD, QueueAddOutcome, QueueAddedSetDto, confirm_destination_revision};
 use crate::{ErrorCode, Failure, NoteCode};
+
+mod targets;
 
 /// Select exact saved occurrences without accepting client renderer metadata.
 /// `play` replaces the queue; `next` and `append` leave playback alone.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct SonosPlaylistTracksRequest {
+    /// The original room/group used to read the playlist and its revision.
     pub zone: String,
+    /// Optional destination room, alias or all/everywhere in the source
+    /// household. Omitted means the source zone's own group.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub target: Option<String>,
+    /// Optional audience revision from /rooms/resolve for target (or zone).
+    /// This is independent of both playlist and destination queue revisions.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expected_target_revision: Option<String>,
     /// Exact household-local SQ: id from the observed saved playlist.
     pub playlist: String,
     /// Between 1 and 10 one-based occurrences, in the requested playback order.
@@ -28,13 +39,19 @@ pub struct SonosPlaylistTracksRequest {
     /// The saved playlist contents revision, not the destination queue's token.
     pub expected_revision: String,
     pub mode: SonosPlaylistTrackMode,
-    /// Optional token from `get_queue` for the original destination group.
+    /// Optional token from `get_queue`, valid only for one destination group.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub expected_queue_revision: Option<String>,
 }
 
 impl SonosPlaylistTracksRequest {
     pub fn validate(&self) -> Result<(), Failure> {
+        if let Some(target) = &self.target {
+            crate::request::zone_name("target", target)?;
+        }
+        if let Some(revision) = &self.expected_target_revision {
+            crate::surface::source_control::validate_revision(revision)?;
+        }
         if self.positions.is_empty() || self.positions.len() > control::MAX_TRACK_BATCH {
             return Err(Failure::invalid(
                 "select between 1 and 10 saved playlist occurrences",
@@ -65,6 +82,10 @@ impl SonosPlaylistTracksRequest {
         }
         Ok(())
     }
+
+    pub(in crate::surface) fn target(&self) -> &str {
+        self.target.as_deref().unwrap_or(&self.zone).trim()
+    }
 }
 
 /// The native selection and confirmed effect; no renderer credentials are returned.
@@ -85,17 +106,40 @@ pub struct SonosPlaylistTracksDto {
     pub count: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub playing_queue: Option<bool>,
+    /// Actual playback results when more than one group was addressed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub batch: Option<crate::execute::ControlBatchDto>,
+    /// Per-group insertion ranges and failures for an explicit queue target.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub queue_batch: Option<QueueAddedSetDto>,
 }
 
 impl SonosPlaylistTracksDto {
     #[must_use]
     pub fn text(&self) -> String {
+        if let Some(batch) = &self.queue_batch {
+            return QueueAddOutcome::Groups(batch.clone()).text();
+        }
         let mut text = format!("{}\n", self.done);
         for note in &self.notes {
             text.push_str(&note.detail);
             text.push('\n');
         }
         text
+    }
+
+    /// CLI/MCP keep every receipt while reporting incomplete delivery.
+    #[must_use]
+    pub fn complete(&self) -> bool {
+        !self.notes.iter().any(|note| note.code == NoteCode::Skipped)
+            && self.batch.as_ref().is_none_or(|batch| {
+                batch.complete
+                    && !batch.results.is_empty()
+                    && batch.results.iter().all(|target| target.result.complete())
+            })
+            && self.queue_batch.as_ref().is_none_or(|batch| {
+                batch.complete && batch.failed.is_empty() && !batch.added.is_empty()
+            })
     }
 }
 
@@ -108,6 +152,9 @@ impl Surface {
         req: &SonosPlaylistTracksRequest,
     ) -> Result<SonosPlaylistTracksDto, Failure> {
         req.validate()?;
+        if req.target.is_some() || req.expected_target_revision.is_some() {
+            return self.sonos_playlist_tracks_targets(client, req);
+        }
         if req.mode != SonosPlaylistTrackMode::Play {
             return self.queue_sonos_playlist_tracks(client, req);
         }
@@ -139,6 +186,7 @@ impl Surface {
             Ok(Command::PlayNativeSelection {
                 coordinator: coordinator.clone(),
                 selection: NativePlaylistSelection {
+                    source_coordinator: coordinator.clone(),
                     playlist: req.playlist.trim().into(),
                     positions: req.positions.clone(),
                     expected_revision: req.expected_revision.clone(),
@@ -159,6 +207,8 @@ impl Surface {
             first: None,
             count: None,
             playing_queue: None,
+            batch: outcome.batch,
+            queue_batch: None,
         })
     }
 
@@ -197,6 +247,7 @@ impl Surface {
                 &req.expected_revision,
             )?;
             let selection = NativePlaylistSelection {
+                source_coordinator: coordinator.clone(),
                 playlist: req.playlist.trim().into(),
                 positions: req.positions.clone(),
                 expected_revision: req.expected_revision.clone(),
@@ -249,6 +300,8 @@ impl Surface {
                     first: Some(queued.first),
                     count: Some(count),
                     playing_queue: Some(queued.playing_queue),
+                    batch: None,
+                    queue_batch: None,
                 },
                 before,
             ))

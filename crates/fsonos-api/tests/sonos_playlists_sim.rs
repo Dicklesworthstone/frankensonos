@@ -23,6 +23,8 @@ use std::time::Duration;
 
 #[path = "sonos_playlists_sim/selections.rs"]
 mod selections;
+#[path = "sonos_playlists_sim/targets.rs"]
+mod targets;
 
 fn sim() -> SimHandle {
     SimHousehold::builder()

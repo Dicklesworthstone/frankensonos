@@ -178,13 +178,54 @@ HTTP uses `POST /sonos/playlists/tracks`; MCP uses `sonos_playlist_tracks`:
 }
 ```
 
-Only `expected_queue_revision` is optional. It binds the action to a previously
+`expected_queue_revision` is optional. It binds the action to a previously
 reviewed destination queue and is distinct from the mandatory saved-playlist
 contents revision. CLI accepts it as `--queue-revision` (also
 `--expected-queue-revision`); `--revision` also accepts `--expected-revision`.
 Unknown fields and caller-supplied renderer metadata are rejected. The server
 retains the original destination group, source, boot and queue through source
 selection and rechecks the selected occurrences before writing.
+
+### Send the selection to other rooms
+
+CLI, HTTP and MCP also accept an optional destination `target`: another room,
+a saved room alias, or a household-qualified target such as `all@S1`. The
+original `zone` remains the room where the playlist was reviewed. Its exact
+playlist revision and native metadata are retained independently of the
+destination groups.
+
+```sh
+fsonos playlist-tracks Kitchen SQ:7 3 1 3 \
+  --revision '<contents revision>' --mode next --target downstairs
+```
+
+Each distinct existing destination group receives the same ordered selection;
+already grouped rooms act once. All destinations must belong to the source
+playlist's household. A cross-household target is rejected before playback or
+queue changes, because native playlist identities and service metadata belong
+to their original household.
+
+HTTP and MCP accept `expected_target_revision` from `GET /rooms/resolve` to
+bind the destination selection to its reviewed physical audience. The CLI
+accepts that proof as `--target-revision`. This proof is independent of
+`expected_revision`, which always identifies the source playlist. An optional
+`expected_queue_revision` applies only when the target resolves to one group;
+a single queue token cannot stand in for several destination queues.
+
+All destinations are prepared before execution. Playback applies each group's
+caps and uses the existing set executor; next/append retain playback and queue
+the same native occurrences through the shared insertion engine. Multi-group
+results include individual receipts in `batch` for playback or `queue_batch`
+for queueing. Partial completion remains visible, the CLI exits unsuccessfully,
+and MCP marks the result as an error while retaining the individual outcomes.
+Complete multi-group playback uses the existing combined replacement undo.
+For next/append, a group refused before any write does not prevent undoing the
+confirmed ranges on other groups. An uncertain group blocks aggregate undo.
+An uncertain request is never replayed automatically.
+
+Omitting `target` retains the existing one-group request and response. The
+browser and native Apple selection editors keep their existing one-group
+destination controls.
 
 The phone and dashboard let you select up to ten occurrences from the displayed
 saved-playlist page. The ordered review offers **Play selected now**, **Play
@@ -582,7 +623,7 @@ read and review.
 | List the selected household's saved playlists | `GET /sonos/playlists?zone=Kitchen` | `list_sonos_playlists(zone="Kitchen")` |
 | Inspect ordered saved tracks | `GET /sonos/playlists/contents?zone=Kitchen&playlist=SQ:7&offset=0&limit=100` | `sonos_playlist_contents(zone="Kitchen", playlist="SQ:7", offset=0, limit=100)` |
 | Play or queue one observed track | `POST /sonos/playlists/track` with `zone`, exact `playlist`, `position`, `expected_revision`, and `mode` | `sonos_playlist_track` with the same fields |
-| Play or queue 1–10 ordered occurrences | `POST /sonos/playlists/tracks` with `zone`, exact `playlist`, `positions`, `expected_revision`, explicit `mode`, and optional `expected_queue_revision` | `sonos_playlist_tracks` with the same fields |
+| Play or queue 1–10 ordered occurrences | `POST /sonos/playlists/tracks` with source `zone`, exact `playlist`, `positions`, `expected_revision`, explicit `mode`, optional destination `target` / `expected_target_revision`, and optional single-destination `expected_queue_revision` | `sonos_playlist_tracks` with the same fields |
 | Save the current queue as a new playlist | `POST /sonos/playlists/save` with `{"zone":"Kitchen","title":"Evening Mix"}` | `save_sonos_playlist(zone="Kitchen", title="Evening Mix")` |
 | Rename an exact observed playlist | `POST /sonos/playlists/rename` with `zone`, exact `playlist`, `expected_revision`, and `title` | `rename_sonos_playlist` with the same fields |
 | Permanently remove an exact observed playlist | `POST /sonos/playlists/remove` with `zone`, exact `playlist`, and `expected_revision` | `remove_sonos_playlist` with the same fields |
@@ -743,3 +784,12 @@ from changed supplied values and retain exact source/account checks. The S1/S2
 explicit-selection case now checks the untouched prefix, ordered resources and
 new catalog metadata. The starting revision failed this workflow in macOS CI;
 execution of this fix remains pending while the local executor is unavailable.
+
+Multi-destination selection regressions in
+`fsonos-api/tests/sonos_playlists_sim/targets.rs` cover S1/S2 room aliases,
+deduplicated groups, ordered repeats, volume caps, silent next/append, separate
+source/audience/queue revisions, complete undo and individual partial outcomes.
+CLI and MCP tests cover destination arguments and retained partial receipts.
+These Rust additions remain unexecuted: both workspace checking attempts exited
+137 before project checking, and the execution environment disconnected before
+final formatting and simulator validation.

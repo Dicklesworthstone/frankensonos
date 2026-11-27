@@ -20,11 +20,12 @@ use super::{
 };
 use crate::execute::spotify_failure;
 use crate::heal::Observed;
-use crate::plan::{Command, Rooms, resolve_set};
+use crate::plan::{Command, NativePlaylistSelection, Rooms, resolve_set};
 use crate::request::PlayRequest;
 use crate::source::{SourceSelection, is_catalog_source};
 use crate::surface::audience::AudienceTransport;
 use crate::surface::room_view;
+use crate::surface::sonos_playlists::{SonosPlaylistTrackMode, SonosPlaylistTracksRequest};
 use crate::surface::source_control::{confirm_revision, validate_revision};
 use crate::surface::source_selection::{NativeSource, native_sources};
 use crate::{ApiError, ErrorCode, Failure};
@@ -128,6 +129,7 @@ enum Source {
         selection: Option<SourceSelection>,
     },
     Native(HashMap<PlayerId, Favorite>),
+    NativeSelection(NativePlaylistSelection),
     Tracks(Vec<(String, String)>),
 }
 
@@ -163,6 +165,84 @@ fn targets(rooms: &Rooms<'_>, zone: &str) -> Result<Vec<Target>, Failure> {
 }
 
 impl Surface {
+    /// Native source authority stays with its original coordinator. Destination
+    /// queue and audience proofs are retained separately for every group.
+    pub(in crate::surface) fn queue_sonos_playlist_targets(
+        &self,
+        client: &Client,
+        request: &SonosPlaylistTracksRequest,
+    ) -> Result<(QueueAddedSetDto, Vec<String>), Failure> {
+        self.authorize_logged(client, ADD)?;
+        request.validate()?;
+        let households = self.households()?;
+        let aliases = self.aliases();
+        let rooms = room_view(&households, aliases.as_ref(), client);
+        if let Some(revision) = &request.expected_target_revision {
+            confirm_revision(&rooms, request.target(), revision)?;
+        }
+        let targets =
+            targets(&rooms, request.target()).map_err(|failure| self.explain(failure))?;
+        if targets.len() > 1 && request.expected_queue_revision.is_some() {
+            return Err(Failure::invalid(
+                "expected_queue_revision requires one destination group; use expected_target_revision to bind a room set",
+            ));
+        }
+        let coordinators = targets
+            .iter()
+            .map(|target| target.coordinator.clone())
+            .collect::<Vec<_>>();
+        let source = NativePlaylistSelection::source_for(
+            &rooms,
+            request.zone.trim(),
+            &coordinators,
+        )?;
+        // All destinations are retained before any saved occurrence is read.
+        let prepared = self.prepare_queue_targets(&households, targets, true)?;
+        for group in &prepared {
+            confirm_destination_revision(
+                &*self.transport,
+                group.target.host,
+                &group.target.coordinator,
+                request.expected_queue_revision.as_deref(),
+            )?;
+        }
+        let selection = NativePlaylistSelection {
+            tracks: fsonos_core::playlists::select_tracks(
+                &*self.transport,
+                &households,
+                &source,
+                request.playlist.trim(),
+                &request.positions,
+                &request.expected_revision,
+            )?,
+            source_coordinator: source,
+            playlist: request.playlist.trim().into(),
+            positions: request.positions.clone(),
+            expected_revision: request.expected_revision.clone(),
+        };
+        let titles = selection
+            .tracks
+            .iter()
+            .map(|track| track.title.clone())
+            .collect();
+        self.confirm_queue_targets(client, &households, &prepared, true)?;
+        let plan = PreparedQueue {
+            groups: prepared,
+            source: Source::NativeSelection(selection),
+            next: request.mode == SonosPlaylistTrackMode::Next,
+            reviewed: true,
+            intent: format!(
+                "{ADD}: {} saved playlist {} occurrences {:?} from {} next={}",
+                request.target(),
+                request.playlist.trim(),
+                request.positions,
+                request.zone.trim(),
+                request.mode == SonosPlaylistTrackMode::Next,
+            ),
+        };
+        Ok((self.queue_targets_run(client, &households, &plan), titles))
+    }
+
     /// Queue one source in each selected group without changing playback.
     /// A grouped-room alias with one coordinator keeps the original response.
     pub fn queue_request_targets(
@@ -585,6 +665,17 @@ impl Source {
                     households,
                     coordinator,
                     &tracks,
+                    next,
+                    &group.destination,
+                )
+            }
+            Self::NativeSelection(selection) => {
+                selection.confirm(transport, households, coordinator)?;
+                control::enqueue_native_tracks_bound(
+                    &watch,
+                    households,
+                    coordinator,
+                    &selection.tracks,
                     next,
                     &group.destination,
                 )

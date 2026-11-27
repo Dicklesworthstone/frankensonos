@@ -79,6 +79,8 @@ fn track_request() -> SonosPlaylistTrackRequest {
 fn tracks_request() -> SonosPlaylistTracksRequest {
     SonosPlaylistTracksRequest {
         zone: "Den@S2".into(),
+        target: None,
+        expected_target_revision: None,
         playlist: "SQ:7".into(),
         positions: vec![3, 1, 3],
         expected_revision: "native:a&b=2".into(),
@@ -112,6 +114,116 @@ fn selected_tracks_forward_order_duplicates_and_both_revisions_once() {
             [json!(["POST", "/sonos/playlists/tracks", request])]
         );
     }
+}
+
+
+#[test]
+fn selected_tracks_forward_the_source_and_reviewed_target_once() {
+    let request = SonosPlaylistTracksRequest {
+        target: Some("downstairs".into()),
+        expected_target_revision: Some("a".repeat(64)),
+        expected_queue_revision: None,
+        ..tracks_request()
+    };
+    let outcome = json!({
+        "done":"queued native tracks on two groups", "zone":"downstairs", "playlist":"SQ:7",
+        "positions":[3,1,3], "titles":["Repeat","First","Repeat"],
+        "mode":"next", "changed":true, "notes":[],
+        "queue_batch": {
+            "done":"queued native tracks on two groups", "complete":true,
+            "logged":true, "undoable":true, "failed":[],
+            "added":[
+                {"household":"S2", "coordinator":"RINCON_ONE",
+                 "queue":{"done":"queued", "zone":"Den", "first":2, "count":3, "playing_queue":true}},
+                {"household":"S2", "coordinator":"RINCON_TWO",
+                 "queue":{"done":"queued", "zone":"Office", "first":5, "count":3, "playing_queue":false}}
+            ]
+        }
+    });
+    let reply = Arc::new(Reply {
+        calls: Mutex::default(),
+        answer: Some(Ok(outcome.clone())),
+    });
+    let result = backend(&reply).sonos_playlist_tracks(&request).unwrap();
+    assert!(!result.is_error);
+    assert_eq!(result.structured_content, Some(outcome));
+    assert_eq!(
+        *reply.calls.lock().unwrap(),
+        [json!(["POST", "/sonos/playlists/tracks", request])]
+    );
+}
+
+#[test]
+fn selected_tracks_keep_partial_and_uncertain_per_group_receipts_as_tool_errors() {
+    for code in ["QUEUE_CHANGED", "OUTCOME_UNCERTAIN"] {
+        for advertised_complete in [false, true] {
+            let request = SonosPlaylistTracksRequest {
+                target: Some("all@S2".into()),
+                expected_queue_revision: None,
+                ..tracks_request()
+            };
+            let outcome = json!({
+                "done":"one destination failed", "zone":"all@S2", "playlist":"SQ:7",
+                "positions":[3,1,3], "titles":["Repeat","First","Repeat"],
+                "mode":"next", "changed":true, "notes":[],
+                "queue_batch": {
+                    "done":"one destination failed", "complete":advertised_complete,
+                    "logged":true, "undoable":code != "OUTCOME_UNCERTAIN",
+                    "added":[
+                        {"household":"S2", "coordinator":"RINCON_ONE",
+                         "queue":{"done":"queued", "zone":"Den", "first":2, "count":3, "playing_queue":true}}
+                    ],
+                    "failed":[
+                        {"household":"S2", "coordinator":"RINCON_TWO", "zone":"Office",
+                         "error":{"code":code, "detail":"destination did not confirm", "hint":"inspect the queue", "suggestions":[], "retryable":false}}
+                    ]
+                }
+            });
+            let reply = Arc::new(Reply {
+                calls: Mutex::default(),
+                answer: Some(Ok(outcome.clone())),
+            });
+            let result = backend(&reply).sonos_playlist_tracks(&request).unwrap();
+            assert!(result.is_error);
+            assert_eq!(result.structured_content, Some(outcome));
+            assert_eq!(
+                *reply.calls.lock().unwrap(),
+                [json!(["POST", "/sonos/playlists/tracks", request])]
+            );
+        }
+    }
+}
+
+#[test]
+fn selected_playback_keeps_partial_control_receipts_as_a_tool_error() {
+    let request = SonosPlaylistTracksRequest {
+        target: Some("all@S2".into()),
+        expected_queue_revision: None,
+        mode: fsonos_api::surface::sonos_playlists::SonosPlaylistTrackMode::Play,
+        ..tracks_request()
+    };
+    let outcome = json!({
+        "done":"one group started", "zone":"all@S2", "playlist":"SQ:7",
+        "positions":[3,1,3], "titles":["Repeat","First","Repeat"],
+        "mode":"play", "changed":true, "notes":[],
+        "batch": {
+            "complete":false,
+            "results":[
+                {"household":"S2", "target":"RINCON_ONE", "zone":"Den",
+                 "result":{"status":"succeeded", "done":"playing", "changed":true, "notes":[]}},
+                {"household":"S2", "target":"RINCON_TWO", "zone":"Office",
+                 "result":{"status":"failed", "error":{"code":"QUEUE_CHANGED", "detail":"destination changed", "hint":"inspect the queue", "suggestions":[], "retryable":false}}}
+            ]
+        }
+    });
+    let reply = Arc::new(Reply {
+        calls: Mutex::default(),
+        answer: Some(Ok(outcome.clone())),
+    });
+    let result = backend(&reply).sonos_playlist_tracks(&request).unwrap();
+    assert!(result.is_error);
+    assert_eq!(result.structured_content, Some(outcome));
+    assert_eq!(reply.calls.lock().unwrap().len(), 1);
 }
 
 #[test]
@@ -188,6 +300,14 @@ fn invalid_native_batches_are_rejected_before_forwarding_and_local_reads() {
             expected_queue_revision: Some(" ".into()),
             ..tracks_request()
         },
+        SonosPlaylistTracksRequest {
+            target: Some(" ".into()),
+            ..tracks_request()
+        },
+        SonosPlaylistTracksRequest {
+            expected_target_revision: Some("not-a-resolved-audience".into()),
+            ..tracks_request()
+        },
     ] {
         assert!(backend(&reply).sonos_playlist_tracks(&request).is_err());
     }
@@ -223,7 +343,10 @@ fn selected_tracks_tool_requires_native_selection_and_keeps_destination_revision
     for field in ["zone", "playlist", "positions", "expected_revision", "mode"] {
         assert!(required.contains(&json!(field)), "{value}");
     }
-    assert!(!required.contains(&json!("expected_queue_revision")));
+    for optional in ["target", "expected_target_revision", "expected_queue_revision"] {
+        assert!(!required.contains(&json!(optional)), "{value}");
+        assert!(value["inputSchema"]["properties"].get(optional).is_some());
+    }
     assert_eq!(
         value["inputSchema"]["properties"]["positions"]["type"],
         "array"

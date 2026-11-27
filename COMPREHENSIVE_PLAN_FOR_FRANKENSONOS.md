@@ -1513,6 +1513,18 @@ one submission, retaining uncertain outcomes without replay. The focused browser
 regressions pass (422 tests); added Rust simulation coverage remains unexecuted
 after dependency-build failures. See `docs/SONOS_PLAYLISTS.md`.
 
+Those ordered native selections now accept a separate destination `target`
+through CLI, HTTP and MCP: one room, a saved alias or `all@S1` / `all@S2`.
+The original `zone` retains source catalog authority while each distinct group
+keeps its own queue and audience proof. Destinations must stay within the
+source household. All groups are prepared before execution; ordered repeats,
+playback caps, silent queue modes and individual partial receipts use the
+existing shared engines. Source and target revisions are independent; a single
+queue revision is valid only for one destination. Browser and native Apple
+selection controls keep their existing one-group behavior. Added S1/S2 and
+surface regressions await execution after the workspace build was killed and
+the executor disconnected.
+
 Explicit online Spotify catalog search now complements cached library search.
 The CLI `spotify-search`, HTTP `GET /spotify/search`, and MCP
 `search_spotify` read one page for an explicit track, album, artist, playlist,

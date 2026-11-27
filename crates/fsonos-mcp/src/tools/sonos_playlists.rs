@@ -24,6 +24,20 @@ use serde::Serialize;
 
 use super::{Backend, respond, said, segment, with_backend_off_thread};
 
+/// Preserve successful groups and confirmed ranges while signalling partial
+/// delivery to MCP callers. A tool error never triggers a second local attempt.
+fn native_tracks_outcome(mut result: FinalCallToolResult) -> FinalCallToolResult {
+    if result
+        .structured_content
+        .as_ref()
+        .and_then(|value| serde_json::from_value::<SonosPlaylistTracksDto>(value.clone()).ok())
+        .is_some_and(|selected| !selected.complete())
+    {
+        result.is_error = true;
+    }
+    result
+}
+
 #[derive(Serialize)]
 struct PlaylistsDto {
     playlists: Vec<SonosPlaylistDto>,
@@ -46,12 +60,13 @@ impl Backend {
             Some(&body),
             SonosPlaylistTracksDto::text,
         ) {
-            return result;
+            return result.map(native_tracks_outcome);
         }
         respond(|| {
             let selected = self.surface.sonos_playlist_tracks(&self.client, req)?;
             Ok((selected.text(), selected))
         })
+        .map(native_tracks_outcome)
     }
 
     /// Act on the selected daemon's native occurrence once, with no local fallback.
@@ -241,11 +256,13 @@ async fn sonos_playlist_track(
 }
 
 #[tool(
-    description = "Play or queue an ordered selection of 1-10 exact track occurrences from one native Sonos saved playlist. First read sonos_playlist_contents, then pass its exact playlist.id (SQ:n), one-based positions in the desired order, and revision as expected_revision, on the same household/group. Repeated positions are retained deliberately. mode is required: play stages and verifies the full selection before replacing the queue and starts its first item in NORMAL order; next inserts after the current queue occurrence or appends when another source is selected; append adds at the end. Both queue modes leave playback and volume unchanged and retain one confirmed-range undo. expected_queue_revision optionally binds the destination queue separately from the saved playlist. All entries are reread and validated before a write using their native service metadata; raw media URIs and client metadata are never accepted. An unavailable entry or changed saved contents/group/player rejects the whole selection. Uses play_favorite for play and add_to_queue for next/append, with existing caps and action history. An uncertain partial batch is never replayed automatically; inspect the queue and playback before a new request. No Spotify sign-in is needed."
+    description = "Play or queue an ordered selection of 1-10 exact track occurrences from one native Sonos saved playlist. First read sonos_playlist_contents, then pass its exact playlist.id (SQ:n), one-based positions in the desired order, and revision as expected_revision, keeping zone as the original source group. Optional target selects another room, saved alias or all@S1/all@S2 within that same household; grouped rooms are addressed once. expected_target_revision optionally binds the physical destination audience from resolve_rooms before source reads or writes. Repeated positions are retained deliberately. mode is required: play stages and verifies the full selection before replacing the queue and starts its first item in NORMAL order; next inserts after the current queue occurrence or appends when another source is selected; append adds at the end. Both queue modes leave playback and volume unchanged and retain exact per-group ranges under one undo action. expected_queue_revision optionally binds one destination queue and is rejected for multiple groups. Playback returns batch and queue modes return queue_batch with each confirmed success or failure; incomplete delivery is a tool error preserving these receipts. All entries are reread and validated before a write using their native service metadata; raw media URIs and client metadata are never accepted. An unavailable entry or changed saved contents/source group/player during preflight rejects all destinations before writes. Uses play_favorite for play and add_to_queue for next/append, with existing caps and action history. An uncertain partial batch is never replayed automatically; inspect the queue and playback before a new request. No Spotify sign-in is needed."
 )]
 async fn sonos_playlist_tracks(
     ctx: &McpContext,
     zone: String,
+    target: Option<String>,
+    expected_target_revision: Option<String>,
     playlist: String,
     positions: Vec<u32>,
     expected_revision: String,
@@ -258,6 +275,8 @@ async fn sonos_playlist_tracks(
     with_backend_off_thread(ctx, move |backend| {
         backend.sonos_playlist_tracks(&SonosPlaylistTracksRequest {
             zone,
+            target,
+            expected_target_revision,
             playlist,
             positions,
             expected_revision,

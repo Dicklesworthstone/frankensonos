@@ -118,8 +118,19 @@ pub fn track(global: &GlobalArgs, args: &PlaylistTrackArgs) -> anyhow::Result<()
 
 #[derive(Debug, Args)]
 pub struct PlaylistTracksArgs {
-    /// A room on the playlist's Sonos household (Room@S1 / Room@S2 disambiguates names).
+    /// Original room/group used to read playlist-contents and its native revision.
     pub zone: String,
+    /// Destination room, alias or all@S1 / all@S2 within the source household.
+    /// Defaults to the source zone. Already grouped rooms are addressed once.
+    #[arg(long)]
+    pub target: Option<String>,
+    /// Optional physical audience revision from resolve-rooms for the destination.
+    #[arg(
+        long = "target-revision",
+        visible_alias = "expected-target-revision",
+        value_name = "REVISION"
+    )]
+    pub expected_target_revision: Option<String>,
     /// Exact native SQ: id from playlist-contents, not a title or catalog number.
     pub playlist: String,
     /// One to ten original one-based occurrences, in the order to play or queue.
@@ -149,6 +160,8 @@ impl PlaylistTracksArgs {
     fn request(&self) -> Result<SonosPlaylistTracksRequest, Failure> {
         let request = SonosPlaylistTracksRequest {
             zone: self.zone.clone(),
+            target: self.target.clone(),
+            expected_target_revision: self.expected_target_revision.clone(),
             playlist: self.playlist.clone(),
             positions: self.positions.clone(),
             expected_revision: self.expected_revision.clone(),
@@ -171,7 +184,17 @@ pub fn tracks(global: &GlobalArgs, args: &PlaylistTracksArgs) -> anyhow::Result<
             let surface = daemon::with_action_log(surface, &dir, "cli");
             surface.sonos_playlist_tracks(&Client::Cli, &request)?
         };
-    emit(global.json, &selected, SonosPlaylistTracksDto::text)
+    emit(global.json, &selected, SonosPlaylistTracksDto::text)?;
+    require_complete_selection(&selected)
+}
+
+fn require_complete_selection(selected: &SonosPlaylistTracksDto) -> anyhow::Result<()> {
+    if !selected.complete() {
+        anyhow::bail!(
+            "the native selection did not complete on every group; inspect the per-group receipts before another request"
+        );
+    }
+    Ok(())
 }
 
 #[derive(Debug, Args)]
@@ -279,6 +302,69 @@ mod tests {
             panic!("expected selected native tracks")
         };
         assert_eq!(args.request().unwrap().expected_queue_revision, None);
+    }
+
+    #[test]
+    fn selected_tracks_keep_source_and_destination_audience_separate() {
+        let revision = "a".repeat(64);
+        for option in ["--target-revision", "--expected-target-revision"] {
+            let cli = Cli::try_parse_from([
+                "fsonos",
+                "playlist-tracks",
+                "Den@S1",
+                "SQ:7",
+                "3",
+                "1",
+                "3",
+                "--target",
+                "all@S1",
+                option,
+                &revision,
+                "--revision",
+                "native:source",
+                "--mode",
+                "next",
+            ])
+            .unwrap();
+            let Command::PlaylistTracks(args) = cli.command else {
+                panic!("expected selected native tracks")
+            };
+            let request = args.request().unwrap();
+            assert_eq!(request.zone, "Den@S1");
+            assert_eq!(request.target.as_deref(), Some("all@S1"));
+            assert_eq!(request.expected_target_revision.as_deref(), Some(revision.as_str()));
+            assert_eq!(request.expected_revision, "native:source");
+            assert_eq!(request.positions, [3, 1, 3]);
+            assert_eq!(request.expected_queue_revision, None);
+        }
+    }
+
+    #[test]
+    fn selected_tracks_report_partial_group_delivery_as_failure() {
+        let receipt: SonosPlaylistTracksDto = serde_json::from_value(serde_json::json!({
+            "done": "one group skipped", "zone": "all@S1", "playlist": "SQ:7",
+            "positions": [3, 1, 3], "titles": ["Repeat", "First", "Repeat"],
+            "mode": "append", "changed": true,
+            "queue_batch": {
+                "done": "one group skipped", "complete": false, "logged": true,
+                "undoable": true,
+                "added": [{
+                    "household": "S1", "coordinator": "RINCON_ONE",
+                    "queue": {"done": "queued", "zone": "Den", "first": 2, "count": 3, "playing_queue": true}
+                }],
+                "failed": [{
+                    "household": "S1", "coordinator": "RINCON_TWO", "zone": "Office",
+                    "error": {"code": "QUEUE_CHANGED", "detail": "destination changed", "hint": "inspect the queue", "suggestions": [], "retryable": false}
+                }]
+            }
+        }))
+        .unwrap();
+        assert!(require_complete_selection(&receipt).is_err());
+        let mut complete = receipt.clone();
+        let batch = complete.queue_batch.as_mut().unwrap();
+        batch.complete = true;
+        batch.failed.clear();
+        assert!(require_complete_selection(&complete).is_ok());
     }
 
     #[test]

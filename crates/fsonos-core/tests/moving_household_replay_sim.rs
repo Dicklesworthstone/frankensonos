@@ -90,15 +90,8 @@ impl Fixture {
 
     fn queue(&self, paused: bool) {
         for (uri, title) in [(TRACK, "Repeated"), (TRACK, "Repeated"), (LAST, "Last")] {
-            control::enqueue_spotify(
-                &self.lan,
-                &self.houses,
-                &self.source_id,
-                uri,
-                title,
-                false,
-            )
-            .unwrap();
+            control::enqueue_spotify(&self.lan, &self.houses, &self.source_id, uri, title, false)
+                .unwrap();
         }
         soap::play_from_queue(&self.lan, self.source, &self.source_id).unwrap();
         soap::seek_track(&self.lan, self.source, 2).unwrap();
@@ -129,9 +122,7 @@ impl Fixture {
         let uris: Vec<_> = queue
             .objects
             .iter()
-            .map(|object| {
-                spotify_uri_from_renderer_uri(&object.res.as_ref().unwrap().uri).unwrap()
-            })
+            .map(|object| spotify_uri_from_renderer_uri(&object.res.as_ref().unwrap().uri).unwrap())
             .collect();
         assert_eq!(uris, [TRACK, TRACK, LAST]);
         let position = soap::get_position_info(&self.lan, self.target).unwrap();
@@ -247,8 +238,8 @@ impl Transport for Replies<'_> {
                         self.f.parameters.item_id_prefix,
                         source.replace(':', "%3a")
                     );
-                    *metadata = metadata
-                        .replace(&format!("id=\"{}\"", object.id), &format!("id=\"{id}\""));
+                    *metadata =
+                        metadata.replace(&format!("id=\"{}\"", object.id), &format!("id=\"{id}\""));
                 }
                 *metadata = metadata.replace("</item>", &format!("<desc id=\"cdudn\" nameSpace=\"urn:schemas-rinconnetworks-com:metadata-1-0/\">{}</desc></item>", xml_escape(&self.f.parameters.cdudn)));
             }
@@ -259,9 +250,15 @@ impl Transport for Replies<'_> {
                 *metadata = metadata.replace("</item>", "<desc id='cdudn' nameSpace='urn:schemas-rinconnetworks-com:metadata-1-0/'>different-account</desc></item>");
             }
             *metadata = metadata
-                .replace("<DIDL-Lite ", "<DIDL-Lite xmlns:v='urn:example:native' v:context='kept' ")
+                .replace(
+                    "<DIDL-Lite ",
+                    "<DIDL-Lite xmlns:v='urn:example:native' v:context='kept' ",
+                )
                 .replace("<item ", "<item v:license='retained' ")
-                .replace("</item>", "<v:data><![CDATA[native <payload> & bytes]]></v:data></item>");
+                .replace(
+                    "</item>",
+                    "<v:data><![CDATA[native <payload> & bytes]]></v:data></item>",
+                );
             &CONTENT_DIRECTORY
         } else {
             return Ok(response);
