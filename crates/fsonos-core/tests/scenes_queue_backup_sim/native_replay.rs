@@ -312,3 +312,82 @@ fn conflicting_track_or_account_evidence_refuses_backup_without_writes() {
         }
     }
 }
+
+struct RegroupDuringReplayMetadata<'a> {
+    fixture: &'a Fixture,
+    native_page_count: String,
+    read_queue: Cell<bool>,
+    changed: Cell<bool>,
+}
+
+impl Transport for RegroupDuringReplayMetadata<'_> {
+    fn soap_post(
+        &self,
+        host: IpAddr,
+        path: &str,
+        action: &str,
+        body: &str,
+    ) -> Result<String, ProtoError> {
+        let response = self.fixture.lan.soap_post(host, path, action, body)?;
+        if host != self.fixture.host {
+            return Ok(response);
+        }
+        let name = action.trim_matches('"').rsplit('#').next().unwrap();
+        if name == "Browse"
+            && body.contains("<ObjectID>Q:0</ObjectID>")
+            && body.contains(&self.native_page_count)
+        {
+            self.read_queue.set(true);
+        }
+        // Snapshot/reference reads fetch one occurrence. The first position
+        // read after a complete native page belongs to replay identity capture.
+        if name == "GetPositionInfo" && self.read_queue.get() && !self.changed.replace(true) {
+            let member = self.fixture.sim.player("Beta").unwrap();
+            soap::leave_group(
+                &self.fixture.lan,
+                member.ip,
+                &PlayerId(member.uuid.clone()),
+            )?;
+        }
+        Ok(response)
+    }
+}
+
+#[test]
+fn a_group_change_during_native_replay_metadata_cannot_become_the_scene_baseline() {
+    for generation in [1, 2] {
+        let f = Fixture::new(generation);
+        seed(&f);
+        f.sim.retain_favorites(generation, |_| false).unwrap();
+        let original = f.queue();
+        assert!(original.len() > 1);
+        let transport = RegroupDuringReplayMetadata {
+            fixture: &f,
+            native_page_count: format!("<RequestedCount>{}</RequestedCount>", original.len()),
+            read_queue: Cell::new(false),
+            changed: Cell::new(false),
+        };
+        let start = f.sim.soap_log().len();
+        let error =
+            scenes::capture_with_queue_backups(&transport, &f.houses, "Native queue", &[], 1)
+                .unwrap_err();
+        assert!(transport.changed.get(), "the group changed during renderer metadata capture");
+        assert!(
+            error.to_string().contains("group changed while saving"),
+            "S{generation}: {error}"
+        );
+        assert_eq!(f.queue(), original);
+        assert_eq!(
+            f.writes_since(start),
+            ["SetAVTransportURI"],
+            "only the external member's leave may write; scene capture stays read-only"
+        );
+        let topology = get_zone_group_state(&f.lan, f.host).unwrap();
+        let source = topology
+            .groups
+            .iter()
+            .find(|group| group.coordinator == f.coordinator)
+            .unwrap();
+        assert_eq!(source.members.len(), 1);
+    }
+}

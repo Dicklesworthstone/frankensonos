@@ -5,7 +5,7 @@ use super::{QueueReference, invalid, queue};
 #[cfg(test)]
 use crate::queue_source::native::replay::Identity;
 use crate::queue_source::native::replay::Selected;
-use fsonos_proto::didl::NativeDidlObject;
+use fsonos_proto::didl::{NativeDidlObject, spotify_uri_from_renderer_uri};
 use fsonos_proto::{ProtoError, Transport};
 use std::net::IpAddr;
 
@@ -21,12 +21,22 @@ impl Current {
         reference: &QueueReference,
         items: &[NativeDidlObject],
     ) -> Result<Option<Self>, ProtoError> {
+        if !items.iter().any(|native| {
+            native.object.res.as_ref().is_some_and(|resource| {
+                spotify_uri_from_renderer_uri(&resource.uri)
+                    .is_some_and(|source| source.starts_with("spotify:track:"))
+            })
+        }) {
+            return Ok(None);
+        }
+        // Retain the complete audience before renderer metadata is read. Moves
+        // may regroup deliberately; a saved scene must keep its original group.
+        let group = queue::group(t, host, &reference.coordinator)?;
         let Some(selected) =
             Selected::read(t, host, &reference.coordinator, reference.track, items)?
         else {
             return Ok(None);
         };
-        let group = queue::group(t, host, &reference.coordinator)?;
         if group.boot_seq != reference.boot_seq || selected.boot_seq != reference.boot_seq {
             return Err(invalid(
                 "the queue owner changed while reading replay metadata",
@@ -45,9 +55,12 @@ impl Current {
         host: IpAddr,
         reference: &QueueReference,
     ) -> Result<(), ProtoError> {
-        self.selected.confirm(t, host)?;
         let current = queue::group(t, host, &reference.coordinator)?;
         if current != self.group || current.boot_seq != reference.boot_seq {
+            return Err(invalid("the selected track's group changed while saving"));
+        }
+        self.selected.confirm(t, host)?;
+        if queue::group(t, host, &reference.coordinator)? != self.group {
             return Err(invalid("the selected track's group changed while saving"));
         }
         Ok(())
