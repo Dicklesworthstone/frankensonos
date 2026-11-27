@@ -268,7 +268,7 @@ impl Change {
                     end: fields.end.clone(),
                     max_volume: fields.max_volume,
                 },
-                QuietHoursChange::Clear(_) => PolicyConfigurationChange::ClearQuietHours,
+                QuietHoursChange::Clear(_) => PolicyConfigurationChange::ClearQuietHours {},
             },
             Self::Room { change } => match change {
                 RoomChange::Set(fields) => fields.configuration(current),

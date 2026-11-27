@@ -40,7 +40,9 @@ pub enum PolicyConfigurationChange {
         end: String,
         max_volume: u8,
     },
-    ClearQuietHours,
+    // A struct variant makes deny_unknown_fields apply here too. Serde's
+    // internally tagged unit variants otherwise discard extra fields.
+    ClearQuietHours {},
     SetRoom {
         room: String,
         max_volume: Option<u8>,
@@ -89,7 +91,7 @@ impl PolicyConfigurationChange {
                 end: end.clone(),
                 max_volume: *max_volume,
             },
-            Self::ClearQuietHours => PolicyEdit::ClearQuietHours,
+            Self::ClearQuietHours {} => PolicyEdit::ClearQuietHours,
             Self::SetRoom {
                 room,
                 max_volume,
@@ -134,7 +136,7 @@ impl PolicyConfigurationChange {
         match self {
             Self::SetDefaults { .. } => "saved default house limits".into(),
             Self::SetQuietHours { .. } => "saved quiet hours".into(),
-            Self::ClearQuietHours => "cleared quiet hours".into(),
+            Self::ClearQuietHours {} => "cleared quiet hours".into(),
             Self::SetRoom { room, .. } => format!("saved limits for room {room:?}"),
             Self::RemoveRoom { room } => format!("removed limits for room {room:?}"),
             Self::SetClient { client, .. } => format!("saved policy rules for client {client:?}"),

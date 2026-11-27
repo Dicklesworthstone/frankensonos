@@ -148,7 +148,7 @@ fn defaults_quiet_hours_room_limits_and_client_rules_take_effect_without_restart
     );
     assert_eq!(removed.configuration.policy.rooms.len(), 1);
     assert_eq!(removed.configuration.policy.rooms[0].room, "Untouched room");
-    apply(&surface, PolicyConfigurationChange::ClearQuietHours);
+    apply(&surface, PolicyConfigurationChange::ClearQuietHours {});
     assert_eq!(
         surface
             .policy()
@@ -363,4 +363,29 @@ fn request_wire_format_excludes_owner_changes_and_preserves_optional_rule_meanin
             .all(|choice| choice["properties"]["kind"].is_object()
                 && choice["additionalProperties"] == false)
     );
+}
+
+#[test]
+fn clearing_quiet_hours_requires_the_exact_fieldless_operation() {
+    let raw = json!({ "expected_revision": "reviewed", "change": { "kind": "clear_quiet_hours" } });
+    let request: PolicyConfigureRequest = serde_json::from_value(raw.clone()).unwrap();
+    assert_eq!(
+        request.change,
+        PolicyConfigurationChange::ClearQuietHours {}
+    );
+    request.validate().unwrap();
+    assert_eq!(serde_json::to_value(request).unwrap(), raw);
+
+    // A caller mixing up set and clear must not silently remove the limits,
+    // including when the unexpected field is null or looks administrative.
+    for (field, value) in [
+        ("max_volume", json!(20)),
+        ("start", json!("22:00")),
+        ("end", json!(null)),
+        ("owner", json!("caller@example.test")),
+    ] {
+        let mut malformed = raw.clone();
+        malformed["change"][field] = value;
+        assert!(serde_json::from_value::<PolicyConfigureRequest>(malformed).is_err());
+    }
 }

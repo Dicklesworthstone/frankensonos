@@ -47,8 +47,8 @@ fn configuration() -> Value {
         "defaults":{"max_volume":70,"max_step":20,"fade_secs":0},
         "quiet_hours":{"start":"22:00","end":"07:00","max_volume":25},
         "rooms":[{"room":"Offline Bedroom","max_volume":40}],
-        "clients":[{"client":"tag:fixture","allow":[],"deny":["volume"],"grant":[],
-                    "capped":true,"manage_others":false,"mcp_profile":"essentials"}]
+        "clients":[{"client":"tag:fixture","allow":[],"deny":["volume"],
+                    "capped":true,"mcp_profile":"essentials"}]
     })
 }
 
@@ -64,7 +64,7 @@ fn changes() -> [PolicyConfigurationChange; 7] {
             end: "07:00".into(),
             max_volume: 20,
         },
-        PolicyConfigurationChange::ClearQuietHours,
+        PolicyConfigurationChange::ClearQuietHours {},
         PolicyConfigurationChange::SetRoom {
             room: "Offline Bedroom".into(),
             max_volume: Some(40),
