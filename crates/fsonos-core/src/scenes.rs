@@ -666,10 +666,23 @@ fn plan_sources(
         };
         let starts = source.as_ref().is_some_and(SceneOp::starts);
         let playing = source.is_none() && playing_now;
+        // A retained source is silent only when its snapshot says so.
+        // Buffering, an unknown state or a failed capture must still satisfy
+        // an explicit pause. New silent loaders establish inactivity themselves.
+        let inactive = if let Some(op) = &source {
+            !op.starts()
+        } else {
+            now.is_some_and(|s| {
+                matches!(
+                    s.transport_state,
+                    TransportState::Paused | TransportState::Stopped
+                )
+            })
+        };
         plan.ops.extend(source);
         match g.playing {
             Some(true) if !starts && !playing => plan.ops.push(SceneOp::Play { coordinator }),
-            Some(false) if starts || playing => plan.ops.push(SceneOp::Pause { coordinator }),
+            Some(false) if !inactive => plan.ops.push(SceneOp::Pause { coordinator }),
             // As asked already, or (`None`) left as it is.
             _ => {}
         }
@@ -1578,6 +1591,9 @@ mod tests {
                     name: "Radio A".into(),
                     start: true,
                 },
+                SceneOp::Pause {
+                    coordinator: pid("C"),
+                },
             ]
         );
         assert_eq!(zones(&evening(), &h), [pid("A"), pid("B")]);
@@ -1678,6 +1694,9 @@ mod tests {
                     player: pid("C"),
                     coordinator: pid("B"),
                 },
+                SceneOp::Pause {
+                    coordinator: pid("B"),
+                },
             ]
         );
     }
@@ -1711,12 +1730,17 @@ mod tests {
         assert_eq!(plan.notes, ["Attic is not in the house now; skipped"]);
         assert_eq!(
             plan.ops,
-            [SceneOp::Volume {
-                room: "A".into(),
-                player: pid("A"),
-                level: 7,
-            }],
-            "names match ignoring case; an unknown level is always set"
+            [
+                SceneOp::Volume {
+                    room: "A".into(),
+                    player: pid("A"),
+                    level: 7,
+                },
+                SceneOp::Pause {
+                    coordinator: pid("A"),
+                },
+            ],
+            "names match ignoring case; unknown levels and playback are reconciled"
         );
     }
 
@@ -1775,5 +1799,50 @@ mod tests {
                 coordinator: pid("C")
             }]
         );
+    }
+
+    #[test]
+    fn retained_sources_require_known_inactivity_to_skip_an_explicit_pause() {
+        let h = house(&[&[&["A"]]]);
+        let uri = "x-rincon-mp3radio://radio.example/a";
+        for source in [
+            SceneSource::Keep,
+            SceneSource::Uri {
+                uri: uri.into(),
+                metadata: String::new(),
+            },
+            SceneSource::Favorite {
+                name: "Radio A".into(),
+                uri: Some(uri.into()),
+            },
+        ] {
+            let mut scene = Scene {
+                name: "Quiet".into(),
+                groups: vec![group("A", &[], source, false)],
+                volumes: BTreeMap::new(),
+                mutes: BTreeMap::new(),
+                writer: None,
+            };
+            for state in [
+                TransportState::Playing,
+                TransportState::Transitioning,
+                TransportState::Unknown,
+                TransportState::Paused,
+                TransportState::Stopped,
+            ] {
+                let snaps = [snap("A", &[], state, radio())];
+                let plan = plan_apply(&scene, &h, &snaps).unwrap();
+                let expected = match state {
+                    TransportState::Paused | TransportState::Stopped => Vec::new(),
+                    _ => vec![SceneOp::Pause {
+                        coordinator: pid("A"),
+                    }],
+                };
+                assert_eq!(plan.ops, expected, "{:?} {state:?}", scene.groups[0].source);
+            }
+            scene.groups[0].playing = None;
+            let unknown = [snap("A", &[], TransportState::Unknown, radio())];
+            assert!(plan_apply(&scene, &h, &unknown).unwrap().ops.is_empty());
+        }
     }
 }

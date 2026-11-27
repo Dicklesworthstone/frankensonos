@@ -184,9 +184,9 @@ fn a_saved_scene_brings_the_house_back_in_both_generations() {
     assert_eq!(
         names,
         [
-            "leave", "leave", "join", "volume", "mute", "play", "favorite"
+            "leave", "leave", "join", "volume", "mute", "play", "pause", "favorite", "pause"
         ],
-        "Den and Bedroom out, Office in, Kitchen's level and Den's mute, \
+        "Den and Bedroom out and explicitly silent, Office in, Kitchen's level and Den's mute, \
          Kitchen resumes its station, Living Room gets Aria back: {ops:#?}"
     );
 
@@ -476,4 +476,133 @@ fn a_faded_scene_fades_its_rooms_together_and_fades_in_what_starts() {
         den[0].0 < kitchen[kitchen.len() - 1].0 && kitchen[1].0 < den[den.len() - 1].0,
         "{kitchen:?} {den:?}"
     );
+}
+
+#[test]
+fn a_quiet_scene_still_pauses_when_its_playback_snapshot_failed() {
+    let sim = sim();
+    let lan = sim.lan();
+    let h = houses(&sim, &lan);
+    for room in ["Den", "Living Room"] {
+        play_favorite(&lan, &h, room, "Sim Radio");
+        let coordinator = id(&h, room);
+        let host = resolve_room(&h, room).unwrap().coordinator.ip;
+        let uri = soap::get_media_info(&lan, host).unwrap().uri;
+        let scene = Scene {
+            name: "Quiet".into(),
+            groups: vec![SceneGroup {
+                coordinator: room.into(),
+                members: Vec::new(),
+                source: SceneSource::Keep,
+                playing: Some(false),
+            }],
+            volumes: BTreeMap::new(),
+            mutes: BTreeMap::new(),
+            writer: None,
+        };
+        sim.upnp_fault(room, "GetTransportInfo", 501).unwrap();
+        assert!(snapshot::capture(&lan, &h, &coordinator, 0).is_err());
+        sim.clear_faults(room).unwrap();
+
+        // Surfaces keep applying independent scene operations after a failed
+        // snapshot. Missing proof of inactivity must not become a silent no-op.
+        let plan = scenes::plan_apply(&scene, &h, &[]).unwrap();
+        assert_eq!(
+            plan.ops,
+            [SceneOp::Pause {
+                coordinator: coordinator.clone(),
+            }]
+        );
+        let before = sim.soap_log().len();
+        let report = scenes::apply(&lan, &h, &plan, &ApplyOptions::default());
+        assert!(report.is_complete(), "{room}: {report:?}");
+        let log = sim.soap_log();
+        let writes: Vec<_> = log[before..]
+            .iter()
+            .filter(|entry| !entry.action.starts_with("Get"))
+            .map(|entry| entry.action.as_str())
+            .collect();
+        assert_eq!(writes, ["Pause"], "{room}: the source and queue stay intact");
+        assert_eq!(soap::get_media_info(&lan, host).unwrap().uri, uri);
+        assert_eq!(
+            soap::get_transport_info(&lan, host).unwrap().state,
+            TransportState::Paused
+        );
+
+        // A definite refusal must report an incomplete scene, with no replay
+        // or claim that the requested quiet state was established.
+        soap::play(&lan, host).unwrap();
+        sim.upnp_fault(room, "Pause", 501).unwrap();
+        let before = sim.soap_log().len();
+        let report = scenes::apply(&lan, &h, &plan, &ApplyOptions::default());
+        assert!(!report.is_complete(), "{room}: {report:?}");
+        assert_eq!(report.failed.len(), 1);
+        assert_eq!(report.failed[0].0, plan.ops[0]);
+        assert_eq!(
+            sim.soap_log()[before..]
+                .iter()
+                .filter(|entry| entry.action == "Pause")
+                .count(),
+            1
+        );
+        assert_eq!(
+            soap::get_transport_info(&lan, host).unwrap().state,
+            TransportState::Playing
+        );
+        sim.clear_faults(room).unwrap();
+    }
+}
+
+#[test]
+fn quiet_retained_sources_are_noops_when_the_transport_is_known_inactive() {
+    let sim = sim();
+    let lan = sim.lan();
+    let h = houses(&sim, &lan);
+    for room in ["Den", "Living Room"] {
+        play_favorite(&lan, &h, room, "Sim Radio");
+        let host = resolve_room(&h, room).unwrap().coordinator.ip;
+        let uri = soap::get_media_info(&lan, host).unwrap().uri;
+        for state in [TransportState::Paused, TransportState::Stopped] {
+            soap::play(&lan, host).unwrap();
+            match state {
+                TransportState::Paused => soap::pause(&lan, host).unwrap(),
+                _ => soap::stop(&lan, host).unwrap(),
+            }
+            for source in [
+                SceneSource::Keep,
+                SceneSource::Uri {
+                    uri: uri.clone(),
+                    metadata: String::new(),
+                },
+                SceneSource::Favorite {
+                    name: "Sim Radio".into(),
+                    uri: Some(uri.clone()),
+                },
+            ] {
+                let scene = Scene {
+                    name: "Quiet".into(),
+                    groups: vec![SceneGroup {
+                        coordinator: room.into(),
+                        members: Vec::new(),
+                        source,
+                        playing: Some(false),
+                    }],
+                    volumes: BTreeMap::new(),
+                    mutes: BTreeMap::new(),
+                    writer: None,
+                };
+                let before = sim.soap_log().len();
+                let (ops, report) = apply(&lan, &h, &scene, &ApplyOptions::default());
+                assert!(ops.is_empty(), "{room} {state:?}: {ops:?}");
+                assert!(report.is_complete(), "{room} {state:?}: {report:?}");
+                assert!(
+                    sim.soap_log()[before..]
+                        .iter()
+                        .all(|entry| entry.action.starts_with("Get") || entry.action == "Browse"),
+                    "{room} {state:?}: already quiet music must not be changed"
+                );
+                assert_eq!(soap::get_transport_info(&lan, host).unwrap().state, state);
+            }
+        }
+    }
 }
