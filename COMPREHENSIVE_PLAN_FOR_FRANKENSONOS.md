@@ -2105,6 +2105,14 @@ allows the server's scan budget and final consistency checks to finish, while
 its existing lifecycle and command lane prevent late results or repeated
 mutations. See [Queue search](docs/QUEUE_SEARCH.md).
 
+The dashboard queue editor also selects up to 100 consecutive entries across
+pages, matching the native edit limit. An explicit range read retains exact
+occurrences, revision, length and original group; page navigation keeps an
+unchanged selection while retiring its previous review. The shared command
+lane rereads the complete selected range before one move or removal, preserving
+duplicate tracks and original destination coordinates. The five focused Node
+queue suites pass 168 tests. See [Dashboard queue](docs/DASHBOARD_QUEUE.md).
+
 Native queue and catalog changes also arrive through coordinator
 ContentDirectory subscriptions. A paused reorder or replacement with the same
 queue length emits `zone.state` with `queue_changed: true`; favorites and saved

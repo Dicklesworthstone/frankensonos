@@ -239,10 +239,11 @@ test('ordinary pagination preserves search only while revision and total still m
   await m.read(0); assert.equal(m.state.search, null); assert.equal(m.state.stale, false);
 });
 
-test('direct jumps open a revision-bound page without choosing or playing an entry', async () => {
+test('direct jumps keep an unchanged selection without choosing the located entry or keeping its old review', async () => {
   const f = await fixture(), m = f.model; const choice = m.select(2);
   assert.equal(await m.jump(99), true); assert.equal(m.state.page.offset, 80); assert.equal(m.state.found, 99);
-  assert.equal(m.state.selection, null); assert.throws(() => Q.plan(choice, 'play'));
+  assert.deepEqual(m.state.selection.rows, choice.rows); assert.notEqual(m.state.selection, choice);
+  assert.equal(Q.plan(m.state.selection, 'play').body.position, 2); assert.throws(() => Q.plan(choice, 'play'));
   assert.equal(f.calls.length, 2); assert.ok(f.calls.every((c) => c.body === undefined));
   for (const position of [0, -1, 121, 1.5, '2', NaN, Infinity]) assert.equal(await m.jump(position), false);
   assert.equal(f.calls.length, 2);

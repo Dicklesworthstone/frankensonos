@@ -24,9 +24,10 @@ async function fixture({ demo = false, wrap = (call) => call } = {}) {
       volume: 20, track: data.playing ? { uri: data.tracks[data.playing - 1]?.uri || 'synthetic:old', queue_position: data.playing } : null };
     if (url.endsWith('/dj')) return { zone: zone.coordinator_room, running: false, next: [], steering: { source: 'none' } };
     if (url.includes('/queue?')) {
-      const offset = Number(new URL(url, 'http://fixture').searchParams.get('offset'));
+      const params = new URL(url, 'http://fixture').searchParams;
+      const offset = Number(params.get('offset')), limit = Number(params.get('limit'));
       return { zone: zone.coordinator_room, total: data.tracks.length, revision: data.revision, playing: data.playing,
-        items: data.tracks.slice(offset, offset + 40).map((row, n) => ({ ...row, position: offset + n + 1 })) };
+        items: data.tracks.slice(offset, offset + limit).map((row, n) => ({ ...row, position: offset + n + 1 })) };
     }
     if (body !== undefined) {
       if (url === '/queue/play') { data.playing = body.position; data.transport = 'playing'; return { done: 'Played selected entry', changed: true }; }
@@ -92,6 +93,36 @@ test('a range on a later page can move to the front without changing its absolut
   const f = await fixture(); await f.queue.read(40); const r = f.review('move', 42, 3, 1);
   assert.equal(await f.session.confirm(r), true); assert.equal(f.writes()[0].body.position, 42);
   assert.equal(f.data.tracks[0].title, 'Track 42');
+});
+
+for (const action of ['move', 'remove']) {
+  test(`a 100-entry range across pages is reviewed and ${action === 'move' ? 'moved' : 'removed'} in one native command`, async () => {
+    const f = await fixture();
+    f.data.tracks = Array.from({ length: 180 }, (_, i) => ({ title: `Movement ${i + 1}`, uri: `same:recording-${i % 3}` }));
+    await f.controller.refresh(); await f.queue.read();
+    const expected = f.data.tracks.slice(34, 134), choice = await f.queue.selectRange(35, 134);
+    assert.equal(choice.rows.length, 100); assert.equal(f.writes().length, 0);
+    assert.equal(await f.queue.jump(150), true);
+    const r = f.session.reviewQueue(f.queue.state.selection, action, 181);
+    assert.match(r.detail, /#35: Movement 35/); assert.match(r.detail, /#134: Movement 134/);
+    assert.equal(await f.session.confirm(r), true, f.controller.state.message);
+    assert.deepEqual(f.writes().map(call => call.url), [`/queue/${action}`]);
+    assert.deepEqual(f.writes()[0].body.expected_uris, expected.map(row => row.uri));
+    assert.equal(f.writes()[0].body.position, 35); assert.equal(f.writes()[0].body.expected_revision, 'r1');
+    assert.equal(f.data.transport, 'paused');
+    if (action === 'move') assert.deepEqual(f.data.tracks.slice(80), expected);
+    else assert.equal(f.data.tracks.length, 80);
+    assert.equal(f.queue.state.selection, null);
+    assert.equal(await f.session.confirm(r), false); assert.equal(f.writes().length, 1);
+  });
+}
+
+test('changing an off-page selected occurrence after review prevents every range write', async () => {
+  const f = await fixture(), choice = await f.queue.selectRange(35, 50);
+  const r = f.session.reviewQueue(choice, 'remove');
+  f.data.tracks[48].uri = 'changed:occurrence';
+  assert.equal(await f.session.confirm(r), false); assert.equal(f.writes().length, 0);
+  assert.match(f.controller.state.message, /queue or selected entries changed/);
 });
 
 for (const change of ['revision', 'uri', 'title', 'total']) {

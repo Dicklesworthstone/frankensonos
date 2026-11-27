@@ -8,9 +8,17 @@ positions.
 **Play** on a row opens the existing confirmation dialog. Confirmation starts
 that existing entry, including when paused, without adding tracks or rebuilding
 the queue. **Select** opens **Arrange this queue** for that entry. Set the first
-and last positions to choose a consecutive range on the visible page. A range
-can contain up to 40 entries; select another page for other entries. **Play
-selected** is available for a single entry only.
+and last positions to choose up to 100 consecutive entries anywhere in the
+queue. For a range extending beyond the displayed page, choose **Read and
+select range** to read its exact entries before reviewing a change. This lets
+you move or remove an entire album or work without splitting it at a page
+boundary. **Play selected** is available for a single entry only.
+
+Next, Previous and position jumps retain the selection while the queue is
+unchanged. The editor shows how many selected entries are outside the displayed
+page, and **Show selection start** opens the first selected occurrence. Page
+navigation retires an earlier review, so review the retained selection again
+before confirmation. Explicit refresh clears the selection.
 
 **Move up**, **Move down**, **Move to start**, and **Move to end** prepare a review.
 For an exact destination, enter **Move before original position** and choose
@@ -22,24 +30,26 @@ moves do not restart or resume playback. Shuffle may still change the listening
 order.
 
 **Remove selected** reviews deletion of exactly that range. Removal and
-reordering are not undoable; removing the current entry may interrupt playback.
+reordering offer undo only when the daemon saved a complete backup; check the
+result. Removing the current entry may interrupt playback.
 Manual queue edits can disrupt a multi-movement DJ work. Use the DJ's whole-work
 skip instead when that is the intended action. The review shows the group,
 positions, selected titles, destination and consequences before any command.
 
 ## Identity and recovery
 
-Every actionable selection belongs to one observed page, exact household/group,
+Every actionable selection belongs to one observed range, exact household/group,
 revision and ordered renderer URI range. A missing revision or renderer identity
 leaves the page readable but not editable. Editing invalid range text retires
-the prior selection rather than leaving an older valid range behind. Navigation,
-refresh, grouping changes, events affecting the selected group, close and
-suspension retire old selections. A scoped event for another group preserves
+the prior selection rather than leaving an older valid range behind. A page
+read retains the selection only when its revision, total and overlapping
+entries agree. Refresh, grouping changes, events affecting the selected group,
+close and suspension retire old selections. A scoped event for another group preserves
 the selection; events without a trustworthy group identity still invalidate it.
 Retained row callbacks cannot silently select a different page or household.
 
 The existing dashboard command lane rechecks playback, group membership and the
-selected queue page before submitting one native `/queue/play`, `/queue/remove`
+complete selected range before submitting one native `/queue/play`, `/queue/remove`
 or `/queue/move` request. Each includes the queue revision and exact expected
 URI or ordered URI range. Moves retain the original destination coordinate.
 This is not a cross-browser lock or an atomic reservation of the speaker: the
@@ -62,16 +72,18 @@ security headers.
 
 ```sh
 node --test scripts/test-dashboard-queue.cjs \
+  scripts/test-dashboard-queue-ranges.cjs \
+  scripts/test-dashboard-queue-search.cjs \
   scripts/test-dashboard-queue-actions.cjs \
   scripts/test-dashboard-queue-session.cjs \
   scripts/test-dashboard-session.cjs
 python3 scripts/test-dashboard-queue-browser.py
 ```
 
-The Node command passed all 121 tests, including the unchanged 13 queue and
-34 session regressions, with eight real loopback HTTP cases. Four selected
-workspace keyboard/bundle-order checks also passed. The two new Node suites
-run in the Linux workflow.
+The five queue-specific suites pass 168 Node tests, including ranges spanning
+pages, exact 100-entry reads, off-page stale occurrences, retained selections,
+late replies and the production editor and session flow. The range suite runs
+in the Linux workflow alongside the existing action and session regressions.
 
 The optional browser suite requires Python Playwright and Chromium
 (`FSONOS_BROWSER_PATH` may select the executable). All 14 component cases passed

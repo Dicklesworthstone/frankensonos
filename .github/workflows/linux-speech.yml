@@ -103,6 +103,7 @@ on:
       - "scripts/test-dashboard-source.cjs"
       - "scripts/test-dashboard-http.cjs"
       - "scripts/test-dashboard-queue.cjs"
+      - "scripts/test-dashboard-queue-ranges.cjs"
       - "scripts/test-dashboard-queue-search.cjs"
       - "scripts/test-dashboard-queue-actions.cjs"
       - "scripts/test-dashboard-queue-session.cjs"
@@ -224,7 +225,7 @@ jobs:
         run: node --test scripts/test-dashboard-activity.cjs scripts/test-dashboard-activity-assets.cjs
       - name: Listening room queue editing regressions
         if: ${{ !cancelled() }}
-        run: node --test scripts/test-dashboard-queue-actions.cjs scripts/test-dashboard-queue-session.cjs
+        run: node --test scripts/test-dashboard-queue-actions.cjs scripts/test-dashboard-queue-session.cjs scripts/test-dashboard-queue-ranges.cjs
       - name: Listening room cached library regressions
         if: ${{ !cancelled() }}
         run: node --test scripts/test-dashboard-library.cjs scripts/test-dashboard-library-actions.cjs scripts/test-dashboard-library-basket.cjs
