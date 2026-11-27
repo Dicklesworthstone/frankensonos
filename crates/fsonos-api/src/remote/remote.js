@@ -734,8 +734,8 @@ async function refreshZone(zone) {
     : state.transport_status && state.transport_status !== 'OK'
       ? `${state.transport_state} · renderer status: ${state.transport_status}` : state.transport_state;
   const track = state.track;
-  parts.title.textContent = track ? track.title || track.uri : 'Nothing playing';
-  parts.by.textContent = track ? [track.creator, track.album].filter(Boolean).join(' · ') : '';
+  parts.title.textContent = track ? track.title || track.uri : state.track_error ? 'Track details unavailable' : 'Nothing playing';
+  parts.by.textContent = track ? [track.creator, track.album].filter(Boolean).join(' · ') : state.track_error || '';
   const next = track ? tag(`${track.uri}|${track.title || ''}`) : '';
   if (next !== parts.tag) {
     parts.tag = next;

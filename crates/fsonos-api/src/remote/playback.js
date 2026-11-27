@@ -23,7 +23,8 @@ const PlaybackRemote = (() => {
       throw new Error('The playback group or state changed. Refresh the rooms.');
     }
     const track = value.track;
-    if (track == null) return Object.freeze({ transport: value.transport_state, track: null, identity: null });
+    if (track == null) return Object.freeze({ transport: value.transport_state, track: null, identity: null,
+      trackError: typeof value.track_error === 'string' ? value.track_error : null });
     if (!text(track.uri) || track.uri === 'NOT_IMPLEMENTED'
         || !optional(track.position_secs) || !optional(track.duration_secs)
         || !optional(track.queue_position) || track.queue_position === 0
@@ -146,7 +147,7 @@ const PlaybackRemote = (() => {
       const next = decode(value, group);
       if (next.identity !== sample?.identity || !canSeek(next)) { review = null; ++epoch; }
       sample = next; anchor = now(); frozen = position(sample, 0); fresh = true;
-      message = !sample.track ? 'Nothing playing.' : sample.track.position === null ? 'Position unavailable.'
+      message = !sample.track ? sample.trackError ? `Track details unavailable: ${sample.trackError}` : 'Nothing playing.' : sample.track.position === null ? 'Position unavailable.'
         : sample.track.duration === null ? 'Duration unavailable; elapsed time only.' : '';
       emit(); tick();
     }

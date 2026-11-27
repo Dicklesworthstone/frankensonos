@@ -42,10 +42,14 @@ impl Bridge {
         house.apply_topology(
             &get_zone_group_state(&sim.lan(), sim.player("Kitchen").unwrap().ip).unwrap(),
         );
+        Self::with_households(sim, policy, vec![house])
+    }
+
+    fn with_households(sim: &SimHandle, policy: Policy, houses: Vec<HouseholdState>) -> Self {
         let surface = Arc::new(
             Surface::new(
                 Box::new(sim.lan()),
-                Box::new(move |_| Ok(vec![house.clone()])),
+                Box::new(move |_| Ok(houses.clone())),
                 policy,
                 Box::new(SystemClock),
             )
@@ -104,6 +108,60 @@ impl Bridge {
     fn post(&self, path: &str, body: &Value) -> (u16, Value) {
         self.call(path, Some(body), &[("Content-Type", "application/json")])
     }
+}
+
+#[test]
+fn same_named_coordinators_keep_their_own_state_across_households() {
+    let sim = SimHousehold::builder()
+        .s1([SimPlayerSpec::new("Kitchen", SimModel::Play5Gen1)])
+        .s2([SimPlayerSpec::new("Kitchen", SimModel::One)])
+        .spawn()
+        .unwrap();
+    let mut houses = Vec::new();
+    for player in sim.players() {
+        let mut house = HouseholdState::default();
+        house.apply_topology(&get_zone_group_state(&sim.lan(), player.ip).unwrap());
+        houses.push(house);
+        soap::set_av_transport_uri(
+            &sim.lan(),
+            player.ip,
+            "x-rincon-mp3radio://stream.example.invalid/radio",
+            "",
+        )
+        .unwrap();
+        soap::play(&sim.lan(), player.ip).unwrap();
+        if player.generation == 2 {
+            soap::pause(&sim.lan(), player.ip).unwrap();
+        }
+        sim.upnp_fault(&player.uuid, "GetPositionInfo", 501)
+            .unwrap();
+    }
+    let bridge = Bridge::with_households(&sim, Policy::default(), houses);
+    let marker = sim.soap_log().len();
+    let (status, reply) = bridge.get("/zones");
+    assert_eq!(status, 200, "{reply}");
+    let zones = reply["zones"].as_array().unwrap();
+    assert_eq!(zones.len(), 2);
+    for player in sim.players() {
+        let zone = zones
+            .iter()
+            .find(|zone| zone["ip"] == player.ip.to_string())
+            .unwrap();
+        assert_eq!(zone["name"], "Kitchen");
+        assert_eq!(
+            zone["transport_state"],
+            if player.generation == 1 {
+                "PLAYING"
+            } else {
+                "PAUSED_PLAYBACK"
+            }
+        );
+    }
+    assert!(
+        sim.soap_log()[marker..]
+            .iter()
+            .all(|call| call.action == "GetTransportInfo")
+    );
 }
 
 impl Drop for Bridge {

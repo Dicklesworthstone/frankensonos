@@ -307,7 +307,7 @@
     $('scope').title = $('scope').textContent;
     $('stage-status').textContent = demo ? 'PREVIEW SESSION' : !item?.fresh ? 'WAITING FOR FRESH STATE' : C.playbackLabel(item.state).toUpperCase();
     $('target').textContent = item ? `${item.zone.coordinator_room}${item.zone.members.length > 1 ? ` + ${item.zone.members.length - 1}` : ''} · ${item.zone.household}` : 'Pick a group to begin';
-    $('dock-title').textContent = track?.title || (['playing', 'paused'].includes(item?.state?.transport_state) ? 'Track details unavailable' : 'Your next listen is waiting'); $('dock-target').textContent = item ? `${item.zone.members.join(' + ')} · ${item.zone.household}${item.fresh && item.state.transport_status === 'ERROR_OCCURRED' ? ' · Playback error' : ''}` : 'Choose a listening group';
+    $('dock-title').textContent = track?.title || (item?.state?.track_error || ['playing', 'paused'].includes(item?.state?.transport_state) ? 'Track details unavailable' : 'Your next listen is waiting'); $('dock-target').textContent = item ? `${item.zone.members.join(' + ')} · ${item.zone.household}${item.fresh && item.state.transport_status === 'ERROR_OCCURRED' ? ' · Playback error' : ''}` : 'Choose a listening group';
     $('dock-title').title = $('dock-title').textContent; $('dock-target').title = $('dock-target').textContent;
     const art = !demo && track ? `/art?${new URLSearchParams({ zone: selected, v: C.hash(`${track.uri}|${track.title}`).toString(36) })}` : '';
     if (art !== artKey) { artKey = art; for (const id of ['art', 'dock-art']) { $(id).hidden = true; if (art) $(id).src = art; else $(id).removeAttribute('src'); } }
@@ -323,9 +323,11 @@
     const whole = current && current.movements > 1 && typeof current.movement_title === 'string'
       && current.movement_title === track?.title;
     const failed = item?.fresh && item.state?.transport_status === 'ERROR_OCCURRED';
-    const withoutDetails = !track && ['playing', 'paused'].includes(item?.state?.transport_state);
+    const withoutDetails = !track && (item?.state?.track_error || ['playing', 'paused'].includes(item?.state?.transport_state));
+    const reportedState = { playing: 'Music is playing.', paused: 'Playback is paused.', stopped: 'Playback is stopped.',
+      transitioning: 'Playback is changing.' }[item?.state?.transport_state] || 'Track details are unavailable.';
     $('hero-kicker').textContent = whole ? `A WHOLE WORK · ${current.minutes ? `${current.minutes} MINUTES` : 'IN SEQUENCE'}` : track || withoutDetails ? 'ON YOUR SPEAKERS' : 'YOUR NEXT GREAT LISTEN';
-    $('track-title').textContent = whole ? current.title : track?.title || (failed ? 'Playback needs attention.' : withoutDetails ? item.state.transport_state === 'playing' ? 'Music is playing.' : 'Playback is paused.' : controller.state.initialized ? 'A little room for music.' : 'Let the music find you.');
+    $('track-title').textContent = whole ? current.title : track?.title || (failed ? 'Playback needs attention.' : withoutDetails ? reportedState : controller.state.initialized ? 'A little room for music.' : 'Let the music find you.');
     $('track-title').title = $('track-title').textContent;
     $('track-by').textContent = whole ? current.composer : track?.creator || (failed ? 'The speaker reported a playback error.' : withoutDetails ? 'Track details are unavailable.' : 'Your taste. Your next discovery.');
     $('track-album').textContent = whole ? current.performers?.join(' · ') || current.album || 'The complete recording' : track?.album || (failed ? 'Choose music or check the DJ session below.' : withoutDetails ? 'Play and pause follow the speaker’s reported state.' : 'Pick from your collection to begin');
@@ -339,7 +341,7 @@
     }
   }
   function renderRooms(state) {
-    const key = JSON.stringify([state.selected, state.busy, state.items.map((i) => [i.zone, i.fresh, i.state?.transport_state, i.state?.transport_status, i.state?.track?.title])]);
+    const key = JSON.stringify([state.selected, state.busy, state.items.map((i) => [i.zone, i.fresh, i.state?.transport_state, i.state?.transport_status, i.state?.track_error, i.state?.track?.title])]);
     if (key === roomKey) return; roomKey = key;
     const focus = document.activeElement?.dataset?.room;
     $('rooms').replaceChildren();
@@ -348,7 +350,7 @@
       b.setAttribute('aria-pressed', String(C.key(z) === state.selected)); b.setAttribute('aria-label', `Select ${z.members.join(' + ')} in ${z.household}`);
       const top = el('div', 'room-top'), symbol = el('span', 'room-icon'); symbol.append(icon('speaker'));
       top.append(symbol, el('span', `room-state${item.fresh ? '' : ' stale'}`, item.fresh ? C.playbackLabel(item.state) : 'stale'));
-      b.append(top, el('strong', '', z.coordinator_room), el('p', '', item.state?.track?.title || (['playing', 'paused'].includes(item.state?.transport_state) ? 'Track details unavailable' : 'Nothing playing')),
+      b.append(top, el('strong', '', z.coordinator_room), el('p', '', item.state?.track?.title || (item.state?.track_error || ['playing', 'paused'].includes(item.state?.transport_state) ? 'Track details unavailable' : 'Nothing playing')),
         el('p', 'room-meta', `${z.household} · ${z.members.length === 1 ? 'Independent room' : `${z.members.length} linked rooms`}${z.degraded.length ? ' · Bonded player missing' : ''}`));
       b.addEventListener('click', () => { session.cancel(); controller.select(C.key(z)); }); $('rooms').append(b);
     }

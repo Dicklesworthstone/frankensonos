@@ -33,7 +33,8 @@ const DashboardCore = (() => {
     if (!value || shape(zones([value.zone])[0]) !== shape(zone) || !STATES.includes(value.transport_state)
         || [value.volume, value.group_volume].some((v) => v != null && !level(v))
         || (value.mute != null && typeof value.mute !== 'boolean')
-        || (value.transport_status != null && !text(value.transport_status))) throw new Error('Playback or group membership changed.');
+        || (value.transport_status != null && !text(value.transport_status))
+        || (value.track_error != null && !text(value.track_error))) throw new Error('Playback or group membership changed.');
     const t = value.track;
     if (t != null && (!text(t.uri) || [t.duration_secs, t.position_secs, t.queue_position].some((v) => v != null && !seconds(v))
         || t.queue_position === 0 || (t.duration_secs > 0 && t.position_secs > t.duration_secs))) {
@@ -46,9 +47,10 @@ const DashboardCore = (() => {
   }
   function playbackNotice(state) {
     const status = state?.transport_status;
-    if (status == null || status === 'OK') return '';
-    return status === 'ERROR_OCCURRED' ? 'The speaker reported a playback error.'
-      : `Renderer status: ${status}.`;
+    const renderer = status == null || status === 'OK' ? '' : status === 'ERROR_OCCURRED'
+      ? 'The speaker reported a playback error.' : `Renderer status: ${status}.`;
+    const track = state?.track_error ? `Track details unavailable: ${state.track_error}` : '';
+    return [renderer, track].filter(Boolean).join(' ');
   }
   // GENA can report playing/paused before it supplies a track URI. Those
   // states still authorize play/pause; track navigation needs a known track.

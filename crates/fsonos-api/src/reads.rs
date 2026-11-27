@@ -42,9 +42,14 @@ pub struct ZoneStateDto {
     /// `SHUFFLE_NOREPEAT` and so on), when its coordinator says.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub play_mode: Option<String>,
-    /// What the group is on, when anything is.
+    /// What the group is on, when the speaker reports its current source.
+    /// An absent track with `track_error` means the source is unknown, not empty.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub track: Option<TrackDto>,
+    /// Why the current track/position could not be read. Other observed state
+    /// remains usable; this does not mean playback failed or nothing is loaded.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub track_error: Option<String>,
 }
 
 impl ZoneStateDto {
@@ -327,6 +332,30 @@ mod tests {
         assert_eq!(
             json,
             serde_json::json!({ "uri": "x-rincon-mp3radio://stream.example.org/a.mp3" })
+        );
+    }
+
+    #[test]
+    fn unavailable_track_details_are_distinct_from_an_observed_empty_source() {
+        let value = serde_json::json!({
+            "zone": {"household": "S2", "coordinator_room": "Room", "members": ["Room"], "transport_state": "playing"},
+            "transport_state": "playing", "track_error": "position unavailable"
+        });
+        let state: ZoneStateDto = serde_json::from_value(value).unwrap();
+        assert!(state.track.is_none());
+        assert_eq!(state.track_error.as_deref(), Some("position unavailable"));
+        let wire = serde_json::to_value(state).unwrap();
+        assert!(wire.get("track").is_none());
+        assert_eq!(wire["track_error"], "position unavailable");
+        let mut old = wire;
+        old.as_object_mut().unwrap().remove("track_error");
+        let legacy: ZoneStateDto = serde_json::from_value(old).unwrap();
+        assert!(legacy.track_error.is_none());
+        assert!(
+            serde_json::to_value(legacy)
+                .unwrap()
+                .get("track_error")
+                .is_none()
         );
     }
 

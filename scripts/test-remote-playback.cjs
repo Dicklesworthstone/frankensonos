@@ -95,6 +95,20 @@ test('unknown, zero-duration and absent track data are not fabricated clocks', (
   assert.equal(h.api.view().elapsed, 7); assert.equal(h.api.view().remaining, null);
 });
 
+test('a failed track read keeps its explanation without inventing a clock or an empty source', async () => {
+  const h = model();
+  h.api.observe(state(zone(), { track: null, track_error: 'Position read failed.' }));
+  assert.equal(h.api.view().transport, 'playing');
+  assert.equal(h.api.view().elapsed, null);
+  assert.equal(h.api.view().duration, null);
+  assert.match(h.api.view().message, /Track details unavailable: Position read failed/);
+  assert.equal(h.api.preview(30), null);
+  assert.equal(h.calls.length, 0);
+  h.api.observe(state());
+  assert.equal(h.api.view().elapsed, 20);
+  assert.equal(h.api.view().message, '');
+});
+
 test('playing clocks interpolate locally without any network calls', () => {
   const h = model(); h.api.observe(state()); h.c.advance(6500);
   assert.equal(h.api.view().elapsed, 26); assert.equal(h.api.view().remaining, 214);

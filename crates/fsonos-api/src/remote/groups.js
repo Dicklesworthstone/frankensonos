@@ -128,7 +128,7 @@ const GroupsRemote = (() => {
 
   function playbackOf(value, expected) {
     if (!value || !['playing', 'paused', 'stopped'].includes(value.transport_state)
-        || groupsOf([value.zone])[0].signature !== expected.signature) {
+        || groupsOf([value.zone])[0].signature !== expected.signature || value.track_error != null) {
       throw new Error('Playback or group state is incomplete or changing. Refresh rooms.');
     }
     const track = value.track;

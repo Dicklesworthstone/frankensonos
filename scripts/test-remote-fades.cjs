@@ -212,6 +212,21 @@ test('normal progress in the same track does not invalidate pause, nor does a tr
   assert.equal(await n.confirm(), true);
 });
 
+test('failed metadata leaves volume fades usable but cannot authorize a gentle pause', async () => {
+  const f = fixture(); f.sound(sound({ track: null, track_error: 'Position unavailable' }));
+  const volume = await f.ready();
+  assert.equal(volume.review(), true);
+  assert.equal(await volume.confirm(), true);
+  assert.equal(f.writes().length, 1);
+  assert.equal(f.writes()[0].route, 'fadeVolume');
+
+  const other = fixture(); other.sound(sound({ track: null, track_error: 'Position unavailable' }));
+  const pause = await other.ready('pause');
+  assert.equal(pause.review(), false);
+  assert.equal(await pause.confirm(), false);
+  assert.equal(other.writes().length, 0);
+});
+
 test('invalid, duplicate and ambiguous room descriptions fail closed', async () => {
   for (const value of [null, {}, [null], [group({ members: [] })], [group({ household: '' })],
     [group({ coordinator_room: 'Missing' })], [group({ members: ['Kitchen', 'Kitchen'] })],

@@ -73,13 +73,17 @@ public struct ZoneState: Codable, Equatable, Sendable {
     public let mute: Bool?
     public let groupVolume: Int?
     public let track: Track?
+    /// A failed track read leaves transport and levels usable, but does not
+    /// establish that the speaker has no source loaded.
+    public let trackError: String?
     public let shuffle: Bool?
     public let `repeat`: String?
     public init(zone: Zone, transportState: String, volume: Int?, mute: Bool?,
                 groupVolume: Int?, track: Track?, shuffle: Bool?, repeat repeatMode: String?,
-                transportStatus: String? = nil) {
+                transportStatus: String? = nil, trackError: String? = nil) {
         self.zone = zone; self.transportState = transportState; self.transportStatus = transportStatus
         self.volume = volume; self.mute = mute; self.groupVolume = groupVolume; self.track = track
+        self.trackError = trackError
         self.shuffle = shuffle; self.repeat = repeatMode
     }
     public var isPlaying: Bool { transportState == "playing" }
@@ -105,12 +109,19 @@ public struct ZoneState: Codable, Equatable, Sendable {
                 throw ContractError.invalid("The speaker's renderer status could not be read.")
             }
         }
+        if let trackError {
+            guard !trackError.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+                  trackError.utf8.count <= 65_536, track == nil else {
+                throw ContractError.invalid("The speaker's track observation is incomplete or contradictory.")
+            }
+        }
         if let duration = track?.durationSecs, duration > 0, let position = track?.positionSecs, position > duration {
             throw ContractError.invalid("The playback position is outside the track.")
         }
         return self
     }
     public func samePlayback(as other: ZoneState) -> Bool {
+        trackError == nil && other.trackError == nil &&
         zone.sameGroup(as: other.zone) && transportState == other.transportState && transportStatus == other.transportStatus &&
         (track == nil ? other.track == nil : track!.sameItem(as: other.track))
     }

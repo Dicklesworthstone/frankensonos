@@ -359,7 +359,13 @@ impl Backend {
             let path = format!("/zones/{}/state", segment(zone));
             let state = self.read(&path, || self.surface.zone_state(&self.client, zone))?;
             let on = state.track.as_ref().map_or_else(
-                || "nothing".to_string(),
+                || {
+                    if state.track_error.is_some() {
+                        "track details unavailable".to_string()
+                    } else {
+                        "nothing".to_string()
+                    }
+                },
                 |t| {
                     let title = t.title.clone().unwrap_or_else(|| t.uri.clone());
                     t.creator
@@ -381,6 +387,9 @@ impl Backend {
             }
             if let Some(notice) = state.playback_notice() {
                 let _ = write!(volume, ". {notice}");
+            }
+            if let Some(error) = &state.track_error {
+                let _ = write!(volume, ". Track details unavailable: {error}");
             }
             let text = format!(
                 "{} [{}]: {} ({on}){volume}",
@@ -917,7 +926,7 @@ async fn list_zones(ctx: &McpContext) -> McpResult<CompleteResult<FinalCallToolR
 }
 
 #[tool(
-    description = "What a room is doing right now: its group, whether that group is playing, paused or stopped, the renderer's reported transport_status (ERROR_OCCURRED means a playback failure; absence means unknown), the current track or station (title, artist, position), and the room's volume (and the whole group's, when it plays with others). Call this before changing anything relative ('a bit louder', 'what's playing?'). `zone` is a room name (case-insensitive; Room@S1 / Room@S2 picks a household).",
+    description = "What a room is doing right now: its group, whether that group is playing, paused or stopped, the renderer's reported transport_status (ERROR_OCCURRED means a playback failure; absence means unknown), the current track or station (title, artist, position), and the room's volume (and the whole group's, when it plays with others). A track_error means track details could not be read; independently observed transport and levels remain available. Do not mistake an absent track with track_error for an empty source or a playback failure. Call this before changing anything relative ('a bit louder', 'what's playing?'). `zone` is a room name (case-insensitive; Room@S1 / Room@S2 picks a household).",
     annotations(read_only, idempotent)
 )]
 async fn get_zone_state(
@@ -2095,7 +2104,7 @@ mod tests {
     #[test]
     fn zone_state_surfaces_renderer_errors_in_text_and_structured_replies() {
         let reply = "<CurrentTransportState>STOPPED</CurrentTransportState>\
-                     <CurrentTransportStatus>ERROR_OCCURRED</CurrentTransportStatus>";
+                     <CurrentTransportStatus>ERROR_OCCURRED</CurrentTransportStatus><TrackURI/>";
         let (backend, _, _) = backend(reply, Client::McpStdio);
         let direct = backend.zone_state("Kitchen").unwrap();
         assert!(!direct.is_error);
@@ -2117,6 +2126,30 @@ mod tests {
             *daemon.calls.lock().unwrap(),
             [("GET".into(), "/zones/Kitchen/state".into(), None)]
         );
+    }
+
+    #[test]
+    fn zone_state_keeps_partial_reads_and_their_error_through_a_daemon() {
+        // Transport and levels answered, but TrackURI is missing. This must
+        // not claim nothing is playing or discard the observed controls.
+        let (backend, _, _) = backend(
+            "<CurrentTransportState>PLAYING</CurrentTransportState>\
+             <CurrentVolume>18</CurrentVolume><CurrentMute>0</CurrentMute>",
+            Client::McpStdio,
+        );
+        let direct = backend.zone_state("Kitchen").unwrap();
+        assert!(!direct.is_error);
+        assert!(text(&direct).contains("playing (track details unavailable)"));
+        assert!(!text(&direct).contains("nothing"));
+        let state = direct.structured_content.unwrap();
+        assert_eq!(state["volume"], 18);
+        assert!(state["track_error"].is_string());
+        assert!(state.get("track").is_none());
+        let daemon = fake(Some(state.clone()));
+        let forwarded = backend.with_daemon(daemon).zone_state("Kitchen").unwrap();
+        assert!(!forwarded.is_error);
+        assert!(text(&forwarded).contains("Track details unavailable:"));
+        assert_eq!(forwarded.structured_content.unwrap(), state);
     }
 
     #[test]

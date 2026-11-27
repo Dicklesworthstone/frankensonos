@@ -224,7 +224,7 @@ const SourcePlayerRemote = (() => {
   }
 
   function playback(value, group) {
-    if (!value || groups([value.zone])[0].signature !== group.signature
+    if (!value || groups([value.zone])[0].signature !== group.signature || value.track_error != null
         || !['playing', 'paused', 'stopped', 'transitioning', 'unknown'].includes(value.transport_state)) {
       throw new Error('The playback group changed. Refresh rooms.');
     }

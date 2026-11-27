@@ -151,7 +151,7 @@ const QueueTracksRemote = (() => {
         || !Array.isArray(zone.members) || !zone.members.length || !zone.members.every(member => text(member))
         || !zone.members.includes(zone.coordinator_room) || new Set(zone.members).size !== zone.members.length
         || JSON.stringify([zone.household, zone.coordinator_room, [...zone.members].sort()]) !== group.signature
-        || !['playing', 'paused', 'stopped', 'transitioning', 'unknown'].includes(value.transport_state)
+        || value.track_error != null || !['playing', 'paused', 'stopped', 'transitioning', 'unknown'].includes(value.transport_state)
         || (track != null && (!text(track.uri) || (track.queue_position != null
           && (!uint(track.queue_position) || track.queue_position === 0))))) {
       fail('Playback or group membership changed. Refresh before reviewing the selection.');

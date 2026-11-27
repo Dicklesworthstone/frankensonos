@@ -103,6 +103,17 @@ test('play and pause remain available when transport is known but track metadata
     }
   }
 });
+
+test('failed track reads retain transport controls and explain incomplete metadata', async () => {
+  for (const [transport_state, verb] of [['playing', 'pause'], ['paused', 'resume']]) {
+    const f = fixture(); f.setPlayback(p(z(), { transport_state, track: null, track_error: 'Position read failed.' }));
+    const m = await f.ready();
+    assert.match(C.playbackNotice(m.selected().state), /Track details unavailable: Position read failed/);
+    assert.equal(C.transportAvailable(m.selected().state, 'next'), false);
+    assert.equal(await m.command(verb), true);
+    assert.deepEqual(f.writes(), [{ url: `/${verb}`, body: { zone: 'Studio@S2' } }]);
+  }
+});
 test('missing track details do not turn stopped, unknown or transitioning states into resume commands', async () => {
   for (const transport_state of ['stopped', 'unknown', 'transitioning']) {
     const f = fixture(); f.setPlayback(p(z(), { transport_state, track: null }));

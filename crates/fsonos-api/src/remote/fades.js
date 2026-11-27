@@ -52,7 +52,7 @@ const FadesRemote = (() => {
         || !['playing', 'paused', 'stopped', 'transitioning', 'unknown'].includes(value.transport_state)) {
       throw new Error('The speaker state is incomplete or the group changed. Refresh and read again.');
     }
-    const track = value.track;
+    const track = value.track_error == null ? value.track : null;
     const uri = track && text(track.uri) && track.uri !== 'NOT_IMPLEMENTED' ? track.uri : null;
     const slot = track?.queue_position ?? null;
     if (slot !== null && (!Number.isInteger(slot) || slot < 1 || slot > 4294967295)) {

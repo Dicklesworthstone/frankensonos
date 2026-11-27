@@ -143,7 +143,8 @@ test('changed URI, duplicate queue slot, play state or group causes no playback 
 test('missing tracks can be deliberately replaced but malformed state cannot be reviewed', async () => {
   const h = harness(); h.now.track = null; const p = await h.reviewed();
   assert.match(p.before.label, /No current track/); assert.equal(await h.api.confirm(p), true);
-  for (const value of [null, {}, state(zone(), { track: {} }), state(zone(), { transport_state: 'bogus' })]) {
+  for (const value of [null, {}, state(zone(), { track: {} }), state(zone(), { transport_state: 'bogus' }),
+    state(zone(), { track: null, track_error: 'Position unavailable' })]) {
     const h = harness(); h.now = value; await h.open(); assert.equal(await h.api.review(), false); assert.equal(h.writes().length, 0);
   }
 });

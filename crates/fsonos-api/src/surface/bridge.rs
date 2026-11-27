@@ -57,14 +57,17 @@ impl Surface {
 
     /// Every player with its group (`GET /zones`).
     pub(crate) fn bridge_zones(&self, client: &Client) -> Result<Value, Failure> {
-        let zones = self.zones(client)?;
+        self.guard(client).authorize("list_zones", true)?;
         let households = self.households()?;
-        let state = |room: &str| {
-            zones
-                .iter()
-                .find(|z| z.coordinator_room == room)
-                .map_or("UNKNOWN", |z| upnp_state(&z.transport_state))
-        };
+        if households
+            .iter()
+            .all(|household| household.rooms.is_empty())
+        {
+            return Err(Failure::new(
+                crate::ErrorCode::NotReady,
+                "no Sonos rooms answered",
+            ));
+        }
         let mut listed = Vec::new();
         for household in &households {
             let player = |id: &PlayerId| household.players.iter().find(|p| p.id == *id);
@@ -72,6 +75,11 @@ impl Surface {
                 let Some(coordinator) = player(&group.coordinator) else {
                     continue;
                 };
+                // Room names may be shared by S1 and S2. Read the actual
+                // coordinator once for this group, never a name-matched zone.
+                let state = upnp_state(crate::zones::transport_state_name(
+                    self.transport_state(&households, &group.coordinator),
+                ));
                 // A stereo pair's players share a room name: list it once.
                 let mut members: Vec<&str> = Vec::new();
                 for member in group.members.iter().filter_map(&player) {
@@ -87,7 +95,7 @@ impl Surface {
                         "is_coordinator": member.id == group.coordinator,
                         "coordinator": coordinator.room_name,
                         "group_members": members,
-                        "transport_state": state(&coordinator.room_name),
+                        "transport_state": state,
                     }));
                 }
             }
@@ -104,6 +112,7 @@ impl Surface {
             "zone": state.zone.coordinator_room,
             "transport_state": upnp_state(&state.transport_state),
             "transport_status": state.transport_status,
+            "track_error": state.track_error,
             "title": text(track.and_then(|t| t.title.as_ref())),
             "artist": text(track.and_then(|t| t.creator.as_ref())),
             "album": text(track.and_then(|t| t.album.as_ref())),

@@ -101,7 +101,7 @@ const DashboardGroups = (() => {
     const playback = C.playback(value, zone);
     if (!['playing', 'paused', 'stopped'].includes(playback.transport_state)
         || signature(inventory([value.zone])[0]) !== signature(zone)
-        || playback.track?.uri === 'NOT_IMPLEMENTED') {
+        || playback.track_error != null || playback.track?.uri === 'NOT_IMPLEMENTED') {
       fail('Playback or group state is incomplete or changing. Read the rooms again.');
     }
     const track = playback.track, uri = track?.uri ?? null, position = track?.queue_position ?? null;

@@ -1836,26 +1836,44 @@ impl Surface {
         let target = resolve(room_view(&households, aliases.as_ref(), client), zone)
             .map_err(|f| self.explain(f))?;
         let heard = |p: &PlayerId| self.live().and_then(|live| live.player(p));
-        // The group's transport and track, from its events when it has
-        // reported them, else asked.
-        let (state, transport_status, track) = match heard(&target.coordinator.id) {
+        // Transport and track are independent observations. A speaker can
+        // report playback while position/metadata is unavailable, including
+        // a partial first event. Preserve the usable controls in that case.
+        let group = heard(&target.coordinator.id);
+        let (state, transport_status) = match group.as_ref() {
             Some(group) if group.transport.is_some() => (
                 group.transport.unwrap_or(TransportState::Unknown),
                 group.transport_status.clone(),
-                crate::live::track(&group, Instant::now()),
             ),
             _ => {
-                let playback =
-                    control::playback(&*self.transport, &households, &target.coordinator.id)
-                        .map_err(Failure::from)
-                        .inspect_err(|f| self.notice(f))?;
+                let transport = fsonos_proto::control::get_transport_info(
+                    &*self.transport,
+                    target.coordinator.ip,
+                )
+                .map_err(Failure::from)
+                .inspect_err(|f| self.notice(f))?;
                 (
-                    playback.transport.state,
-                    (!playback.transport.status.trim().is_empty())
-                        .then(|| playback.transport.status.trim().to_owned()),
-                    TrackDto::from_position(&playback.position),
+                    transport.state,
+                    (!transport.status.trim().is_empty())
+                        .then(|| transport.status.trim().to_owned()),
                 )
             }
+        };
+        let (track, track_error) = match group.as_ref() {
+            Some(group) if group.track_uri.is_some() => {
+                (crate::live::track(group, Instant::now()), None)
+            }
+            _ => match fsonos_proto::control::get_position_info(
+                &*self.transport,
+                target.coordinator.ip,
+            ) {
+                Ok(position) => (TrackDto::from_position(&position), None),
+                Err(error) => {
+                    let failure = Failure::from(error);
+                    self.notice(&failure);
+                    (None, Some(failure.detail))
+                }
+            },
         };
         let volume = heard(&target.player.id)
             .and_then(|room| room.volume)
@@ -1900,6 +1918,7 @@ impl Surface {
             repeat,
             play_mode: mode.map(|mode| mode.as_str().to_owned()),
             track,
+            track_error,
         })
     }
 
@@ -1913,8 +1932,13 @@ impl Surface {
         self.live()
             .and_then(|live| live.player(coordinator)?.transport)
             .unwrap_or_else(|| {
-                control::playback(&*self.transport, households, coordinator)
-                    .map_or(TransportState::Unknown, |p| p.transport.state)
+                households
+                    .iter()
+                    .find_map(|household| household.player(coordinator))
+                    .and_then(|player| {
+                        fsonos_proto::control::get_transport_info(&*self.transport, player.ip).ok()
+                    })
+                    .map_or(TransportState::Unknown, |transport| transport.state)
             })
     }
 }
@@ -2873,7 +2897,7 @@ mod tests {
 
     #[test]
     fn zones_and_one_zone_read_live_state() {
-        let (s, _) = surface(
+        let (s, sent) = surface(
             "<CurrentTransportState>PAUSED_PLAYBACK</CurrentTransportState>",
             households(),
         );
@@ -2882,13 +2906,19 @@ mod tests {
         assert!(zones.iter().all(|z| z.transport_state == "paused"));
         let den = s.zone(&Client::Unknown, "Kitchen@S1").unwrap();
         assert_eq!(den.coordinator_room, "Den");
+        assert!(
+            sent.lock()
+                .unwrap()
+                .iter()
+                .all(|action| action == "GetTransportInfo")
+        );
     }
 
     #[test]
     fn a_zones_state_says_whether_the_room_is_muted() {
         let (s, _) = surface(
             "<CurrentTransportState>PLAYING</CurrentTransportState>\
-             <CurrentVolume>12</CurrentVolume><CurrentMute>1</CurrentMute>",
+             <CurrentVolume>12</CurrentVolume><CurrentMute>1</CurrentMute><TrackURI/>",
             households(),
         );
         let state = s.zone_state(&Client::Unknown, "Patio").unwrap();
@@ -2899,7 +2929,7 @@ mod tests {
     fn a_grouped_rooms_state_has_its_groups_volume() {
         let (s, sent) = surface(
             "<CurrentTransportState>PLAYING</CurrentTransportState>\
-             <CurrentVolume>12</CurrentVolume>",
+             <CurrentVolume>12</CurrentVolume><TrackURI/>",
             households(),
         );
         // Kitchen@S1 plays in Den's group.
@@ -2914,7 +2944,7 @@ mod tests {
     fn a_zones_state_says_whether_it_shuffles_or_repeats() {
         let (s, sent) = surface(
             "<CurrentTransportState>PLAYING</CurrentTransportState>\
-             <PlayMode>SHUFFLE_REPEAT_ONE</PlayMode>",
+             <PlayMode>SHUFFLE_REPEAT_ONE</PlayMode><TrackURI/>",
             households(),
         );
         let state = s.zone_state(&Client::Unknown, "Patio").unwrap();

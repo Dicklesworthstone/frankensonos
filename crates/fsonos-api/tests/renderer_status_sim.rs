@@ -81,6 +81,101 @@ fn direct_state_reports_a_failure_and_an_ordinary_stop_on_both_generations() {
     }
 }
 
+#[test]
+fn position_failures_preserve_transport_controls_and_recover_without_changing_playback() {
+    let sim = fixture();
+    let surface = surface(&sim);
+    let lan = sim.lan();
+    for room in ["First", "Second"] {
+        let host = sim.player(room).unwrap().ip;
+        soap::set_av_transport_uri(
+            &lan,
+            host,
+            "x-rincon-mp3radio://stream.example.invalid/radio",
+            "",
+        )
+        .unwrap();
+        soap::set_volume(&lan, host, 23).unwrap();
+        soap::set_mute(&lan, host, true).unwrap();
+        soap::play(&lan, host).unwrap();
+        sim.upnp_fault(room, "GetPositionInfo", 501).unwrap();
+        let marker = sim.soap_log().len();
+
+        let zones = surface.zones(&Client::Cli).unwrap();
+        assert_eq!(
+            zones
+                .iter()
+                .find(|zone| zone.coordinator_room == room)
+                .unwrap()
+                .transport_state,
+            "playing"
+        );
+        assert!(
+            sim.soap_log()[marker..]
+                .iter()
+                .all(|call| call.action != "GetPositionInfo")
+        );
+        let state = surface.zone_state(&Client::Cli, room).unwrap();
+        assert_eq!(state.transport_state, "playing");
+        assert_eq!(state.transport_status.as_deref(), Some("OK"));
+        assert_eq!((state.volume, state.mute), (Some(23), Some(true)));
+        assert_eq!(state.play_mode.as_deref(), Some("NORMAL"));
+        assert!(state.track.is_none());
+        assert!(
+            state
+                .track_error
+                .as_ref()
+                .is_some_and(|error| error.contains("501"))
+        );
+        let wire = serde_json::to_value(&state).unwrap();
+        assert!(
+            wire.get("track").is_none(),
+            "unknown source is not an empty/zero observation"
+        );
+        assert!(wire["track_error"].is_string());
+
+        // Ownership-sensitive mutations still require the complete observation.
+        let houses = fsonos_core::inventory::survey(&lan, &[], Duration::from_millis(500))
+            .unwrap()
+            .households;
+        let target = fsonos_core::resolve_room(&houses, room).unwrap();
+        assert!(fsonos_core::control::playback(&lan, &houses, &target.coordinator.id).is_err());
+
+        sim.clear_faults(room).unwrap();
+        let recovered = surface.zone_state(&Client::Cli, room).unwrap();
+        assert!(recovered.track_error.is_none());
+        assert_eq!(recovered.transport_state, "playing");
+        assert_eq!(
+            recovered.track.unwrap().uri,
+            "x-rincon-mp3radio://stream.example.invalid/radio"
+        );
+        assert!(
+            sim.soap_log()[marker..]
+                .iter()
+                .all(|call| call.action.starts_with("Get"))
+        );
+    }
+}
+
+#[test]
+fn a_transport_failure_remains_unknown_and_cannot_be_mistaken_for_a_partial_success() {
+    let sim = fixture();
+    let surface = surface(&sim);
+    for room in ["First", "Second"] {
+        sim.upnp_fault(room, "GetTransportInfo", 501).unwrap();
+        let zone = surface.zone(&Client::Cli, room).unwrap();
+        assert_eq!(zone.transport_state, "unknown");
+        assert!(surface.zone_state(&Client::Cli, room).is_err());
+        sim.clear_faults(room).unwrap();
+        let empty = surface.zone_state(&Client::Cli, room).unwrap();
+        assert!(empty.track.is_none());
+        assert!(
+            empty.track_error.is_none(),
+            "an observed empty source is distinct from a failed read"
+        );
+    }
+}
+
 fn status_event(surface: &Surface, since: &mut u64, room: &str, expected: &str) -> EventDto {
     let deadline = Instant::now() + Duration::from_secs(10);
     loop {

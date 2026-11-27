@@ -307,7 +307,7 @@ import FrankenSonosKit
                     .font(.callout).foregroundStyle(.secondary)
             }
             VStack(alignment: .leading, spacing: 7) {
-                Text(state.track?.displayTitle ?? "Ready when you are")
+                Text(state.track?.displayTitle ?? (state.trackError == nil ? "Ready when you are" : "Track details unavailable"))
                     .font(.title2.bold()).fixedSize(horizontal: false, vertical: true)
                     .accessibilityAddTraits(.isHeader)
                 if let creator = state.track?.creator, !creator.isEmpty {
@@ -316,7 +316,9 @@ import FrankenSonosKit
                 if let album = state.track?.album, !album.isEmpty {
                     Text(album).font(.subheadline).foregroundStyle(.secondary)
                 }
-                if state.track == nil {
+                if let trackError = state.trackError {
+                    Text(trackError).foregroundStyle(.secondary)
+                } else if state.track == nil {
                     Text("Choose a favorite, explore your library, or let your DJ take over.")
                         .foregroundStyle(.secondary)
                 }

@@ -29,6 +29,22 @@ inventing stopped playback or an empty house.
 
 ## Keeping controls usable during recovery
 
+Transport and track details are read independently. A failed position or
+metadata read no longer makes a responding group disappear from the controls:
+its reported playback state, volume, mute and play mode remain available.
+Zone listings only ask for transport state. The state response includes
+`track_error` when its current source could not be observed, and omits `track`;
+an empty source observed successfully has no `track_error`. A partial first
+playback event triggers a position read until events supply a track URI.
+
+The dashboard, full remote, CLI and MCP report unavailable track details
+without claiming the group is empty. Play/pause and volume controls can still
+use independently observed state; seek, gentle pause and source-sensitive
+move/replacement reviews require a known source. These read-only responses do
+not relax the complete source and position checks used by speaker mutations.
+Legacy bridge zone listings also keep same-name S1 and S2 coordinators' states
+separate by their player identities.
+
 A refresh with unchanged group membership retains the existing room card,
 including its open queue, draft input, selection, review, scroll and keyboard
 focus. Changed groups get new cards; other groups retain theirs. Queue entries

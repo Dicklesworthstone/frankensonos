@@ -521,6 +521,9 @@ pub fn status_text(state: &ZoneStateDto) -> String {
     if let Some(notice) = state.playback_notice() {
         let _ = write!(out, "\n  {notice}");
     }
+    if let Some(error) = &state.track_error {
+        let _ = write!(out, "\n  Track details unavailable: {error}");
+    }
     if let Some(track) = &state.track {
         let title = track.title.as_deref().unwrap_or(&track.uri);
         let _ = write!(out, "\n  {title}");
@@ -612,6 +615,20 @@ mod tests {
                 _ => assert_eq!(text, "Den [S1]: stopped\n"),
             }
         }
+    }
+
+    #[test]
+    fn status_retains_usable_state_when_track_details_are_unavailable() {
+        let state: ZoneStateDto = serde_json::from_value(serde_json::json!({
+            "zone": zone(&["Den"], "playing", &[]),
+            "transport_state": "playing", "volume": 18, "mute": true,
+            "track_error": "position read failed"
+        }))
+        .unwrap();
+        assert_eq!(
+            status_text(&state),
+            "Den [S1]: playing\n  Track details unavailable: position read failed\n  volume 18 (muted)\n"
+        );
     }
 
     #[test]

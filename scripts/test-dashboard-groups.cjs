@@ -590,6 +590,22 @@ test('empty or unstable sources and unreadable destination playback create no tr
   }
 });
 
+test('a failed source or destination track read never becomes an empty transfer review', async () => {
+  for (const target of ['Synthetic main@Fixture S2', 'Synthetic kitchen@Fixture S2']) {
+    const f = await fixture().ready();
+    await f.groups.open(); f.groups.chooseAction('move');
+    f.groups.chooseRoom('Synthetic main@Fixture S2'); f.groups.chooseDestination('Synthetic kitchen@Fixture S2');
+    f.read((url, _options, normal) => {
+      const value = normal(url);
+      return url === '/zones/' + encodeURIComponent(target) + '/state'
+        ? { ...value, track: null, track_error: 'Position unavailable' } : value;
+    });
+    assert.equal(await f.groups.review(), null);
+    assert.equal(await f.groups.apply(), false);
+    assert.equal(f.writes().length, 0);
+  }
+});
+
 test('invalid queue occurrences in either group are rejected before creating transfer authority', async () => {
   for (const target of ['Synthetic main@Fixture S2', 'Synthetic kitchen@Fixture S2']) {
     for (const position of [0, -1, 2.5, 4294967296, '2']) {
