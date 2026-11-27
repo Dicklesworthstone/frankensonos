@@ -44,6 +44,7 @@ use crate::source::{is_catalog_source, normalize_source_uri, validate_play_reque
 mod catalog;
 mod dj_direction;
 mod dj_start;
+mod native_tracks;
 mod queue_undo;
 mod sonos_playlist;
 mod tracks;
@@ -85,7 +86,8 @@ pub struct SceneGroupDto {
 /// album, playlist, artist, episode or show), a `sonos_playlist` (native id in
 /// `name`), the `dj`
 /// (with a `mood` and reusable `direction`, if supplied), a captured `queue`
-/// reference, a durable `queue_backup`, or ordered concrete Spotify `tracks`.
+/// reference, a durable `queue_backup`, ordered concrete Spotify `tracks`, or
+/// exact native `sonos_playlist_tracks` captured from reviewed playlist occurrences.
 /// References require the original unchanged queue. Backups retain its
 /// ordered contents and can reconstruct them on the original player.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -111,16 +113,29 @@ pub struct SceneSourceDto {
     /// The supplied order and repeated occurrences are retained on every recall.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tracks: Option<Vec<QueueTrackInput>>,
+    /// Author a frozen native playlist selection by its observed source room,
+    /// one-based positions and contents revision. Saved scenes expose their
+    /// exact tracks and playlist binding instead of this admission request.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub selection: Option<SceneNativeSelectionDto>,
+}
+
+/// Read-only playlist selection evidence supplied when authoring a scene.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct SceneNativeSelectionDto {
+    pub zone: String,
+    pub positions: Vec<u32>,
+    pub expected_revision: String,
 }
 
 impl SceneSourceDto {
     /// A concrete selection in its saved order, including repeated occurrences.
     #[must_use]
     pub fn tracks_text(&self) -> Option<String> {
-        let tracks = self
-            .tracks
-            .as_ref()
-            .filter(|tracks| self.kind == "tracks" && !tracks.is_empty())?;
+        let tracks = self.tracks.as_ref().filter(|tracks| {
+            matches!(self.kind.as_str(), "tracks" | "sonos_playlist_tracks") && !tracks.is_empty()
+        })?;
         let names = tracks
             .iter()
             .enumerate()
@@ -134,8 +149,19 @@ impl SceneSourceDto {
             })
             .collect::<Vec<_>>()
             .join("; ");
+        let origin = self.playlist.as_ref().map_or_else(String::new, |playlist| {
+            format!(
+                " from {} ({}, household {})",
+                playlist.title, playlist.id, playlist.household
+            )
+        });
+        let retained = if self.kind == "sonos_playlist_tracks" {
+            "; frozen selection, unchanged by later playlist edits"
+        } else {
+            ""
+        };
         Some(format!(
-            "{} selected tracks in order: {names} (replaces the queue)",
+            "{} selected tracks{origin} in order: {names} (replaces the queue{retained})",
             tracks.len()
         ))
     }
@@ -349,6 +375,7 @@ impl SceneDefinition {
     pub fn validate_sources(&self) -> Result<(), Failure> {
         for group in &self.groups {
             if let Some(source) = &group.source
+                && native_tracks::requested(source)?.is_none()
                 && sonos_playlist::requested(source)?.is_none()
             {
                 source_of(source)?;
@@ -364,16 +391,14 @@ impl SceneDefinition {
         &self,
         name: &str,
         households: &[HouseholdState],
-        playlists: &BTreeMap<usize, scenes::SonosPlaylistReference>,
+        sources: &BTreeMap<usize, SceneSource>,
     ) -> Result<Scene, Failure> {
         let room =
             |asked: &str| scenes::canonical_room_name(households, asked).map_err(Failure::from);
         let mut groups = Vec::with_capacity(self.groups.len());
         for (index, g) in self.groups.iter().enumerate() {
-            let source = match playlists.get(&index) {
-                Some(playlist) => SceneSource::SonosPlaylist {
-                    playlist: playlist.clone(),
-                },
+            let source = match sources.get(&index) {
+                Some(source) => source.clone(),
                 None => g
                     .source
                     .as_ref()
@@ -489,6 +514,11 @@ fn scene_settings<T: Copy>(
 
 /// What a written-out group plays, or why that can't be a scene's source.
 fn source_of(dto: &SceneSourceDto) -> Result<SceneSource, Failure> {
+    if dto.selection.is_some() || dto.kind == "sonos_playlist_tracks" {
+        return Err(Failure::invalid(
+            "native track scene selections must be resolved from their observed household before saving",
+        ));
+    }
     if dto.kind == "tracks" {
         return tracks::source(dto);
     }
@@ -541,7 +571,7 @@ fn source_of(dto: &SceneSourceDto) -> Result<SceneSource, Failure> {
             Ok(SceneSource::Dj { mood, direction })
         }
         other => Err(Failure::invalid(format!(
-            "no resolved scene source {other:?}: use keep, favorite, sonos_playlist, uri, tracks or dj"
+            "no resolved scene source {other:?}: use keep, favorite, sonos_playlist, sonos_playlist_tracks, uri, tracks or dj"
         ))),
     }
 }
@@ -620,6 +650,7 @@ impl From<&SceneSource> for SceneSourceDto {
             queue: None,
             playlist: None,
             tracks: None,
+            selection: None,
         };
         match source {
             SceneSource::Keep => dto("keep"),
@@ -632,6 +663,21 @@ impl From<&SceneSource> for SceneSourceDto {
                 name: Some(playlist.id.clone()),
                 playlist: Some(ScenePlaylistDto::from(playlist)),
                 ..dto("sonos_playlist")
+            },
+            SceneSource::SonosPlaylistTracks { selection } => Self {
+                name: Some(selection.playlist.id.clone()),
+                playlist: Some(ScenePlaylistDto::from(&selection.playlist)),
+                tracks: Some(
+                    selection
+                        .tracks
+                        .iter()
+                        .map(|track| QueueTrackInput {
+                            source_uri: track.uri.clone(),
+                            title: (!track.title.trim().is_empty()).then(|| track.title.clone()),
+                        })
+                        .collect(),
+                ),
+                ..dto("sonos_playlist_tracks")
             },
             SceneSource::Uri { uri, .. } => Self {
                 uri: Some(uri.clone()),
@@ -760,6 +806,23 @@ fn describe(households: &[HouseholdState], op: &SceneOp) -> String {
             if *start { "plays" } else { "loads" },
             playlist.title,
             playlist.id,
+            if *start {
+                ""
+            } else {
+                " ready without playback"
+            },
+        ),
+        SceneOp::SonosPlaylistTracks {
+            coordinator,
+            selection,
+            start,
+        } => format!(
+            "{} {} {} saved native track(s) from {} ({}) in their exact order{}",
+            room(coordinator),
+            if *start { "plays" } else { "loads" },
+            selection.tracks.len(),
+            selection.playlist.title,
+            selection.playlist.id,
             if *start {
                 ""
             } else {
@@ -1248,8 +1311,12 @@ impl Surface {
         def.validate_sources()?;
         let observed = self.observe_scene_change(client, tool, name, expected_revision)?;
         let households = self.scene_house()?;
-        let playlists = sonos_playlist::resolve(self, def, &households)?;
-        let mut scene = def.scene(name, &households, &playlists)?;
+        let mut sources: BTreeMap<_, _> = sonos_playlist::resolve(self, def, &households)?
+            .into_iter()
+            .map(|(index, playlist)| (index, SceneSource::SonosPlaylist { playlist }))
+            .collect();
+        sources.extend(native_tracks::resolve(self, def, &households)?);
+        let mut scene = def.scene(name, &households, &sources)?;
         for group in &mut scene.groups {
             if let SceneSource::Dj {
                 mood: Some(mood), ..
@@ -1817,7 +1884,7 @@ fn op_tool(op: &SceneOp) -> &'static str {
         SceneOp::Volume { .. } => "set_volume",
         SceneOp::Mute { .. } => "mute",
         SceneOp::Favorite { .. } => "play_favorite",
-        SceneOp::SonosPlaylist { .. } => "play_favorite",
+        SceneOp::SonosPlaylist { .. } | SceneOp::SonosPlaylistTracks { .. } => "play_favorite",
         SceneOp::Uri { .. } | SceneOp::Tracks { .. } | SceneOp::Play { .. } => "play",
         SceneOp::Dj { .. } => "dj_start",
         SceneOp::Pause { .. } => "pause",
@@ -1841,6 +1908,7 @@ fn authorize_op(guard: &Guard<'_>, op: &SceneOp) -> Result<(), Failure> {
         SceneOp::Favorite { start: false, .. }
             | SceneOp::Uri { start: false, .. }
             | SceneOp::SonosPlaylist { start: false, .. }
+            | SceneOp::SonosPlaylistTracks { start: false, .. }
             | SceneOp::Tracks { start: false, .. }
             | SceneOp::Dj { start: false, .. }
     ) {
@@ -1884,6 +1952,7 @@ fn op_subject(households: &[HouseholdState], op: &SceneOp) -> String {
         SceneOp::Dj { coordinator, .. } => format!("the DJ in {}", room_of(coordinator)),
         SceneOp::Favorite { coordinator, .. }
         | SceneOp::SonosPlaylist { coordinator, .. }
+        | SceneOp::SonosPlaylistTracks { coordinator, .. }
         | SceneOp::Uri { coordinator, .. }
         | SceneOp::Tracks { coordinator, .. }
         | SceneOp::Queue { coordinator, .. }

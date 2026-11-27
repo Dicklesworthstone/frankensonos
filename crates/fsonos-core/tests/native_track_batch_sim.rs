@@ -508,3 +508,6 @@ fn the_complete_batch_is_validated_before_network_reads_or_mutation() {
         assert!(rig.replace(&NoIo, &invalid, &destination).is_err());
     }
 }
+
+#[path = "native_track_batch_sim/scenes.rs"]
+mod scenes;

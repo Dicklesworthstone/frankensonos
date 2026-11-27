@@ -79,3 +79,26 @@ pub fn play_native_tracks_bound_with_receipt<T: Transport + ?Sized>(
         true,
     )
 }
+
+/// Silently replace the selected queue with native occurrences in NORMAL
+/// order. Silence is confirmed before insertion; no Play is sent. The saved
+/// selection retains the same destination and exact replacement proof as
+/// immediate native playback.
+pub fn load_native_tracks_bound_with_receipt<T: Transport + ?Sized>(
+    t: &T,
+    households: &[HouseholdState],
+    coordinator: &PlayerId,
+    tracks: &[Favorite],
+    destination: &TrackBatchDestination,
+) -> Result<QueueReplacement, CoreError> {
+    let requests = requests(tracks, false)?;
+    track_batch::replace(
+        t,
+        households,
+        coordinator,
+        &requests,
+        false,
+        destination,
+        true,
+    )
+}

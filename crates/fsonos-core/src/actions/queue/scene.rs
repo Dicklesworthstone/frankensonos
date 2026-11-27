@@ -70,6 +70,11 @@ pub fn capture_scene_queue_undo<T: Transport + ?Sized>(
                 start,
                 ..
             }
+            | SceneOp::SonosPlaylistTracks {
+                coordinator: id,
+                start,
+                ..
+            }
             | SceneOp::Uri {
                 coordinator: id,
                 start,

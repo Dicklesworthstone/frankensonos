@@ -29,6 +29,16 @@ pub fn check_sources<T: Transport + ?Sized>(
                 .map_err(|why| CoreError::from(ProtoError::Malformed(why)))?;
         }
     }
+    for op in &plan.ops {
+        if let SceneOp::SonosPlaylistTracks {
+            coordinator,
+            selection,
+            ..
+        } = op
+        {
+            selection.check_household(households, coordinator)?;
+        }
+    }
     check_playlist_sources(t, households, plan)?;
     let mut catalogs = HashMap::new();
     for op in &plan.ops {

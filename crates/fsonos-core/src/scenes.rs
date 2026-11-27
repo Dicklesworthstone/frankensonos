@@ -45,6 +45,7 @@ use std::time::Duration;
 
 mod execution;
 mod layout;
+mod native_tracks;
 pub(crate) mod queue;
 pub(crate) mod queue_backup;
 mod sonos_playlist;
@@ -52,6 +53,7 @@ mod sources;
 mod targets;
 mod tracks;
 
+pub use native_tracks::{NativeTrackSelection, SceneNativeTrack};
 pub use queue::QueueReference;
 pub use queue_backup::{
     MAX_QUEUE_BACKUP_BYTES, MAX_QUEUE_BACKUP_ENTRIES, QueueBackup, QueueBackupEntry,
@@ -117,6 +119,8 @@ pub enum SceneSource {
     },
     /// A native saved playlist pinned to its original household and title.
     SonosPlaylist { playlist: SonosPlaylistReference },
+    /// Exact native occurrences captured from one household's saved playlist.
+    SonosPlaylistTracks { selection: NativeTrackSelection },
     /// A URI with its DIDL-Lite metadata, or a Spotify track, album or
     /// playlist (`spotify:<kind>:<id>`), played through the household's own
     /// Spotify account.
@@ -213,6 +217,12 @@ pub enum SceneOp {
         playlist: SonosPlaylistReference,
         start: bool,
     },
+    /// Replace the queue with a saved exact selection of native occurrences.
+    SonosPlaylistTracks {
+        coordinator: PlayerId,
+        selection: NativeTrackSelection,
+        start: bool,
+    },
     /// Play `uri` (this starts playback), or with `start` false load it
     /// paused, ready to resume, without a sound.
     Uri {
@@ -264,6 +274,7 @@ impl SceneOp {
         match self {
             Self::Favorite { start, .. }
             | Self::SonosPlaylist { start, .. }
+            | Self::SonosPlaylistTracks { start, .. }
             | Self::Uri { start, .. }
             | Self::Tracks { start, .. }
             | Self::Queue { start, .. }
@@ -469,6 +480,7 @@ pub fn check(scene: &Scene, households: &[HouseholdState]) -> Result<Vec<String>
     for g in &scene.groups {
         let source_valid = match &g.source {
             SceneSource::SonosPlaylist { playlist } => playlist.validate(),
+            SceneSource::SonosPlaylistTracks { selection } => selection.validate(),
             SceneSource::Tracks { tracks } => validate_track_selection(tracks),
             SceneSource::Queue { queue } => queue.validate(),
             SceneSource::QueueBackup { backup } => backup.validate(),
@@ -482,6 +494,11 @@ pub fn check(scene: &Scene, households: &[HouseholdState]) -> Result<Vec<String>
             && let Some((_, lead)) = named_room(households, &g.coordinator)?
         {
             playlist.check_household(households, &lead.primary)?;
+        }
+        if let SceneSource::SonosPlaylistTracks { selection } = &g.source
+            && let Some((_, lead)) = named_room(households, &g.coordinator)?
+        {
+            selection.check_household(households, &lead.primary)?;
         }
         let mut house = None;
         let mut rooms = Vec::new();
@@ -625,6 +642,14 @@ fn plan_sources(
             });
             continue;
         }
+        if let SceneSource::SonosPlaylistTracks { selection } = &g.source {
+            plan.ops.push(SceneOp::SonosPlaylistTracks {
+                coordinator,
+                selection: selection.clone(),
+                start: g.playing.unwrap_or(playing_now),
+            });
+            continue;
+        }
         if let SceneSource::SonosPlaylist { playlist } = &g.source {
             plan.ops.push(SceneOp::SonosPlaylist {
                 coordinator,
@@ -659,6 +684,7 @@ fn plan_sources(
             SceneSource::Keep
             | SceneSource::Tracks { .. }
             | SceneSource::SonosPlaylist { .. }
+            | SceneSource::SonosPlaylistTracks { .. }
             | SceneSource::Queue { .. }
             | SceneSource::QueueBackup { .. } => None,
             SceneSource::Favorite { name, uri } => (uri.is_none() || on_now != uri.as_deref())
@@ -758,6 +784,11 @@ pub fn fade_players(households: &[HouseholdState], plan: &ScenePlan) -> Vec<Play
                 start: true,
                 ..
             }
+            | SceneOp::SonosPlaylistTracks {
+                coordinator,
+                start: true,
+                ..
+            }
             | SceneOp::Uri {
                 coordinator,
                 start: true,
@@ -848,6 +879,11 @@ fn silence_starting<T: Transport + ?Sized>(
                 ..
             }
             | SceneOp::SonosPlaylist {
+                coordinator,
+                start: true,
+                ..
+            }
+            | SceneOp::SonosPlaylistTracks {
                 coordinator,
                 start: true,
                 ..
@@ -1163,6 +1199,11 @@ fn run<T: Transport + ?Sized>(
             playlist,
             start,
         } => sonos_playlist::recall(t, households, coordinator, playlist, *start, options.hooks),
+        SceneOp::SonosPlaylistTracks {
+            coordinator,
+            selection,
+            start,
+        } => native_tracks::recall(t, households, coordinator, selection, *start, options.hooks),
         SceneOp::Tracks {
             coordinator,
             tracks,

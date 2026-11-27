@@ -12,6 +12,7 @@ pub(super) fn source(dto: &SceneSourceDto) -> Result<SceneSource, Failure> {
         || dto.direction.is_some()
         || dto.queue.is_some()
         || dto.playlist.is_some()
+        || dto.selection.is_some()
     {
         return Err(Failure::invalid(
             "a tracks scene source accepts only its ordered `tracks` selection",

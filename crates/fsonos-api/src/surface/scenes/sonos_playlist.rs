@@ -20,6 +20,7 @@ pub(super) fn requested(source: &SceneSourceDto) -> Result<Option<&str>, Failure
         || source.direction.is_some()
         || source.queue.is_some()
         || source.tracks.is_some()
+        || source.selection.is_some()
     {
         return Err(Failure::invalid(
             "a sonos_playlist source accepts only its native SQ: id in name",

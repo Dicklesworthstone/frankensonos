@@ -39,6 +39,7 @@ impl Recording {
                 let coordinator = match op {
                     SceneOp::Favorite { coordinator, .. }
                     | SceneOp::SonosPlaylist { coordinator, .. }
+                    | SceneOp::SonosPlaylistTracks { coordinator, .. }
                     | SceneOp::QueueBackup { coordinator, .. }
                     | SceneOp::Tracks { coordinator, .. } => coordinator,
                     SceneOp::Uri {

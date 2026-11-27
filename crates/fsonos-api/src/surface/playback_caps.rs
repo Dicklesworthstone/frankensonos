@@ -185,6 +185,7 @@ fn scene_sounding_rooms<'h>(households: &'h [HouseholdState], plan: &ScenePlan) 
             }
             SceneOp::Favorite { coordinator, .. }
             | SceneOp::SonosPlaylist { coordinator, .. }
+            | SceneOp::SonosPlaylistTracks { coordinator, .. }
             | SceneOp::Uri { coordinator, .. }
             | SceneOp::Tracks { coordinator, .. }
             | SceneOp::Queue { coordinator, .. }

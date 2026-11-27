@@ -231,3 +231,68 @@ private func tracksScene(tracks: [Scene.Track] = sceneSelection, playing: Bool? 
     #expect(model.sceneDraftReplacing?.groups[0].source.tracks == sceneSelection)
     #expect(await transport.writes().isEmpty)
 }
+
+private let frozenNativeTracks: [Scene.Track] = [
+    .init(sourceUri: "x-file-cifs://example.invalid/opening.flac", title: "Local opening"),
+    .init(sourceUri: "x-sonos-http:catalog.mp3?sid=7&flags=8224&sn=4", title: "Native service"),
+    .init(sourceUri: "x-file-cifs://example.invalid/opening.flac", title: "Local opening"),
+]
+
+private func frozenNativeScene(tracks: [Scene.Track] = frozenNativeTracks, household: String = "TEST-HOUSE") -> Scene {
+    tracksScene(source: .init(
+        kind: "sonos_playlist_tracks", name: "SQ:7", uri: nil, mood: nil,
+        playlist: .init(household: household, id: "SQ:7", title: "Original native playlist"),
+        tracks: tracks
+    ))
+}
+
+@Test func frozenNativeScenesRetainExactNativeResourcesAndProvenanceWithoutSpotifyNormalization() throws {
+    let saved = try frozenNativeScene().validated()
+    let encoder = JSONEncoder(); encoder.keyEncodingStrategy = .convertToSnakeCase
+    let decoded = try DaemonClient.decode(Scene.self, from: encoder.encode(saved)).validated()
+    #expect(decoded == saved)
+    #expect(decoded.groups[0].source.tracks == frozenNativeTracks)
+    #expect(decoded.groups[0].source.tracksSummary?.contains("Frozen native selection from Original native playlist (SQ:7, household TEST-HOUSE)") == true)
+    #expect(decoded.groups[0].source.tracksSummary?.contains("3. Local opening") == true)
+    #expect(decoded.groups[0].source.tracksRecallNote.contains("Later playlist edits or removal do not change"))
+    let long = Scene.Track(sourceUri: frozenNativeTracks[0].sourceUri, title: String(repeating: "é", count: 4096))
+    #expect(try frozenNativeScene(tracks: [long]).validated().groups[0].source.tracks == [long])
+    for tracks in [[], Array(repeating: frozenNativeTracks[0], count: 11),
+                   [.init(sourceUri: "x-rincon:Other")],
+                   [.init(sourceUri: "spotify:track:0000000000000000000001")],
+                   [.init(sourceUri: "file:///saved.rsq")],
+                   [.init(sourceUri: frozenNativeTracks[0].sourceUri, title: String(repeating: "a", count: 4097))]] {
+        #expect(throws: ContractError.self) { try frozenNativeScene(tracks: tracks).validated() }
+    }
+}
+
+@Test func frozenNativeScenesAreReviewedForRecallAndScheduledReuse() async throws {
+    let saved = frozenNativeScene()
+    let transport = NativeAutomationTransport(), client = try automationClient(transport)
+    await transport.replaceScene(saved)
+    await transport.replaceList([automationScene(), saved])
+    #expect(try await client.scenes().contains(saved))
+    let session = CommandReviewSession(client: client)
+    let review = try await session.prepare(.scene(saved), in: automationZone())
+    #expect(review.command.savedScene?.groups[0].source.tracks == frozenNativeTracks)
+    await transport.replaceScene(frozenNativeScene(household: "ANOTHER-HOUSE"))
+    await #expect(throws: ContractError.self) { try await session.execute(review) }
+    #expect(await transport.writes().isEmpty)
+    for changed in [false, true] {
+        let schedules = ScheduleTestTransport(), client = try scheduleClient(schedules)
+        await schedules.setScene(saved)
+        let session = CommandReviewSession(client: client)
+        let draft = ScheduleDraft(time: scheduleWeekdays, action: .scene(saved))
+        let review = try await session.prepare(ScheduleCommand.add(draft))
+        if changed {
+            var tracks = frozenNativeTracks
+            tracks[1] = .init(sourceUri: tracks[1].sourceUri, title: "Changed service title")
+            await schedules.setScene(frozenNativeScene(tracks: tracks))
+            await #expect(throws: ContractError.self) { try await session.execute(review) }
+            #expect(await schedules.writes().isEmpty)
+        } else {
+            _ = try await session.execute(review)
+            #expect(await schedules.writes().count == 1)
+        }
+    }
+}

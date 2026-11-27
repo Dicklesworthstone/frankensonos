@@ -605,3 +605,6 @@ fn a_scheduled_uncertain_playlist_insertion_consumes_its_occurrence_without_retr
     );
     assert!(calls[start..].iter().all(|call| call.action != "Play"));
 }
+
+#[path = "scenes_sonos_playlists_sim/native_selections.rs"]
+mod native_selections;

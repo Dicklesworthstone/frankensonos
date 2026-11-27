@@ -686,4 +686,5 @@ fn native_source_changes_between_groups_keep_the_first_receipt_and_refuse_the_se
     assert_eq!(house.queue("Office@S2"), original);
 }
 
+#[path = "targets/queue_selection.rs"]
 mod queue_selection;

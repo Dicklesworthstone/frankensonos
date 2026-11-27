@@ -27,9 +27,10 @@ const ScenesRemote = (() => {
     : 'The request failed.';
 
   function sourceOf(v) {
-    if (!plain(v) || !['keep', 'favorite', 'sonos_playlist', 'uri', 'tracks', 'dj', 'queue', 'queue_backup'].includes(v.kind)
-        || (v.kind !== 'sonos_playlist' && v.playlist != null)
-        || (v.kind !== 'tracks' && v.tracks != null)
+    if (!plain(v) || !['keep', 'favorite', 'sonos_playlist', 'sonos_playlist_tracks', 'uri', 'tracks', 'dj', 'queue', 'queue_backup'].includes(v.kind)
+        || (!['sonos_playlist', 'sonos_playlist_tracks'].includes(v.kind) && v.playlist != null)
+        || (!['tracks', 'sonos_playlist_tracks'].includes(v.kind) && v.tracks != null)
+        || v.selection != null
         || (!['queue', 'queue_backup'].includes(v.kind) && v.queue != null) || (v.kind !== 'dj' && v.direction != null)) {
       throw new Error('A scene source is unreadable.');
     }
@@ -43,8 +44,9 @@ const ScenesRemote = (() => {
       if (v.name != null || v.uri != null || v.mood != null) throw new Error('A track selection cannot also name another source.');
       tracks = queueApi().readTracks(v.tracks);
     }
+    if (v.kind === 'sonos_playlist_tracks') tracks = queueApi().readNativeTracks(v.tracks);
     let playlist;
-    if (v.kind === 'sonos_playlist') {
+    if (['sonos_playlist', 'sonos_playlist_tracks'].includes(v.kind)) {
       const p = v.playlist;
       if (!plain(p) || !nativeId(p.id) || !text(p.title, 1024) || !text(p.household, 1024)
           || v.name !== p.id || v.uri != null || v.mood != null) throw new Error('The saved Sonos playlist identity is unreadable.');
@@ -131,7 +133,8 @@ const ScenesRemote = (() => {
         g.source.direction == null ? null : directionApi().signature(g.source.direction, g.source.mood),
         ['queue', 'queue_backup'].includes(g.source.kind) ? queueApi().signature(g.source.queue) : null,
         g.source.playlist ? [g.source.playlist.household, g.source.playlist.id, g.source.playlist.title] : null,
-        g.source.kind === 'tracks' ? queueApi().tracksSignature(g.source.tracks) : null]),
+        g.source.kind === 'tracks' ? queueApi().tracksSignature(g.source.tracks)
+          : g.source.kind === 'sonos_playlist_tracks' ? queueApi().nativeTracksSignature(g.source.tracks) : null]),
       Object.entries(scene.volumes).sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0),
       Object.entries(scene.mutes).sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0),
     ]);
@@ -143,13 +146,14 @@ const ScenesRemote = (() => {
       const rooms = [g.coordinator, ...g.members].join(' + ');
       const src = g.source.kind === 'favorite' ? `favorite “${g.source.name}”`
         : g.source.kind === 'sonos_playlist' ? `saved Sonos playlist “${g.source.playlist.title}” (${g.source.playlist.id}, household ${g.source.playlist.household}; replaces the queue)`
+        : g.source.kind === 'sonos_playlist_tracks' ? queueApi().describeNativeTracks(g.source.tracks, g.source.playlist)
         : g.source.kind === 'uri' ? g.source.uri
           : g.source.kind === 'tracks' ? queueApi().describeTracks(g.source.tracks)
           : g.source.kind === 'dj' ? (g.source.direction != null ? directionApi().describe(g.source.direction, g.source.mood)
             : `DJ${g.source.mood ? ` (${g.source.mood})` : ''}`)
             : ['queue', 'queue_backup'].includes(g.source.kind) ? queueApi().describe(g.source.queue) : 'keep current source';
       const playback = g.playing == null ? '' : g.playing ? '; playing'
-        : g.source.kind === 'tracks' ? '; loads the queue without starting playback' : '; paused';
+        : ['tracks', 'sonos_playlist_tracks'].includes(g.source.kind) ? '; loads the queue without starting playback' : '; paused';
       lines.push(`${rooms}: ${src}${playback}`);
     }
     const volumes = Object.entries(scene.volumes).map(([room, level]) => `${room} ${level}`).join(', ');

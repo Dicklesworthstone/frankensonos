@@ -1922,3 +1922,77 @@ test('authored replacements retain the reviewed proof across source preparation 
   assert.equal(attempts, 1); assert.equal(f.control.state.pending, null);
   assert.equal(f.control.state.saved, null); assert.equal(f.control.state.loaded, false);
 });
+
+const frozenNativeSource = () => ({
+  kind: 'sonos_playlist_tracks', name: 'SQ:7',
+  playlist: { household: 'TEST-HOUSEHOLD', id: 'SQ:7', title: 'Original native playlist' },
+  tracks: [
+    { source_uri: 'x-file-cifs://example.invalid/opening.flac', title: 'Local opening' },
+    { source_uri: 'x-sonos-http:catalog.mp3?sid=7&flags=8224&sn=4', title: 'Native service' },
+    { source_uri: 'x-file-cifs://example.invalid/opening.flac', title: 'Local opening' },
+  ],
+});
+const frozenNativeRow = () => row({ groups: [{ ...row().groups[0], source: frozenNativeSource(), playing: false }] });
+
+test('phone, dashboard and routines retain frozen native source provenance and exact ordered resources', () => {
+  const raw = frozenNativeRow();
+  const phone = Scenes.sceneOf(raw), dashboard = DashboardSession.scene(raw);
+  assert.deepEqual(phone.groups[0].source.tracks, raw.groups[0].source.tracks);
+  assert.deepEqual(dashboard.groups[0].source, raw.groups[0].source);
+  assert.deepEqual(JSON.parse(Schedules.scenesOf([raw])[0].details).groups[0].source, raw.groups[0].source);
+  for (const text of [Scenes.detail(phone), DashboardSession.sceneSource(dashboard.groups[0].source)]) {
+    assert.match(text, /Original native playlist.*SQ:7.*TEST-HOUSEHOLD/);
+    assert.match(text, /1\. Local opening[\s\S]*2\. Native service[\s\S]*3\. Local opening/);
+    assert.match(text, /Later playlist edits or removal do not change/);
+    assert.match(text, /x-sonos-http:catalog\.mp3\?sid=7&flags=8224&sn=4/);
+  }
+  assert.match(Scenes.detail(phone), /loads the queue without starting playback/);
+  const long = frozenNativeRow();
+  long.groups[0].source.tracks[0].title = 'é'.repeat(4096);
+  assert.equal(Scenes.sceneOf(long).groups[0].source.tracks[0].title.length, 4096);
+  assert.equal(Object.isFrozen(phone.groups[0].source.tracks[0]), true);
+});
+
+test('native source readers refuse forged admission, missing provenance and non-track resources', () => {
+  const mutations = [
+    source => { source.playlist = null; },
+    source => { source.name = 'SQ:8'; },
+    source => { source.selection = { zone: 'Den', positions: [1], expected_revision: 'old' }; },
+    source => { source.tracks = []; },
+    source => { source.tracks = Array(11).fill(source.tracks[0]); },
+    source => { source.tracks[0].source_uri = 'x-rincon:Other'; },
+    source => { source.tracks[0].source_uri = 'spotify:track:' + 'A'.repeat(22); },
+    source => { source.tracks[0].source_uri = 'file:///saved.rsq'; },
+    source => { source.tracks[0].source_uri = 'x-file-cifs://' + 'é'.repeat(32768); },
+    source => { source.tracks[0].title = 'a'.repeat(4097); },
+    source => { source.tracks[0].metadata = 'caller-owned DIDL'; },
+    source => { source.kind = 'keep'; },
+  ];
+  for (const mutate of mutations) {
+    const value = frozenNativeRow(); mutate(value.groups[0].source);
+    for (const read of [Scenes.sceneOf, DashboardSession.scene, value => Schedules.scenesOf([value])]) {
+      assert.throws(() => read(value));
+    }
+  }
+});
+
+test('native selection changes retire phone recall and routine reviews before any write', async () => {
+  const original = frozenNativeRow(), initialRoutine = Schedules.scenesOf([original])[0].signature;
+  for (const mutate of [
+    source => { [source.tracks[0], source.tracks[1]] = [source.tracks[1], source.tracks[0]]; },
+    source => { source.tracks.pop(); },
+    source => { source.tracks[0].title = 'A new title'; },
+    source => { source.tracks[0].source_uri += '?new=identity'; },
+    source => { source.playlist.household = 'ANOTHER-HOUSEHOLD'; },
+  ]) {
+    const changed = frozenNativeRow(); mutate(changed.groups[0].source);
+    assert.notEqual(Scenes.signature(Scenes.sceneOf(original)), Scenes.signature(Scenes.sceneOf(changed)));
+    assert.notEqual(initialRoutine, Schedules.scenesOf([changed])[0].signature);
+    const f = fixture([original]); await f.control.refresh();
+    assert.equal(f.control.review('apply', 'Evening'), true);
+    const pending = f.control.state.pending;
+    f.set([changed]);
+    assert.equal(await f.control.confirm(pending), false);
+    assert.deepEqual(f.writes, []);
+  }
+});

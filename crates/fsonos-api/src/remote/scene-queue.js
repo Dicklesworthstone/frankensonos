@@ -30,6 +30,39 @@ const SceneQueue = (() => {
       + tracks.map((track, index) => `${index + 1}. ${track.title ? track.title + ' · ' : ''}${track.source_uri}`).join('\n');
   }
 
+
+  function readNativeTracks(value) {
+    if (!Array.isArray(value) || !value.length || value.length > MAX_TRACKS) {
+      throw new Error('A saved native scene selection needs 1 to 10 occurrences.');
+    }
+    const bytes = value => [...value].reduce((total, character) => {
+      const code = character.codePointAt(0); return total + (code <= 0x7f ? 1 : code <= 0x7ff ? 2 : code <= 0xffff ? 3 : 4);
+    }, 0);
+    const excluded = ['spotify', 'x-rincon', 'x-rincon-queue', 'x-rincon-cpcontainer', 'x-rincon-stream',
+      'x-sonos-htastream', 'x-sonos-vli', 'x-rincon-mp3radio', 'x-sonosapi-stream', 'x-sonosapi-radio', 'x-sonosapi-hls', 'aac'];
+    return Object.freeze(value.map(track => {
+      const uri = track?.source_uri, match = typeof uri === 'string' && /^([a-z][a-z0-9+.-]*):(\S+)$/i.exec(uri);
+      if (!track || typeof track !== 'object' || Array.isArray(track)
+          || Object.keys(track).some(key => !['source_uri', 'title'].includes(key))
+          || !match || bytes(uri) > 65536 || /[\x00-\x1f\x7f-\x9f]/.test(uri)
+          || excluded.includes(match[1].toLowerCase())
+          || (match[1].toLowerCase() === 'file' && /\.rsq(?:[?#]|$)/i.test(match[2]))
+          || (track.title != null && (typeof track.title !== 'string' || !track.title.trim()
+            || [...track.title].length > 4096 || /[\x00-\x08\x0b\x0c\x0e-\x1f\x7f-\x9f]/u.test(track.title)))) {
+        throw new Error('A saved native scene entry needs its complete track resource and readable title.');
+      }
+      return Object.freeze({ source_uri: uri, ...(track.title != null ? { title: track.title } : {}) });
+    }));
+  }
+
+  const nativeTracksSignature = value => readNativeTracks(value).map(track => [track.source_uri, track.title ?? null]);
+  function describeNativeTracks(value, playlist) {
+    const tracks = readNativeTracks(value);
+    return `Saved native selection from “${playlist.title}” (${playlist.id}, household ${playlist.household}; ${tracks.length} entries; replaces the queue with the saved order):\n`
+      + tracks.map((track, index) => `${index + 1}. ${track.title ? track.title + ' · ' : ''}${track.source_uri}`).join('\n')
+      + '\nLater playlist edits or removal do not change this saved selection.';
+  }
+
   function read(value) {
     if (!value || typeof value !== 'object' || Array.isArray(value)
         || !identity(value.coordinator) || (value.household != null && !identity(value.household))
@@ -57,6 +90,7 @@ const SceneQueue = (() => {
     return `Saved queue, track #${q.track} at ${position}${q.play_mode ? ` · ${q.play_mode.replaceAll('_', ' ')}` : ''}. Requires the original player and unchanged queue. Queue contents are not saved.`;
   }
 
-  return { read, signature, describe, MAX_TRACKS, readTracks, tracksSignature, describeTracks };
+  return { read, signature, describe, MAX_TRACKS, readTracks, tracksSignature, describeTracks,
+    readNativeTracks, nativeTracksSignature, describeNativeTracks };
 })();
 if (typeof module !== 'undefined' && module.exports) module.exports = SceneQueue;

@@ -390,3 +390,22 @@ test('native favorite changes preserve the single outcome of an already submitte
   assert.equal(await f.session.confirm(reviewed), false); assert.equal(f.writes().length, 1);
   assert.equal(f.controller.state.message, 'Favorite accepted once');
 });
+
+test('dashboard recalls a frozen native selection once and rejects later selection changes', async () => {
+  const source = () => ({ ...nativePlaylistSource(), kind: 'sonos_playlist_tracks', tracks: [
+    { source_uri: 'x-file-cifs://example.invalid/local.flac', title: 'Local occurrence' },
+    { source_uri: 'x-sonos-http:catalog.mp3?sid=7&sn=4', title: 'Service occurrence' },
+    { source_uri: 'x-file-cifs://example.invalid/local.flac', title: 'Local occurrence' },
+  ] });
+  for (const changed of [false, true]) {
+    const f = fixture(); f.data.scene.groups[0].source = source(); f.data.scene.groups[0].playing = false;
+    await f.ready(); assert.equal(f.session.state.catalogError, '');
+    const pending = await f.session.reviewScene('Dinner'); assert.ok(pending);
+    assert.deepEqual(pending.scene.groups[0].source, source());
+    assert.match(S.sceneSource(pending.scene.groups[0].source), /1\. Local occurrence[\s\S]*2\. Service occurrence[\s\S]*3\. Local occurrence/);
+    if (changed) f.data.scene.groups[0].source.tracks.pop();
+    assert.equal(await f.session.confirm(pending), !changed);
+    assert.equal(await f.session.confirm(pending), false);
+    assert.deepEqual(f.writes(), changed ? [] : [{ url: '/scenes/Dinner/apply', body: {} }]);
+  }
+});

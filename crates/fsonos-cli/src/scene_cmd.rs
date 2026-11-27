@@ -42,6 +42,7 @@ enum SceneAction {
         /// A TOML file writing the scene out: `[[groups]]` with `coordinator`,
         /// `members`, `source = { kind = "favorite", name = "…" }` (or `dj`
         /// with a `mood` and full `direction`, `sonos_playlist` with `name = "SQ:7"`,
+        /// or `sonos_playlist_tracks` with that id and a revision-bound native selection,
         /// `tracks` with an ordered 1-10 `tracks = [{ source_uri = "spotify:track:…", title = "…" }]`,
         /// a `uri`, or `keep`) and `playing`; `[volumes]` and
         /// `[mutes]` by room.
@@ -220,7 +221,7 @@ fn group_text(g: &SceneGroupDto) -> String {
             fsonos_api::surface::scenes::ScenePlaylistDto::text,
         ),
         "uri" => source.uri.clone().unwrap_or_default(),
-        "tracks" => source
+        "tracks" | "sonos_playlist_tracks" => source
             .tracks_text()
             .unwrap_or_else(|| "ordered track selection unavailable; save the scene again".into()),
         "dj" if source.direction.is_some() => {
@@ -246,7 +247,7 @@ fn group_text(g: &SceneGroupDto) -> String {
         Some(false)
             if matches!(
                 source.kind.as_str(),
-                "queue" | "queue_backup" | "sonos_playlist" | "tracks"
+                "queue" | "queue_backup" | "sonos_playlist" | "sonos_playlist_tracks" | "tracks"
             ) =>
         {
             "ready without playback"
@@ -433,6 +434,7 @@ mod tests {
             playlist: None,
             direction: None,
             tracks: None,
+            selection: None,
         };
         SceneDto {
             name: "Evening".into(),
@@ -503,6 +505,7 @@ mod tests {
             direction: None,
             playlist: None,
             tracks: None,
+            selection: None,
             queue: Some(fsonos_api::surface::scenes::SceneQueueDto {
                 total: None,
                 coordinator: "RINCON_SYNTHETIC".into(),

@@ -25,10 +25,10 @@ extension Scene {
             guard source.kind == "dj" || source.direction == nil else {
                 throw ContractError.invalid("A saved DJ direction is attached to another scene music source.")
             }
-            guard source.kind == "sonos_playlist" || source.playlist == nil else {
+            guard ["sonos_playlist", "sonos_playlist_tracks"].contains(source.kind) || source.playlist == nil else {
                 throw ContractError.invalid("A native playlist reference is attached to another scene music source.")
             }
-            guard source.kind == "tracks" || source.tracks == nil else {
+            guard ["tracks", "sonos_playlist_tracks"].contains(source.kind) || source.tracks == nil else {
                 throw ContractError.invalid("An ordered track selection is attached to another scene music source.")
             }
             switch source.kind {
@@ -41,6 +41,8 @@ extension Scene {
                 guard source.uri.map(named) == true else { throw ContractError.invalid("The scene source has no URI.") }
             case "tracks":
                 try source.validateTracks()
+            case "sonos_playlist_tracks":
+                try source.validateNativeTracks()
             case "sonos_playlist":
                 guard let playlist = source.playlist,
                       source.name?.utf8.elementsEqual(playlist.id.utf8) == true,

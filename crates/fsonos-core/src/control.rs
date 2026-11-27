@@ -43,7 +43,10 @@ pub use loading::{
     load_queue_from, load_queue_from_in_order, load_spotify_container,
     load_spotify_container_with_receipt, load_spotify_track, load_uri, pause_confirmed,
 };
-pub use native_tracks::{enqueue_native_tracks_bound, play_native_tracks_bound_with_receipt};
+pub use native_tracks::{
+    enqueue_native_tracks_bound, load_native_tracks_bound_with_receipt,
+    play_native_tracks_bound_with_receipt,
+};
 pub use spotify_tracks::{
     MAX_SPOTIFY_TRACK_BATCH, enqueue_spotify_tracks, enqueue_spotify_tracks_bound,
     load_spotify_tracks, load_spotify_tracks_bound, load_spotify_tracks_bound_with_receipt,

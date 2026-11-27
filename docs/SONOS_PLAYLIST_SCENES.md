@@ -151,3 +151,13 @@ original queues. Check the apply result and undo preview; a successful apply
 alone does not promise recovery. See [Queue undo](QUEUE_UNDO.md) for limits and
 the checked restore flow. A separately saved native playlist or durable queue
 backup remains useful when the original contents must survive later edits.
+
+## Retain only selected occurrences
+
+Use [exact native selections](NATIVE_TRACK_SCENES.md) with source
+`kind: "sonos_playlist_tracks"` to save 1–10 reviewed native occurrences in a
+fixed order, including repeats, local files and non-Spotify service tracks.
+These scenes retain complete speaker-owned metadata in their original household
+and keep their saved sequence after playlist edits or removal. They support
+silent loading, bounded verified undo and ordinary Apply scene routines. Author
+through CLI, HTTP or MCP; all saved-scene clients display and review the selection.

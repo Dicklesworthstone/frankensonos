@@ -129,7 +129,7 @@ import FrankenSonosKit
                             Text("Saved playlist identity unavailable. Read the scene again.")
                         }
                     case "uri": Text("Source URI: \(group.source.uri ?? "")").textSelection(.enabled)
-                    case "tracks":
+                    case "tracks", "sonos_playlist_tracks":
                         if let summary = group.source.tracksSummary {
                             Text(summary).textSelection(.enabled)
                             Text(group.source.tracksRecallNote).font(.caption).foregroundStyle(.secondary)
@@ -149,7 +149,7 @@ import FrankenSonosKit
                     default: Text("Unsupported source: \(group.source.kind)")
                     }
                     Text(group.playing.map { $0 ? "Start / continue playback" :
-                        (["queue", "queue_backup", "sonos_playlist", "tracks"].contains(group.source.kind) ? "Ready without playback" : "Pause playback")
+                        (["queue", "queue_backup", "sonos_playlist", "sonos_playlist_tracks", "tracks"].contains(group.source.kind) ? "Ready without playback" : "Pause playback")
                     } ?? "Leave play/pause state unchanged")
                         .font(.caption).foregroundStyle(.secondary)
                 }
