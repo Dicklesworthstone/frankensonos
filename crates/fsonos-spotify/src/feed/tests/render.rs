@@ -15,6 +15,8 @@ enum Fault {
     MalformedReply,
     LostReplyAndRead,
     Read800AfterAccept,
+    Favorites800DuringLearning,
+    Preflight800AfterLearning,
     QueueDuringLearning,
     SourceDuringLearning,
     RebootDuringLearning,
@@ -108,6 +110,12 @@ impl Transport for Favorites<'_> {
             self.reads.set(self.reads.get() + 1);
             if self.reads.get() == 2 {
                 match self.fault {
+                    Fault::Favorites800DuringLearning => {
+                        return Err(ProtoError::SoapFault {
+                            code: 800,
+                            reason: "favorites read refused".into(),
+                        });
+                    }
                     Fault::QueueDuringLearning => {
                         add_uri_to_queue(&self.rig.lan, host, OWNER, "", false)?;
                     }
@@ -121,6 +129,15 @@ impl Transport for Favorites<'_> {
                 }
             }
             return Ok(self.reply.clone());
+        }
+        if self.fault == Fault::Preflight800AfterLearning
+            && self.reads.get() >= 2
+            && name == "GetMediaInfo"
+        {
+            return Err(ProtoError::SoapFault {
+                code: 800,
+                reason: "retry prerequisite refused".into(),
+            });
         }
         if self.accepted.get() > 0 && matches!(name, "Browse" | "GetMediaInfo") {
             match self.fault {
@@ -395,18 +412,81 @@ fn unconfirmed_adds_never_trigger_another_account_attempt() {
 
 #[test]
 fn a_preflight_refusal_is_not_a_render_rejection() {
-    let rig = Rig::generation(true);
-    let pool = multi_movement_pool();
-    let mut store = MemStore::default();
-    let mut feed = QueueFeed::new(&rig.coordinator, DjConfig::default(), 7);
-    rig.sim.upnp_fault(ROOM, "GetMediaInfo", 800).unwrap();
-    let favorites = Favorites::new(&rig, true, true, Fault::None);
-    assert!(
-        feed.start(&rig.speakers(&favorites), plan(&pool, MIDNIGHT), &mut store)
-            .is_err()
-    );
-    assert_eq!(favorites.adds.get(), 0);
-    assert_eq!(favorites.reads.get(), 1);
+    for s2 in [false, true] {
+        let rig = Rig::generation(s2);
+        let pool = multi_movement_pool();
+        let mut store = MemStore::default();
+        let mut feed = QueueFeed::new(&rig.coordinator, DjConfig::default(), 7);
+        rig.sim.upnp_fault(ROOM, "GetMediaInfo", 800).unwrap();
+        let favorites = Favorites::new(&rig, true, true, Fault::None);
+        let error = feed
+            .start(&rig.speakers(&favorites), plan(&pool, MIDNIGHT), &mut store)
+            .unwrap_err();
+        assert!(
+            matches!(
+                error,
+                FeedError::Proto(ProtoError::SoapFault { code: 800, .. })
+            ),
+            "{error}"
+        );
+        assert_eq!(favorites.adds.get(), 0);
+        assert_eq!(favorites.reads.get(), 1);
+    }
+}
+
+#[test]
+fn recovery_read_refusals_keep_their_diagnosis_without_another_add() {
+    for s2 in [false, true] {
+        for (fault, reason) in [
+            (Fault::Favorites800DuringLearning, "favorites read refused"),
+            (
+                Fault::Preflight800AfterLearning,
+                "retry prerequisite refused",
+            ),
+        ] {
+            let rig = Rig::generation(s2);
+            let pool = multi_movement_pool();
+            let mut store = MemStore::default();
+            let mut feed = QueueFeed::new(&rig.coordinator, DjConfig::default(), 7);
+            let favorites = Favorites::new(&rig, true, true, fault);
+            let error = feed
+                .start(&rig.speakers(&favorites), plan(&pool, MIDNIGHT), &mut store)
+                .unwrap_err();
+            assert!(
+                matches!(&error, FeedError::Proto(ProtoError::SoapFault { code: 800, reason: actual }) if actual == reason),
+                "{error}"
+            );
+            assert_eq!(favorites.adds.get(), 1);
+            assert_eq!(favorites.reads.get(), 2);
+            assert_eq!(favorites.accepted.get(), 0);
+            assert!(rig.queue().is_empty());
+            assert!(!feed.is_active());
+        }
+    }
+}
+
+#[test]
+fn a_confirmed_render_refusal_cannot_hide_a_changed_or_unreadable_coordinator() {
+    for s2 in [false, true] {
+        let rig = Rig::rooms(s2, &[ROOM, "Other"]);
+        let other = PlayerId(rig.sim.player("Other").unwrap().uuid.clone());
+        transport::join_group(&rig.lan, rig.host(), &other).unwrap();
+        let error = render_refused(&rig.speakers(&rig.lan), CoreError::RenderParamsStale.into());
+        assert!(
+            matches!(error, FeedError::Core(CoreError::TargetChanged(_))),
+            "{error}"
+        );
+
+        rig.sim.upnp_fault(ROOM, "GetZoneGroupState", 800).unwrap();
+        let error = render_refused(&rig.speakers(&rig.lan), CoreError::RenderParamsStale.into());
+        assert!(
+            matches!(
+                error,
+                FeedError::Core(CoreError::Proto(ProtoError::SoapFault { code: 800, .. }))
+            ),
+            "{error}"
+        );
+    }
 }
 
 #[test]

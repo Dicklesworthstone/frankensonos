@@ -10,6 +10,7 @@ use fsonos_proto::{ProtoError, Transport};
 use std::net::IpAddr;
 
 use super::{FeedError, Movement, enqueue};
+use fsonos_core::CoreError;
 
 /// Add one movement, retaining an accepted replacement template for the rest
 /// of this work/batch. A definite AddURIToQueue/800 permits one new favorites
@@ -33,14 +34,11 @@ pub(super) fn add_movement<T: Transport + ?Sized>(
         );
         result
     });
-    if !refused
-        || !matches!(
-            &result,
-            Err(FeedError::Proto(ProtoError::SoapFault { code: 800, .. }))
-        )
-        || !proof.retains_refused_queue()
-    {
+    if !refused || !is_refusal(&result) {
         return result;
+    }
+    if !proof.retains_refused_queue() {
+        return classify_refusal(result, refused);
     }
     let favorites = browse_all(transport, host, "FV:2")?;
     let templates = spotify_track_templates(&favorites);
@@ -51,16 +49,42 @@ pub(super) fn add_movement<T: Transport + ?Sized>(
         .find(|candidate| spotify_track_didl(&movement.uri, &movement.title, candidate) != metadata)
         .or_else(|| templates.first());
     let Some(replacement) = replacement else {
-        return result;
+        return classify_refusal(result, refused);
     };
     let metadata = spotify_track_didl(&movement.uri, &movement.title, replacement);
+    // A prerequisite for the retry can itself return 800. Only the actual
+    // AddURIToQueue result can identify this attempt as a renderer refusal.
+    refused = false;
     let result = proof.confirmed(transport, host, &movement.uri, desired, || {
-        send(transport, host, movement, &metadata, desired)
+        let result = send(transport, host, movement, &metadata, desired);
+        refused = is_refusal(&result);
+        result
     });
     if result.is_ok() {
         *params = replacement.clone();
     }
-    result
+    classify_refusal(result, refused)
+}
+
+fn is_refusal(result: &Result<(u32, Option<u32>), FeedError>) -> bool {
+    matches!(
+        result,
+        Err(FeedError::Proto(ProtoError::SoapFault { code: 800, .. }))
+    )
+}
+
+/// A send's refusal must survive the queue/owner read-back unchanged before
+/// it can become a credential diagnosis. Read failures never qualify, even
+/// when a speaker uses the same UPnP code for them.
+fn classify_refusal(
+    result: Result<(u32, Option<u32>), FeedError>,
+    refused: bool,
+) -> Result<(u32, Option<u32>), FeedError> {
+    if refused && is_refusal(&result) {
+        Err(CoreError::RenderParamsStale.into())
+    } else {
+        result
+    }
 }
 
 fn send<T: Transport + ?Sized>(

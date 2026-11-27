@@ -11,6 +11,7 @@ use fsonos_core::store::MemStore;
 use fsonos_proto::control as soap;
 use fsonos_proto::topology::get_zone_group_state;
 use fsonos_sim::{SimHandle, SimHousehold, SimModel, SimPlayerSpec};
+use fsonos_spotify::cache::apply_library_read;
 use fsonos_spotify::classical::CandidatePool;
 use fsonos_spotify::dj::{DjConfig, PickReason};
 use fsonos_spotify::feed::{FeedSnapshot, Movement as QueuedMovement, QueuedWork};
@@ -19,8 +20,8 @@ use fsonos_spotify::works::{Completeness, group_works};
 use fsonos_types::PlayerId;
 use std::time::Instant;
 
-fn work(take: &str) -> Work {
-    let items: Vec<_> = ["I. Prelude", "II. Allemande", "III. Courante"]
+fn library_items(take: &str) -> Vec<LibraryItem> {
+    ["I. Prelude", "II. Allemande", "III. Courante"]
         .iter()
         .enumerate()
         .map(|(index, title)| LibraryItem {
@@ -39,8 +40,11 @@ fn work(take: &str) -> Work {
             origin: Origin::SavedAlbum,
             ..LibraryItem::default()
         })
-        .collect();
-    let works = group_works(CandidatePool::build(&items).tracks());
+        .collect()
+}
+
+fn work(take: &str) -> Work {
+    let works = group_works(CandidatePool::build(&library_items(take)).tracks());
     assert_eq!(works.len(), 1);
     assert_eq!(works[0].completeness, Completeness::Complete);
     works[0].clone()
@@ -139,6 +143,12 @@ impl LiveFeedback {
         house.apply_topology(&get_zone_group_state(&lan, player.ip).unwrap());
         let households = vec![house];
         let works = vec![work("A"), work("B"), work("C")];
+        let mut store = MemStore::default();
+        let items: Vec<_> = ["A", "B", "C"]
+            .into_iter()
+            .flat_map(library_items)
+            .collect();
+        apply_library_read(&mut store, &items).unwrap();
         let tracks: Vec<_> = works
             .iter()
             .flat_map(|work| &work.movements)
@@ -153,9 +163,11 @@ impl LiveFeedback {
         let dj = SpotifyDj::new(None);
         {
             let mut state = dj.state();
-            state.pool = WorkPool::from_works(works.clone());
-            state.planned = true;
-            state.plan_inputs = Some(crate::dj::plan_inputs(None));
+            // Use the same accepted catalog receipt as a live plan, so a
+            // refill reaches the injected speaker fault instead of failing
+            // selection authorization before the request is sent.
+            state.reload(&store, None, 0).unwrap();
+            assert_eq!(state.pool.len(), works.len());
             state
                 .starters
                 .insert(id.clone(), vec![fsonos_core::policy::Client::Cli]);
@@ -189,7 +201,7 @@ impl LiveFeedback {
             households,
             id,
             dj,
-            store: MemStore::default(),
+            store,
             clock: FakeClock::new(
                 chrono::DateTime::parse_from_rfc3339("2026-10-07T12:00:00+00:00").unwrap(),
             ),

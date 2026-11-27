@@ -1647,21 +1647,21 @@ fn placed(queue: &[Option<String>], p: u32, uri: Option<&str>) -> Option<u32> {
         .and_then(|i| u32::try_from(i + 1).ok())
 }
 
-/// A coordinator that refuses a DJ enqueue with UPnP 800 while it still
-/// leads its group refuses the render params themselves, which were just
-/// learned from the household's favorites: they went stale
-/// (`RENDER_PARAMS_STALE`, whose remedy is to re-link Spotify). One whose
-/// group has moved on refuses whatever it is sent, and its 800 stands.
+/// The enqueue helper marks only an actual, definitively refused render as
+/// stale parameters. Recheck its destination before suggesting that Spotify
+/// be relinked; prerequisite, favorites and read-back errors keep their own
+/// diagnosis even when the speaker returns UPnP 800 for those reads.
 fn render_refused<T: Transport + ?Sized>(at: &Speakers<'_, T>, err: FeedError) -> FeedError {
-    if !matches!(
-        err,
-        FeedError::Proto(ProtoError::SoapFault { code: 800, .. })
-    ) {
+    if !matches!(err, FeedError::Core(CoreError::RenderParamsStale)) {
         return err;
     }
     match moving::coordinator_now(at.transport, at.households, at.coordinator) {
-        Ok(now) if now == *at.coordinator => FeedError::Core(CoreError::RenderParamsStale),
-        _ => err,
+        Ok(now) if now == *at.coordinator => err,
+        Ok(_) => CoreError::TargetChanged(
+            "the DJ coordinator changed after the renderer refused the enqueue".into(),
+        )
+        .into(),
+        Err(error) => error.into(),
     }
 }
 
