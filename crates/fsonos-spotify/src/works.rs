@@ -745,14 +745,12 @@ mod tests {
         let op9 = find(&works, 7, "Op. 9")[0];
         assert_eq!(op9.movements.len(), 3);
 
-        assert_eq!(
-            find(&works, 8, "Symphony No. 9")[0].completeness,
-            Completeness::Partial
-        );
-        assert_eq!(
-            find(&works, 9, "Symphony No. 5")[0].completeness,
-            Completeness::Unknown
-        );
+        let liked_partial = find(&works, 8, "Symphony No. 9")[0];
+        assert_eq!(liked_partial.completeness, Completeness::Partial);
+        assert!(liked_partial.needs_expansion());
+        let liked_unknown = find(&works, 9, "Symphony No. 5")[0];
+        assert_eq!(liked_unknown.completeness, Completeness::Unknown);
+        assert!(liked_unknown.needs_expansion());
         let gymno = find(&works, 10, "Gymnopédie")[0];
         assert_eq!(
             (gymno.movements.len(), gymno.completeness),
@@ -774,7 +772,10 @@ mod tests {
 
         let highlights = find(&works, 12, "Symphony No. 7")[0];
         assert_eq!(highlights.completeness, Completeness::Partial);
-        assert!(highlights.needs_expansion());
+        assert!(
+            !highlights.needs_expansion(),
+            "a fully observed saved highlights album is authoritative even when the work is partial"
+        );
     }
 
     #[test]

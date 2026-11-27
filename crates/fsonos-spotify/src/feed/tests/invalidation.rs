@@ -181,6 +181,63 @@ fn a_failed_invalidated_read_cannot_refill_or_publish_a_partial_model() {
 }
 
 #[test]
+fn a_failed_restart_revalidates_same_length_edits_before_automatic_refill() {
+    for s2 in [false, true] {
+        for action in ["GetZoneGroupState", "GetMediaInfo", "Browse"] {
+            let mut run = Paused::new(s2);
+            run.replace_last();
+            let snapshot = run.feed.snapshot();
+            let queue = run.rig.queue();
+            run.rig.sim.upnp_fault(ROOM, action, 701).unwrap();
+            let marker = run.rig.sim.soap_log().len();
+            assert!(
+                run.feed
+                    .start(
+                        &run.rig.speakers(&run.rig.lan),
+                        plan(&run.pool, MIDNIGHT + 1),
+                        &mut run.store,
+                    )
+                    .is_err(),
+                "{action}"
+            );
+            assert_eq!(run.feed.snapshot(), snapshot);
+            assert_eq!(run.feed.queue_len, None, "{action}");
+            assert!(!run.feed.accepted_playback());
+            assert!(run.feed.is_active());
+            assert!(run.writes_since(marker).is_empty());
+
+            run.rig.sim.clear_faults(ROOM).unwrap();
+            assert_eq!(
+                run.observe().unwrap(),
+                1,
+                "{action}: a fresh read notices the removed lookahead work despite unchanged playback and length"
+            );
+            assert_eq!(&run.rig.queue()[..queue.len()], &queue);
+            assert_eq!(run.feed.queued().len(), 4);
+            assert_eq!(run.feed.queued().last().unwrap().first(), Some(5));
+            assert!(
+                run.feed
+                    .queued()
+                    .iter()
+                    .all(|work| { work.movements.iter().all(|movement| movement.uri != OWNER) })
+            );
+            assert_eq!(
+                transport::get_transport_info(&run.rig.lan, run.rig.host())
+                    .unwrap()
+                    .state,
+                TransportState::Paused
+            );
+            assert!(plays(&run.store).is_empty());
+            assert!(
+                run.writes_since(marker)
+                    .iter()
+                    .all(|action| action == "AddURIToQueue")
+            );
+        }
+    }
+}
+
+#[test]
 fn an_entire_same_length_replacement_relinquishes_without_touching_owner_music() {
     for s2 in [false, true] {
         let mut run = Paused::new(s2);

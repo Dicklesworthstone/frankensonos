@@ -1149,6 +1149,10 @@ impl QueueFeed {
         &mut self,
         at: &Speakers<'_, T>,
     ) -> Result<Vec<Option<String>>, FeedError> {
+        // A failed owner or queue read cannot leave the old positions trusted.
+        // Retain the claims for a later successful reconciliation, including
+        // after a repeated start whose first prerequisite read fails.
+        self.invalidate_queue();
         let host = host_of(at)?;
         let observed = enqueue::observation(at.transport, host, at.coordinator)?;
         let queue = observed.tracks;
