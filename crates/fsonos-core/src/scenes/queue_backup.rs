@@ -2,12 +2,13 @@
 //! prefix under its native revision. No uncertain mutation is ever replayed.
 
 use super::queue::{self, Group, Playback, QueueReference};
+use crate::queue_source::native::replay::{item as native_replay_item, playable};
 use crate::snapshot::{self, ZoneSnapshot};
 use crate::{CoreError, HouseholdState, control};
 use fsonos_proto::content::{self, BrowseFlag, BrowseSnapshot, QUEUE};
 use fsonos_proto::didl::{
     DidlKind, DidlObject, NativeDidlObject, SpotifyRenderParams, native_account_descriptor,
-    parse_didl, spotify_track_didl, spotify_uri_from_renderer_uri, with_native_replay_identity,
+    parse_didl, spotify_uri_from_renderer_uri,
 };
 use fsonos_proto::play_mode::get_play_mode;
 use fsonos_proto::{ProtoError, Transport};
@@ -43,18 +44,6 @@ pub struct QueueBackupEntry {
 
 fn invalid(detail: impl std::fmt::Display) -> ProtoError {
     ProtoError::Malformed(format!("saved queue reconstruction refused: {detail}"))
-}
-
-fn playable(uri: &str) -> bool {
-    !uri.trim().is_empty()
-        && uri != "NOT_IMPLEMENTED"
-        && !uri.chars().any(char::is_control)
-        && !["x-rincon:", "x-rincon-queue:", "x-rincon-cpcontainer:"]
-            .iter()
-            .any(|prefix| uri.starts_with(prefix))
-        && spotify_uri_from_renderer_uri(uri).is_none_or(|source| {
-            source.starts_with("spotify:track:") || source.starts_with("spotify:episode:")
-        })
 }
 
 impl QueueBackup {
@@ -178,84 +167,18 @@ fn replay_item<T: Transport + ?Sized>(
     parameters: &mut Option<SpotifyRenderParams>,
     current: Option<&replay::Current>,
 ) -> Result<QueueBackupEntry, CoreError> {
-    let NativeDidlObject {
-        object,
-        mut metadata,
-    } = native;
-    let uri = object
-        .res
-        .as_ref()
-        .map(|res| res.uri.clone())
-        .ok_or_else(|| invalid("a queue occurrence has no resource"))?;
-    if object.kind != DidlKind::Item
-        || !object.class.starts_with("object.item.audioItem")
-        || !playable(&uri)
-    {
-        return Err(invalid("a queue occurrence is not an expanded playable audio item").into());
-    }
-    // Retain complete native replay metadata verbatim. Queue Browse commonly
-    // omits its service identity/account; the selected track's own renderer
-    // metadata can supply those without requiring a matching My Sonos favorite.
-    // An incomplete observation still falls back to this household's favorites.
-    if let Some(spotify) = spotify_uri_from_renderer_uri(&uri)
-        && spotify.starts_with("spotify:track:")
-    {
-        if replay::Identity::read(&uri, &metadata)?.is_some() {
-            return Ok(QueueBackupEntry { uri, metadata });
-        }
-        if let Some(current) = current
-            && let Some(repaired) = current.repair(&uri, &metadata)?
-        {
-            return Ok(QueueBackupEntry {
-                uri,
-                metadata: repaired,
-            });
-        }
-        if parameters.is_none() {
-            *parameters = Some(
-                control::spotify_params(t, households, coordinator)?.ok_or_else(|| {
-                    invalid("Spotify queue entries have no discoverable account metadata")
-                })?,
-            );
-        }
-        let replay_metadata = spotify_track_didl(
-            &spotify,
-            &object.title,
-            parameters.as_ref().expect("parameters resolved above"),
-        );
-        let replay = parse_didl(&replay_metadata)?
-            .into_iter()
-            .next()
-            .ok_or_else(|| invalid("Spotify replay metadata is missing"))?;
-        let params = parameters.as_ref().expect("parameters resolved above");
-        let same_account = uri.split_once('?').is_none_or(|(_, query)| {
-            let number = |name: &str| {
-                query
-                    .split('&')
-                    .find_map(|pair| pair.strip_prefix(name)?.strip_prefix('='))
-                    .and_then(|value| value.parse::<u32>().ok())
-            };
-            number("sid") == Some(params.sid) && number("sn") == Some(params.sn)
-        });
-        if !same_account {
-            return Err(invalid(
-                "a Spotify queue occurrence belongs to an unresolved linked account",
-            )
-            .into());
-        }
-        // Queue IDs need the renderer's service prefix. Repair only that
-        // identity and a missing account; native extensions remain intact.
-        metadata = with_native_replay_identity(
-            &metadata,
-            &replay.id,
-            &replay.parent_id,
-            replay
-                .desc
-                .as_ref()
-                .ok_or_else(|| invalid("Spotify replay account is missing"))?,
-        )?;
-    }
-    Ok(QueueBackupEntry { uri, metadata })
+    let entry = native_replay_item(
+        t,
+        households,
+        coordinator,
+        native,
+        parameters,
+        current.map(replay::Current::selected),
+    )?;
+    Ok(QueueBackupEntry {
+        uri: entry.uri,
+        metadata: entry.metadata,
+    })
 }
 
 pub(crate) fn capture<T: Transport + ?Sized>(

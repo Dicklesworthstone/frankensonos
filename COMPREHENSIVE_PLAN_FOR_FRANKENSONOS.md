@@ -1888,6 +1888,16 @@ position carry over and the DJ session follows.
 `party` groups every room in a household. S1 and S2 players cannot be grouped
 together, and the command says so instead of failing quietly.
 
+Same-household copied moves and unsupported-delegation fallback now reuse
+complete native Spotify queue and direct-source metadata. Queue backups and
+relocation share the same replay-identity checks, including selected-track
+evidence for incomplete queue item identities. Existing music can therefore
+move without a Spotify favorite when its observed native evidence is sufficient.
+Cross-household copies still learn the destination household's service linkage.
+Queue occurrences, account metadata and source ownership remain checked before
+destination writes and before releasing the original playback. See
+[Moving queue playback](docs/MOVE_QUEUES.md).
+
 Copied playback and the fallback for unsupported native handoff retain the
 source until destination playback is confirmed without an explicit renderer
 error. `ERROR_OCCURRED` defeats a `PLAYING` or `TRANSITIONING` observation,

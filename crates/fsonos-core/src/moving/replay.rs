@@ -4,6 +4,7 @@
 
 use super::{MoveError, ip};
 use crate::queue_source::native;
+use crate::queue_source::native::replay as native_replay;
 use crate::snapshot::{SnapshotSource, ZoneSnapshot};
 use crate::{HouseholdState, control};
 use fsonos_proto::content;
@@ -36,11 +37,16 @@ struct Item {
 struct QueueOrigin {
     host: IpAddr,
     snapshot: native::Snapshot,
+    selected: Option<native_replay::Selected>,
 }
 
 impl QueueOrigin {
     fn confirm<T: Transport + ?Sized>(&self, t: &T) -> Result<(), ProtoError> {
-        self.snapshot.confirm(t, self.host)
+        self.snapshot.confirm(t, self.host)?;
+        if let Some(selected) = &self.selected {
+            selected.confirm(t, self.host)?;
+        }
+        Ok(())
     }
 }
 
@@ -60,6 +66,7 @@ enum Source {
 pub(super) struct Prepared {
     source: Source,
     origin: Option<QueueOrigin>,
+    direct_origin: Option<native_replay::Direct>,
     transport: TransportState,
     /// Unknown and direct-source settings are not replaced with NORMAL.
     play_mode: Option<PlayMode>,
@@ -75,6 +82,8 @@ impl Prepared {
         target: &PlayerId,
     ) -> Result<Self, MoveError> {
         let mut origin = None;
+        let mut direct_origin = None;
+        let same_household = same_household(households, &snap.coordinator, target)?;
         let source = match &snap.source {
             SnapshotSource::Nothing => Source::Nothing,
             SnapshotSource::Uri {
@@ -89,13 +98,29 @@ impl Prepared {
                         .ok()
                         .and_then(|v| v.into_iter().next())
                         .map_or_default(|object| object.title);
-                    let params = parameters(t, households, target)?;
-                    if SpotifyBare::of(&spotify).is_some() {
+                    if same_household
+                        && (SpotifyBare::of(&spotify).is_some()
+                            || native_replay::Identity::read(uri, metadata)?.is_some())
+                    {
+                        direct_origin = Some(native_replay::Direct::read(
+                            t,
+                            ip(households, &snap.coordinator)?,
+                            &snap.coordinator,
+                            uri,
+                            metadata,
+                        )?);
+                        Item {
+                            uri: uri.clone(),
+                            metadata: metadata.clone(),
+                        }
+                    } else if SpotifyBare::of(&spotify).is_some() {
+                        let params = parameters(t, households, target)?;
                         Item {
                             uri: spotify_bare_uri(&spotify, params.sid),
                             metadata: spotify_bare_didl(&spotify, &title, params.sid),
                         }
                     } else {
+                        let params = parameters(t, households, target)?;
                         Item {
                             uri: spotify_track_uri(&spotify, &params),
                             metadata: spotify_track_didl(&spotify, &title, &params),
@@ -131,6 +156,7 @@ impl Prepared {
                     return Ok(Self {
                         source: Source::Nothing,
                         origin: None,
+                        direct_origin: None,
                         transport: snap.transport_state,
                         play_mode: None,
                         origin_verified_at: Instant::now(),
@@ -145,10 +171,32 @@ impl Prepared {
                         "the source has no selected track in its queue".into(),
                     ));
                 }
-                let items = queue_items(t, households, target, &queue.objects)?;
+                // Within one household the already-playing queue supplies its
+                // own renderer account. Requiring an unrelated favorite here
+                // would break a move after the owner edited My Sonos.
+                let selected = if same_household {
+                    native_replay::Selected::read(
+                        t,
+                        host,
+                        &snap.coordinator,
+                        *track,
+                        &queue.objects,
+                    )?
+                } else {
+                    None
+                };
+                let items = queue_items(
+                    t,
+                    households,
+                    target,
+                    &queue.objects,
+                    same_household,
+                    selected.as_ref(),
+                )?;
                 origin = Some(QueueOrigin {
                     host,
                     snapshot: queue,
+                    selected,
                 });
                 Source::Queue {
                     items,
@@ -165,6 +213,7 @@ impl Prepared {
         let mut prepared = Self {
             source,
             origin,
+            direct_origin,
             transport: snap.transport_state,
             play_mode,
             origin_verified_at: Instant::now(),
@@ -239,6 +288,9 @@ impl Prepared {
     /// Native metadata is part of the retained source, even when the player
     /// reuses its queue counter. Recheck before regrouping or releasing it.
     pub(super) fn confirm_queue<T: Transport + ?Sized>(&self, t: &T) -> Result<(), MoveError> {
+        if let Some(origin) = &self.direct_origin {
+            origin.confirm(t)?;
+        }
         if let Some(origin) = &self.origin {
             origin.confirm(t).map_err(|error| match error {
                 ProtoError::Malformed(message) => MoveError::SourceChanged(message),
@@ -309,7 +361,12 @@ impl Prepared {
     ) -> Result<Option<u32>, MoveError> {
         match &self.source {
             Source::Nothing => Ok(None),
-            Source::Uri { .. } => direct::apply(t, host, target, self).map(|()| None),
+            Source::Uri { .. } => {
+                if let Some(origin) = &self.direct_origin {
+                    origin.confirm(t)?;
+                }
+                direct::apply(t, host, target, self).map(|()| None)
+            }
             Source::Queue { items, .. } => {
                 let (revision, owner) = staging::replace(
                     t,
@@ -402,6 +459,24 @@ impl Prepared {
     }
 }
 
+fn same_household(
+    households: &[HouseholdState],
+    source: &PlayerId,
+    target: &PlayerId,
+) -> Result<bool, MoveError> {
+    let locate = |id: &PlayerId| {
+        let mut matching = households.iter().filter(|house| house.player(id).is_some());
+        let found = matching
+            .next()
+            .ok_or_else(|| invalid("a move endpoint is no longer present"))?;
+        if matching.next().is_some() {
+            return Err(invalid("a move endpoint has an ambiguous household"));
+        }
+        Ok(found)
+    };
+    Ok(std::ptr::eq(locate(source)?, locate(target)?))
+}
+
 fn parameters<T: Transport + ?Sized>(
     t: &T,
     households: &[HouseholdState],
@@ -416,10 +491,27 @@ fn queue_items<T: Transport + ?Sized>(
     households: &[HouseholdState],
     target: &PlayerId,
     objects: &[NativeDidlObject],
+    same_household: bool,
+    selected: Option<&native_replay::Selected>,
 ) -> Result<Vec<Item>, MoveError> {
     let mut learned = None;
     let mut items = Vec::with_capacity(objects.len());
     for native in objects {
+        if same_household {
+            let replay = native_replay::item(
+                t,
+                households,
+                target,
+                native.clone(),
+                &mut learned,
+                selected,
+            )?;
+            items.push(Item {
+                uri: replay.uri,
+                metadata: replay.metadata,
+            });
+            continue;
+        }
         let object = &native.object;
         let res = object
             .res
@@ -703,7 +795,17 @@ mod simulator_tests {
         )
         .unwrap();
         let calls = sim.soap_log().len();
-        assert!(queue_items(&sim.lan(), &households, &to.coordinator.id, &objects).is_err());
+        assert!(
+            queue_items(
+                &sim.lan(),
+                &households,
+                &to.coordinator.id,
+                &objects,
+                false,
+                None,
+            )
+            .is_err()
+        );
         assert_eq!(sim.soap_log().len(), calls);
     }
 

@@ -5,6 +5,8 @@ use fsonos_proto::didl::NativeDidlObject;
 use fsonos_proto::{ProtoError, Transport};
 use std::net::IpAddr;
 
+pub(crate) mod replay;
+
 pub(crate) struct Snapshot {
     pub(crate) objects: Vec<NativeDidlObject>,
     pub(crate) update_id: u32,

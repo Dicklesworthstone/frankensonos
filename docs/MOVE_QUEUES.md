@@ -7,18 +7,27 @@ Both now stage the replacement before removing anything already queued at
 the destination.
 
 Queues may mix Spotify songs and podcast episodes, including repeated
-occurrences. Each is rendered with the destination household's own linked
-service parameters. Episodes use only that household's service id, with no
-track-only account flags or descriptor. Spotify's case-sensitive catalog ids
-are preserved. Artist and show entries must already be expanded before a queue
-can be copied; their container does not stand in for an exact occurrence.
-Direct episode, artist and show sources also relearn destination linkage before
-either room is changed. Missing linkage leaves both rooms untouched.
+occurrences. Within one household, a copied queue retains its complete observed
+native resources and service metadata. This evidence lets already playable
+music move without an unrelated Spotify favorite. The same native replay
+evidence used by queue backups can recover missing Spotify queue metadata from
+the observed selected track; incomplete or conflicting account evidence still
+refuses the transfer before changing either room.
+
+Across households, Spotify occurrences are rendered with the destination
+household's own linked service parameters. Episodes use only that household's
+service id, with no track-only account flags or descriptor. Spotify's
+case-sensitive catalog ids are preserved. Artist and show entries must already
+be expanded before a queue can be copied; their container does not stand in
+for an exact occurrence. Direct Spotify sources retain native metadata within
+their household and relearn destination linkage when crossing households.
+Missing destination linkage leaves both rooms untouched.
 
 ## What a queue transfer does
 
-1. Read the complete source queue and learn the destination household's
-   renderer parameters. Keep duplicate occurrences, the selected slot,
+1. Read the complete source queue and prepare its native replay metadata, or
+   learn destination renderer parameters when crossing households. Keep
+   duplicate occurrences, the selected slot,
    elapsed position, transport intent, and known shuffle/repeat mode.
 2. Read the destination's complete queue and verify its current group,
    coordinator boot sequence when available, source, selected occurrence,

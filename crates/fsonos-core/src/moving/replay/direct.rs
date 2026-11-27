@@ -230,7 +230,19 @@ impl Playback {
         target: &PlayerId,
         step: Step<'_>,
     ) -> Result<Self, MoveError> {
+        self.step_checked(t, host, target, step, || Ok(()))
+    }
+
+    fn step_checked<T: Transport + ?Sized>(
+        &self,
+        t: &T,
+        host: IpAddr,
+        target: &PlayerId,
+        step: Step<'_>,
+        before_write: impl FnOnce() -> Result<(), MoveError>,
+    ) -> Result<Self, MoveError> {
         self.confirm(t, host, target)?;
+        before_write()?;
         let started = Instant::now();
         let sent = match step {
             Step::Stop => soap::stop(t, host),
@@ -259,14 +271,26 @@ pub(super) fn apply<T: Transport + ?Sized>(
     let Source::Uri { item, position } = &prepared.source else {
         return Err(invalid("direct relocation requires a prepared URI"));
     };
+    let confirm_source = || {
+        if let Some(origin) = &prepared.direct_origin {
+            origin.confirm(t)?;
+        }
+        Ok(())
+    };
     let mut playback = Playback::read(t, host, target, false)?;
-    playback = playback.step(t, host, target, Step::Stop)?;
-    playback = playback.step(t, host, target, Step::Load(item, position.is_some()))?;
+    playback = playback.step_checked(t, host, target, Step::Stop, confirm_source)?;
+    playback = playback.step_checked(
+        t,
+        host,
+        target,
+        Step::Load(item, position.is_some()),
+        confirm_source,
+    )?;
     if let Some(position) = position.filter(|position| *position > 0) {
-        playback = playback.step(t, host, target, Step::Seek(position))?;
+        playback = playback.step_checked(t, host, target, Step::Seek(position), confirm_source)?;
     }
     if prepared.transport == TransportState::Playing {
-        playback = playback.step(t, host, target, Step::Play)?;
+        playback = playback.step_checked(t, host, target, Step::Play, confirm_source)?;
     }
     playback.confirm(t, host, target)
 }

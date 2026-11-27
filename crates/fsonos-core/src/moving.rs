@@ -9,8 +9,8 @@
 //! never by repeating the handoff or clearing a possibly transferred queue.
 //! A player that does
 //! not offer that action (UPnP 401) gets the fallback: the source's playback
-//! is replayed on the target (its queue copied, Spotify items re-rendered
-//! for the target's household) at the same track and position, and the
+//! is replayed on the target using its queue's native metadata at the same
+//! track and position, and the
 //! source stops. Players in different households can never group (S1 and S2
 //! are always different households): [`move_playback`] refuses, and
 //! [`copy_playback`] replays the music there instead.
@@ -253,9 +253,10 @@ fn replay_instead_of_delegating<T: Transport + ?Sized>(
     Ok(true)
 }
 
-/// Copy the music `from` plays onto `to`'s group (any household: Spotify
-/// items are re-rendered with the target household's parameters), at the
-/// same track and position, then stop `from`. Preparation is read-only.
+/// Copy the music `from` plays onto `to`'s group at the same track and
+/// position, then stop `from`. Native metadata is reused within one household;
+/// Spotify items crossing households use the destination's render parameters.
+/// Preparation is read-only.
 /// The complete incoming queue is staged after the destination's original
 /// entries before a revision-guarded prefix removal. Failed staging retains
 /// those entries; uncertain writes are verified by reads, never replayed.
