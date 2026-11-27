@@ -22,6 +22,9 @@ const LAST: &str = "x-file-cifs://example.invalid/last.flac";
 const OLD: &str = "x-file-cifs://example.invalid/replacement.flac";
 const RADIO: &str = "x-rincon-mp3radio://example.invalid/radio.mp3";
 
+#[path = "scenes_queue_backup_sim/native_replay.rs"]
+mod native_replay;
+
 struct Fixture {
     sim: SimHandle,
     lan: SimLan,

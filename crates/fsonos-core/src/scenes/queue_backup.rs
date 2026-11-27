@@ -17,6 +17,7 @@ use std::net::IpAddr;
 use std::time::Instant;
 
 mod native;
+mod replay;
 mod staging;
 
 /// Maximum number of occurrences in one durable scene queue.
@@ -175,6 +176,7 @@ fn replay_item<T: Transport + ?Sized>(
     coordinator: &PlayerId,
     native: NativeDidlObject,
     parameters: &mut Option<SpotifyRenderParams>,
+    current: Option<&replay::Current>,
 ) -> Result<QueueBackupEntry, CoreError> {
     let NativeDidlObject {
         object,
@@ -191,12 +193,24 @@ fn replay_item<T: Transport + ?Sized>(
     {
         return Err(invalid("a queue occurrence is not an expanded playable audio item").into());
     }
-    // Queue browse commonly omits the descriptor that AddURIToQueue
-    // requires. Resolve that missing replay data from this household's
-    // linked account before saving anything, never from another house.
+    // Retain complete native replay metadata verbatim. Queue Browse commonly
+    // omits its service identity/account; the selected track's own renderer
+    // metadata can supply those without requiring a matching My Sonos favorite.
+    // An incomplete observation still falls back to this household's favorites.
     if let Some(spotify) = spotify_uri_from_renderer_uri(&uri)
         && spotify.starts_with("spotify:track:")
     {
+        if replay::Identity::read(&uri, &metadata)?.is_some() {
+            return Ok(QueueBackupEntry { uri, metadata });
+        }
+        if let Some(current) = current
+            && let Some(repaired) = current.repair(&uri, &metadata)?
+        {
+            return Ok(QueueBackupEntry {
+                uri,
+                metadata: repaired,
+            });
+        }
         if parameters.is_none() {
             *parameters = Some(
                 control::spotify_params(t, households, coordinator)?.ok_or_else(|| {
@@ -259,11 +273,19 @@ pub(crate) fn capture<T: Transport + ?Sized>(
     if contents.update_id != original.update_id {
         return Err(invalid("the queue changed while its backup was read").into());
     }
+    let current = replay::Current::read(t, host, &original, &contents.objects)?;
     let mut parameters = None;
     let mut entries = Vec::with_capacity(contents.objects.len());
     let mut bytes = 0_usize;
     for object in contents.objects {
-        let entry = replay_item(t, households, &snap.coordinator, object, &mut parameters)?;
+        let entry = replay_item(
+            t,
+            households,
+            &snap.coordinator,
+            object,
+            &mut parameters,
+            current.as_ref(),
+        )?;
         bytes = bytes
             .checked_add(entry.uri.len())
             .and_then(|size| size.checked_add(entry.metadata.len()))
@@ -296,6 +318,9 @@ pub(crate) fn capture<T: Transport + ?Sized>(
         || reference.position_secs > original.position_secs.saturating_add(advance)
     {
         return Err(invalid("queue playback changed while saving its contents").into());
+    }
+    if let Some(current) = current {
+        current.confirm(t, host, &reference)?;
     }
     let backup = QueueBackup { reference, entries };
     backup.validate().map_err(invalid)?;
