@@ -516,13 +516,28 @@ const SourcePlayerRemote = (() => {
     }
   }
 
-  function playlistTrackSelectionPanel(doc, { review, clear }) {
+  function playlistTrackSelectionPanel(doc, { review, clear, destination, loadTargets }) {
     const node = doc.createElement('section'), help = doc.createElement('p'), list = doc.createElement('ol');
     node.className = 'source-track-selection'; node.setAttribute('aria-label', 'Selected saved tracks');
     help.className = 'source-help'; help.setAttribute('role', 'status'); help.setAttribute('aria-live', 'polite');
     list.className = 'source-selected-tracks'; list.setAttribute('aria-label', 'Selected tracks in playback order');
+    const destinationFields = doc.createElement('div'), destinationLabel = doc.createElement('label');
+    const input = doc.createElement('input'), suggestions = doc.createElement('select'), read = doc.createElement('button');
+    input.type = 'text'; input.maxLength = 128; input.autocomplete = 'off';
+    input.setAttribute('aria-label', 'Selected-track destination');
+    destinationLabel.append('Selected-track destination ', input);
+    suggestions.setAttribute('aria-label', 'Selected-track destination suggestions');
+    read.type = 'button'; read.textContent = 'Read room and alias suggestions';
+    input.addEventListener('input', () => { if (!input.disabled) destination?.(input.value); });
+    suggestions.addEventListener('change', () => {
+      if (!suggestions.disabled) destination?.(suggestions.value);
+      suggestions.value = '';
+    });
+    read.addEventListener('click', () => { if (!read.disabled) void loadTargets?.(); });
+    const destinationHelp = doc.createElement('p'); destinationHelp.className = 'source-help';
+    destinationFields.append(destinationLabel, suggestions, read, destinationHelp);
     const actions = doc.createElement('div'); actions.className = 'source-track-actions';
-    let current = null, shown = null, shownPage = null;
+    let current = null, shown = null, shownPage = null, shownSuggestions = null, shownGroup = null;
     const buttons = [['play', 'Play selected now'], ['next', 'Play selected next'], ['end', 'Add selected to queue']]
       .map(([mode, label]) => {
         const button = doc.createElement('button'); button.type = 'button'; button.textContent = label;
@@ -531,12 +546,30 @@ const SourcePlayerRemote = (() => {
       });
     const reset = doc.createElement('button'); reset.type = 'button'; reset.textContent = 'Clear selection';
     reset.addEventListener('click', () => { if (!reset.disabled) clear(); }); actions.append(reset);
-    node.append(help, list, actions);
-    return { node, render(page, positions, disabled) {
+    node.append(help, list, destinationFields, actions);
+    return { node, render(page, positions, disabled, { target = '', group = null, choices = [] } = {}) {
       current = page; node.hidden = !page;
       help.textContent = positions.length ? `${positions.length} of ${MAX_PLAYLIST_TRACKS} selected, in the order shown. Clear the selection to review the whole playlist.`
         : `Select up to ${MAX_PLAYLIST_TRACKS} tracks from this page in the order you want. Repeated saved occurrences remain separate. Changing pages clears the selection.`;
       list.hidden = !positions.length; actions.hidden = !positions.length;
+      destinationFields.hidden = !positions.length || !destination;
+      if (input.value !== target) input.value = target;
+      input.placeholder = group ? `Blank uses ${group.target}; or enter a room or saved room set` : 'Room, saved room set or all@household';
+      destinationHelp.textContent = group
+        ? `Read from ${group.target}. Leave blank to use that group, or choose destinations in ${group.household}. Every affected group is reviewed before one request; the saved playlist stays unchanged.`
+        : 'Choose destinations in the saved playlist’s household.';
+      input.disabled = disabled; suggestions.disabled = disabled; read.disabled = disabled;
+      if (shownSuggestions !== choices || shownGroup !== group) {
+        shownSuggestions = choices; shownGroup = group;
+        const option = (value, label) => { const node = doc.createElement('option'); node.value = value; node.textContent = label; return node; };
+        suggestions.replaceChildren(option('', group ? 'Use source group · ' + group.target : 'Use source group'));
+        const supplied = new Map(choices.map(choice => [choice.query, choice.label]));
+        if (group) supplied.set('all@' + group.household, 'All rooms · ' + group.household);
+        for (const [query, label] of supplied) {
+          if (query === 'everywhere' || group && query.includes('@') && !query.endsWith('@' + group.household)) continue;
+          suggestions.append(option(query, label));
+        }
+      }
       for (const button of [...buttons, reset]) button.disabled = disabled || !positions.length;
       if (shown !== positions || shownPage !== page) {
         shown = positions; shownPage = page;
@@ -1096,7 +1129,7 @@ const SourcePlayerRemote = (() => {
   function model({ call, changed = () => {}, execute = (_, work) => work(), executeSet = (_, work) => work() }) {
     let epoch = 0, disposed = false, setReader = null;
     const state = { open: false, groups: [], target: '', sourceType: 'link', input: '', title: '', mode: 'play', pending: null,
-      targetMode: 'group', targetQuery: '', targetSuggestions: [], nativeQuery: '',
+      targetMode: 'group', targetQuery: '', targetSuggestions: [], nativeQuery: '', selectionTarget: '',
       playlists: [], playlist: '', playlistTarget: '', playlistStatus: 'idle', contents: null, contentsHistory: [], contentsSelection: Object.freeze([]),
       lineInSources: [], lineInUnavailable: [], lineIn: '', lineInTarget: '', lineInStatus: 'idle',
       reading: false, writing: false, message: '', result: null };
@@ -1132,7 +1165,7 @@ const SourcePlayerRemote = (() => {
       if (state.playlistStatus === 'loading') state.playlistStatus = 'idle';
       if (state.lineInStatus === 'loading') state.lineInStatus = 'idle';
     };
-    const clearContents = () => { state.contents = null; state.contentsHistory = []; state.contentsSelection = Object.freeze([]); };
+    const clearContents = () => { state.contents = null; state.contentsHistory = []; state.contentsSelection = Object.freeze([]); state.selectionTarget = ''; };
     const clearPlaylists = () => { state.playlists = []; state.playlist = ''; state.playlistTarget = ''; state.playlistStatus = 'idle'; clearContents(); };
     const clearLineIn = () => { state.lineInSources = []; state.lineInUnavailable = []; state.lineIn = ''; state.lineInTarget = ''; state.lineInStatus = 'idle'; };
 
@@ -1157,7 +1190,7 @@ const SourcePlayerRemote = (() => {
     }
 
     function edit(field, value) {
-      if (disposed || blocked() || !['target', 'targetMode', 'targetQuery', 'nativeQuery', 'sourceType', 'playlist', 'lineIn', 'input', 'title', 'mode'].includes(field) || typeof value !== 'string') return false;
+      if (disposed || blocked() || !['target', 'targetMode', 'targetQuery', 'nativeQuery', 'selectionTarget', 'sourceType', 'playlist', 'lineIn', 'input', 'title', 'mode'].includes(field) || typeof value !== 'string') return false;
       if (manager.state.cached && field !== 'playlist') return false;
       if (field === 'target' && !state.groups.some((group) => group.target === value)) return false;
       if (field === 'targetMode' && !['group', 'set'].includes(value)) return false;
@@ -1404,6 +1437,17 @@ const SourcePlayerRemote = (() => {
       } catch (error) { state.message = problem(error); publish(); return false; }
       state.reading = true; state.message = ''; publish();
       try {
+        if (item.kind === 'sonos_playlist_tracks' && state.selectionTarget.trim()) {
+          const abort = new AbortController(); setReader = abort;
+          const reviewed = await targets().inspect({ call, player: SourcePlayerRemote, sourceGroup: group,
+            target: state.selectionTarget, item, mode, signal: abort.signal, valid: () => {
+              if (!current(version)) throw new Error('The saved selection or its destinations changed. Review again.');
+            } });
+          if (!current(version)) return false;
+          const choice = { item, title, mode }, request = targets().request(choice, reviewed, SourcePlayerRemote);
+          state.pending = Object.freeze({ ...choice, group, targets: reviewed, body: request.body, route: request.route });
+          return true;
+        }
         const before = await inspect(group, mode, item);
         if (!current(version)) return false;
         const body = commandBody({ item, title, mode }, group.target);
@@ -1411,7 +1455,7 @@ const SourcePlayerRemote = (() => {
         state.pending = Object.freeze({ group, item, title, mode, before, body: Object.freeze(body) });
         return true;
       } catch (error) { if (current(version)) state.message = problem(error); return false; }
-      finally { if (current(version)) { state.reading = false; publish(); } }
+      finally { if (current(version)) { setReader = null; state.reading = false; publish(); } }
     }
 
     async function reviewTrack(position, mode, page = state.contents) {
@@ -1463,7 +1507,7 @@ const SourcePlayerRemote = (() => {
           if (pending.targets) {
             const abort = new AbortController(); setReader = abort;
             before = await targets().inspect({ call, player: SourcePlayerRemote, target: pending.targets.target,
-              item: pending.item, mode: pending.mode, signal: abort.signal, valid: () => {
+              sourceGroup: pending.targets.sourceGroup, item: pending.item, mode: pending.mode, signal: abort.signal, valid: () => {
                 if (!current(version)) throw new Error('The source review closed or changed before sending.');
               } });
           } else before = await inspect(pending.group, pending.mode, pending.item);
@@ -1598,7 +1642,8 @@ const SourcePlayerRemote = (() => {
     let shownCatalog = null, shownCatalogBusy = null, shownSuggestions = null;
     let shownLineIn = null, shownLineInStatus = '';
     const control = model({ call, execute, executeSet, changed: render });
-    const selectionPanel = playlistTrackSelectionPanel(doc, { review: control.reviewTracks, clear: control.clearTrackSelection });
+    const selectionPanel = playlistTrackSelectionPanel(doc, { review: control.reviewTracks, clear: control.clearTrackSelection,
+      destination: value => control.edit('selectionTarget', value), loadTargets: control.loadTargetSuggestions });
     contentsFields.append(selectionPanel.node);
     const managerPanel = playlistManagerPanel(control.manager, doc);
     managerHost.append(managerPanel.node);
@@ -1674,7 +1719,9 @@ const SourcePlayerRemote = (() => {
       previousContents.hidden = !state.contentsHistory.length; previousContents.disabled = busy;
       nextContents.hidden = state.contents?.next_offset == null; nextContents.disabled = busy;
       contentsHelp.textContent = contentsSummary(state.contents);
-      selectionPanel.render(state.contents, state.contentsSelection, busy || !!state.managing.cached);
+      selectionPanel.render(state.contents, state.contentsSelection, busy || !!state.managing.cached, {
+        target: state.selectionTarget, group: state.groups.find(group => group.target === state.target), choices: state.targetSuggestions,
+      });
       if (shownContents !== state.contents || shownContentsBusy !== busy || shownContentsSelection !== state.contentsSelection) {
         shownContents = state.contents; shownContentsBusy = busy; shownContentsSelection = state.contentsSelection;
         renderContents(contentsList, state.contents, doc, { review: control.reviewTrack, select: control.selectTrack,
@@ -1715,6 +1762,11 @@ const SourcePlayerRemote = (() => {
               affected.append(el('li', {}, el('strong', { text: entry.group.label }),
                 el('span', { text: 'Source: ' + (entry.sourceLabel || pending.title) }),
                 el('span', { text: 'Current: ' + entry.before.label }), el('span', { text: effect })));
+            }
+            if (pending.item.kind === 'sonos_playlist_tracks') {
+              const tracks = el('ol', { class: 'source-selected-tracks', 'aria-label': 'Reviewed saved tracks in playback order' });
+              renderSelectedTracks(tracks, pending.item, doc);
+              consent.append(tracks, el('p', { class: 'source-help', text: `Read from ${pending.targets.sourceGroup.target}. The exact saved occurrences are checked again. Every destination receives the order shown.${pending.mode === 'play' ? ' Playback starts with shuffle and repeat off.' : ' Current playback continues.'} The saved playlist stays unchanged.` }));
             }
             consent.append(affected,
               ...(pending.item.kind === 'line_in' ? [el('p', { class: 'source-help', text: `Analog input from ${pending.item.room}, within one household. Existing queues and group membership remain available. Cable and signal state are not reported; start your source device yourself.` })] : []),

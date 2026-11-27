@@ -223,16 +223,31 @@ For next/append, a group refused before any write does not prevent undoing the
 confirmed ranges on other groups. An uncertain group blocks aggregate undo.
 An uncertain request is never replayed automatically.
 
-Omitting `target` retains the existing one-group request and response. The
-browser and native Apple selection editors keep their existing one-group
-destination controls.
+Omitting `target` retains the existing one-group request and response.
 
 The phone and dashboard let you select up to ten occurrences from the displayed
-saved-playlist page. The ordered review offers **Play selected now**, **Play
-selected next**, and **Add selected to queue**, rechecks both revisions, and
-sends one batch request. Closing the panel or losing a reply does not replay
-that request. Changing the page or saved-playlist observation clears obsolete
-selections. Playback requires `play_favorite`; queue modes require `add_to_queue`.
+saved-playlist page. Their **Selected-track destination** field accepts another
+room, a saved room alias, or `all@household`; leave it blank to use the group
+where you read the playlist. **Read room and alias suggestions** offers rooms
+in that household and saved aliases. An alias is resolved during review, and
+any destination outside the original household is rejected.
+
+The ordered review offers **Play selected now**, **Play selected next**, and
+**Add selected to queue**. It lists the source group, selected occurrences,
+every affected group and its current source and queue. Destination edits keep
+the selection order but retire the old review. Confirmation rereads the saved
+occurrences in their original group, resolves the destination audience again,
+and checks each destination's playback and queue before sending one native
+selection request through the shared command lane. It sends the audience
+revision for an explicit destination, and a queue revision only for a single
+destination group.
+
+The result retains confirmed groups, failed or uncertain groups, exact queue
+insertion ranges, and queue-batch logging and undo availability. Closing the
+panel or losing a reply does not replay the request. Changing the page or
+saved-playlist observation clears obsolete selections. Playback requires
+`play_favorite`; queue modes require `add_to_queue`. The native Apple selection
+editor continues to use its original single-group destination.
 
 The native iPhone, iPad and Mac remote offers the same ordered selection in
 **Music → Sonos → Read tracks**. Its selection can span same-revision pages;

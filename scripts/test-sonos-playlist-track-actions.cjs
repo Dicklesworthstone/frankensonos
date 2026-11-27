@@ -6,6 +6,7 @@ const assert = require('node:assert/strict');
 const Phone = require('../crates/fsonos-api/src/remote/source-player.js');
 const Dashboard = require('../crates/fsonos-api/src/remote/dashboard-source.js');
 const Core = require('../crates/fsonos-api/src/remote/dashboard-core.js');
+const Targets = require('../crates/fsonos-api/src/remote/source-targets.js');
 const copy = value => structuredClone(value);
 const deferred = () => { let resolve; const promise = new Promise(done => { resolve = done; }); return { promise, resolve }; };
 async function until(predicate) {
@@ -42,24 +43,39 @@ function documentFixture() {
 }
 function descendants(node) { return [node, ...(node.children || []).flatMap(child => child && typeof child === 'object' ? descendants(child) : [])]; }
 
-async function fixture(kind, { dom = false } = {}) {
+async function fixture(kind, { dom = false, destinations = false } = {}) {
   const zones = ['S1', 'S2'].map(household => ({ household, coordinator_room: 'Den', members: ['Den'], transport_state: 'paused' }));
+  if (destinations) zones.push({ household: 'S1', coordinator_room: 'Office', members: ['Office', 'Side'], transport_state: 'paused' });
+  const player = (home, room) => 'fixture-' + home + '-' + room;
+  const targetZones = target => target === 'everywhere' ? zones
+    : zones.filter(zone => target === 'downstairs' || target === 'all@S1'
+      ? zone.household === 'S1' : target === zone.coordinator_room + '@' + zone.household);
+  const resolution = target => ({ target, revision: 'a'.repeat(64), matched: 'alias',
+    rooms: targetZones(target).map(zone => ({ household: zone.household, room: zone.coordinator_room,
+      player: player(zone.household, zone.coordinator_room), coordinator: player(zone.household, zone.coordinator_room) })),
+    groups: targetZones(target).map(zone => ({ household: zone.household, coordinator_room: zone.coordinator_room,
+      coordinator: player(zone.household, zone.coordinator_room), members: zone.members.map(room => ({
+        household: zone.household, room, player: player(zone.household, room), coordinator: player(zone.household, zone.coordinator_room),
+      })) })) });
   const catalog = [{ id: 'SQ:7', title: 'Saved & repeated' }, { id: 'SQ:8', title: 'Other list' }];
   const entries = [
     { title: 'First occurrence', uri: 'x-file-cifs://example.invalid/repeated.flac', creator: 'Artist' },
     { title: 'Second occurrence', uri: 'x-file-cifs://example.invalid/repeated.flac', creator: 'Artist' },
     { title: 'Unavailable' },
   ];
-  const rows = new Map(zones.map(zone => ['Den@' + zone.household, { zone, transport_state: 'paused', volume: 12, mute: false,
+  const rows = new Map(zones.map(zone => [zone.coordinator_room + '@' + zone.household, { zone, transport_state: 'paused', volume: 12, mute: false,
     track: { uri: 'fixture:playing', title: 'Owner song', queue_position: 1, position_secs: 10, duration_secs: 300 } }]));
-  const queues = new Map(zones.map(zone => ['Den@' + zone.household, { zone: 'Den', total: 2, revision: 'queue:' + zone.household,
+  const queues = new Map(zones.map(zone => [zone.coordinator_room + '@' + zone.household, { zone: zone.coordinator_room, total: 2, revision: 'queue:' + zone.household + (zone.coordinator_room === 'Den' ? '' : ':' + zone.coordinator_room),
     playing: 1, items: [{ position: 1, uri: 'fixture:playing', title: 'Owner song' }] }]));
   let revision = 'native:1', reader = null, writer = null, api, controller;
-  const calls = [];
+  const calls = [], lanes = [];
   const read = url => {
     const parsed = new URL(url, 'http://localhost');
     const query = Object.fromEntries(parsed.searchParams);
     if (parsed.pathname === '/zones') return copy(zones);
+    if (parsed.pathname === '/rooms') return zones.map(zone => ({ name: zone.coordinator_room,
+      household: zone.household, zone: zone.coordinator_room, aliases: zone.household === 'S1' ? ['downstairs'] : [] }));
+    if (parsed.pathname === '/rooms/resolve') return copy(resolution(query.target));
     if (parsed.pathname === '/schedules') return [];
     if (parsed.pathname === '/sonos/playlists') return copy(catalog);
     if (parsed.pathname === '/sonos/playlists/contents') {
@@ -78,6 +94,23 @@ async function fixture(kind, { dom = false } = {}) {
     assert.ok(['/sonos/playlists/track', '/sonos/playlists/tracks'].includes(url), 'never fall back to a whole playlist or raw URI');
     const positions = url.endsWith('/tracks') ? body.positions : [body.position];
     const q = queues.get(body.zone);
+    if (body.target) {
+      const groups = targetZones(body.target), single = groups.length === 1 ? groups[0] : null;
+      const summary = { done: 'Selected tracks delivered', changed: true, notes: [],
+        zone: single ? single.coordinator_room : body.target, playlist: body.playlist, mode: body.mode,
+        positions: [...positions], titles: positions.map(position => entries[position - 1].title) };
+      if (body.mode === 'play') return { ...summary, ...(single ? {} : { batch: { complete: true, results: groups.map(zone => ({
+        household: zone.household, target: player(zone.household, zone.coordinator_room), zone: zone.coordinator_room,
+        result: { status: 'succeeded', done: 'Selected tracks playing', changed: true, notes: [] },
+      })) } }) };
+      return { ...summary, queue_batch: { done: 'Added to selected groups', complete: true, logged: true, undoable: true, failed: [],
+        added: groups.map(zone => { const queue = queues.get(zone.coordinator_room + '@' + zone.household); return {
+          household: zone.household, coordinator: player(zone.household, zone.coordinator_room), queue: {
+            zone: zone.coordinator_room, done: 'Selected tracks queued', first: body.mode === 'next' && queue.playing !== null ? queue.playing + 1 : queue.total + 1,
+            count: positions.length, playing_queue: queue.playing !== null,
+          },
+        }; }) } };
+    }
     return { done: body.mode === 'play' ? 'Selected track playing' : 'One selected track queued', changed: true, notes: [{ detail: 'Policy applied.' }],
       zone: 'Den', playlist: body.playlist, mode: body.mode,
       ...(url.endsWith('/tracks') ? { positions: [...positions], titles: positions.map(position => entries[position - 1].title) }
@@ -91,8 +124,8 @@ async function fixture(kind, { dom = false } = {}) {
   const view = dom ? documentFixture() : null;
   if (dom && kind === 'dashboard') view.doc.getElementById('source-contents').append(view.doc.getElementById('source-contents-items'));
   if (kind === 'phone') {
-    const options = { call(name, args = {}) {
-      const [method, path] = Phone.routes[name] || (name === 'zones' ? ['GET', '/zones'] : ['GET', '/zones/{room}/state']);
+    const options = { executeSet(groups, work) { lanes.push(groups); return work(); }, call(name, args = {}) {
+      const [method, path] = { ...Phone.routes, ...Targets.routes }[name] || (name === 'zones' ? ['GET', '/zones'] : ['GET', '/zones/{room}/state']);
       const url = path.replace('{room}', encodeURIComponent(args.params?.room)) + (args.query ? '?' + new URLSearchParams(args.query) : '');
       return call(url, method === 'POST' ? args.body : undefined);
     } };
@@ -105,7 +138,7 @@ async function fixture(kind, { dom = false } = {}) {
   }
   api.edit('sourceType', 'playlist'); await api.loadPlaylists(); api.edit('playlist', 'SQ:7');
   assert.equal(await api.loadContents(), true);
-  return { api, controller, calls, entries, rows, queues, catalog, doc: view?.doc,
+  return { api, controller, calls, entries, rows, queues, catalog, zones, resolution, lanes, doc: view?.doc,
     writes: () => calls.filter(call => call.body !== undefined),
     read(fn) { reader = fn; }, write(fn) { writer = fn; }, revision(value) { revision = value; },
     async review(position = 2, mode = 'play', page) { await api.reviewTrack(position, mode, page); return api.state.pending; },
@@ -447,3 +480,185 @@ test('row actions retain exact occurrence and render track metadata as text', as
   Phone.renderContents(list, page, doc, { review: (...args) => actions.push(args), disabled: true });
   list.children[0].children.at(-1).children[0].click(); assert.equal(actions.length, 1);
 });
+
+for (const kind of ['phone', 'dashboard']) {
+  async function selectedDestinations(mode = 'play', options = {}) {
+    const f = await fixture(kind, { destinations: true, ...options });
+    f.api.selectTrack(2); f.api.selectTrack(1);
+    assert.equal(f.api.edit('selectionTarget', 'downstairs'), true);
+    await f.api.reviewTracks(mode);
+    assert.ok(f.api.state.pending, f.api.state.message);
+    return f;
+  }
+
+  for (const mode of ['play', 'next', 'end']) {
+    test(`${kind}: selected native ${mode} reaches independent groups in one request from the original source`, async () => {
+      const f = await selectedDestinations(mode), reviewed = f.api.state.pending;
+      assert.equal(f.writes().length, 0);
+      assert.equal(reviewed.targets.groups.length, 2);
+      assert.equal(reviewed.targets.sourceGroup.target, 'Den@S1');
+      assert.deepEqual(reviewed.body, { zone: 'Den@S1', playlist: 'SQ:7', positions: [2, 1],
+        expected_revision: 'native:1', mode: mode === 'end' ? 'append' : mode,
+        target: 'downstairs', expected_target_revision: 'a'.repeat(64) });
+      assert.equal(Object.hasOwn(reviewed.body, 'expected_queue_revision'), false);
+      assert.equal(await f.confirm(reviewed), true);
+      assert.equal(await f.confirm(reviewed), false);
+      assert.equal(f.writes().length, 1);
+      assert.equal(f.writes()[0].url, '/sonos/playlists/tracks');
+      assert.equal(f.api.state.result.complete, true);
+      assert.match(f.api.state.result.detail, /Den@S1/);
+      assert.match(f.api.state.result.detail, /Office@S1/);
+      const sourceReads = f.calls.filter(call => call.url.includes('/contents?'));
+      assert.ok(sourceReads.length >= 3);
+      assert.ok(sourceReads.every(call => new URL(call.url, 'http://localhost').searchParams.get('zone') === 'Den@S1'));
+      if (kind === 'phone') assert.deepEqual(f.lanes[0].map(group => group.target).sort(), ['Den@S1', 'Office@S1']);
+      if (mode !== 'play') assert.equal(f.api.state.result.undoable, true);
+    });
+  }
+
+  test(kind + ': another single destination binds its queue while retaining the original saved source', async () => {
+    const f = await selectedDestinations('next');
+    f.api.edit('selectionTarget', 'Office@S1');
+    await f.api.reviewTracks('next');
+    const reviewed = f.api.state.pending;
+    assert.equal(reviewed.body.zone, 'Den@S1');
+    assert.equal(reviewed.body.target, 'Office@S1');
+    assert.equal(reviewed.body.expected_queue_revision, 'queue:S1:Office');
+    assert.equal(await f.confirm(), true);
+    assert.equal(f.writes().length, 1);
+    assert.match(f.api.state.result.detail, /Office@S1/);
+  });
+
+  test(kind + ': destination edits keep ordered selections and retire the old review', async () => {
+    const f = await selectedDestinations(), prior = f.api.state.pending, page = f.api.state.contents;
+    f.api.edit('selectionTarget', 'Office@S1');
+    assert.equal(f.api.state.pending, null);
+    assert.equal(f.api.state.contents, page);
+    assert.deepEqual(f.api.state.contentsSelection, [2, 1]);
+    assert.equal(await f.confirm(prior), false);
+    assert.equal(f.writes().length, 0);
+    f.api.edit('selectionTarget', '');
+    await f.api.reviewTracks('end');
+    assert.equal(f.api.state.pending.body.zone, 'Den@S1');
+    assert.equal(Object.hasOwn(f.api.state.pending.body, 'target'), false, 'blank retains the established one-group request');
+    assert.equal(await f.confirm(), true);
+    assert.equal(f.writes().length, 1);
+  });
+
+  test(kind + ': selected tracks cannot cross from their source household', async () => {
+    const f = await fixture(kind, { destinations: true });
+    f.api.selectTrack(2); f.api.edit('selectionTarget', 'everywhere');
+    await f.api.reviewTracks('play');
+    assert.equal(f.api.state.pending, null);
+    assert.match(f.api.state.message, /original household/);
+    assert.equal(f.writes().length, 0);
+    assert.deepEqual(f.api.state.contentsSelection, [2]);
+  });
+
+  test(kind + ': source, audience and destination queue changes each require a fresh native selection review', async () => {
+    for (const change of ['source', 'audience', 'queue']) {
+      const f = await selectedDestinations(), reviewed = f.api.state.pending;
+      if (change === 'source') f.revision('native:2');
+      if (change === 'queue') f.queues.get('Office@S1').revision = 'queue:changed';
+      if (change === 'audience') f.read((url, read) => {
+        const value = read(url);
+        if (url.startsWith('/rooms/resolve?')) value.revision = 'b'.repeat(64);
+        return value;
+      });
+      assert.equal(await f.confirm(reviewed), false, change);
+      assert.equal(f.writes().length, 0, change);
+      assert.equal(f.api.state.result.status, 'not_sent', change);
+    }
+  });
+
+  test(kind + ': repeated saved occurrences retain their order across destinations', async () => {
+    const f = await fixture(kind, { destinations: true });
+    f.api.edit('selectionTarget', 'downstairs');
+    await f.api.review(Phone.preparePlaylistTracks(f.api.state.contents, [2, 1, 2], 'end'));
+    assert.deepEqual(f.api.state.pending.body.positions, [2, 1, 2]);
+    assert.equal(await f.confirm(), true);
+    assert.equal(f.writes().length, 1);
+    assert.equal(f.api.state.result.complete, true);
+  });
+
+  test(kind + ': native batch playback shows partial receipts and never repeats the batch', async () => {
+    const f = await selectedDestinations();
+    f.write((url, body, write) => {
+      const value = write(url, body); value.batch.complete = false;
+      value.batch.results[1].result = { status: 'failed', error: { code: 'OUTCOME_UNCERTAIN',
+        detail: 'The destination disconnected after dispatch.', retryable: false, hint: 'Read its playback before another action.' } };
+      return value;
+    });
+    const reviewed = f.api.state.pending;
+    assert.equal(await f.confirm(), true);
+    assert.equal(f.api.state.result.complete, false);
+    assert.equal(f.api.state.result.partial, true);
+    assert.equal(f.api.state.result.uncertain, true);
+    assert.match(f.api.state.result.detail, /Den@S1: Confirmed/);
+    assert.match(f.api.state.result.detail, /Office@S1: Outcome uncertain/);
+    assert.match(f.api.state.result.detail, /Do not repeat/);
+    assert.equal(await f.confirm(reviewed), false);
+    assert.equal(f.writes().length, 1);
+  });
+
+  test(kind + ': native queue batches retain exact group ranges, failures and unavailable undo', async () => {
+    const f = await selectedDestinations('next');
+    f.write((url, body, write) => {
+      const value = write(url, body), batch = value.queue_batch, failed = batch.added.pop();
+      batch.complete = false; batch.undoable = false;
+      batch.failed.push({ household: failed.household, coordinator: failed.coordinator, zone: 'Office',
+        error: { code: 'QUEUE_CHANGED', detail: 'The Office queue changed before insertion.', retryable: false } });
+      return value;
+    });
+    assert.equal(await f.confirm(), true);
+    assert.equal(f.api.state.result.complete, false);
+    assert.equal(f.api.state.result.undoable, false);
+    assert.match(f.api.state.result.detail, /Den@S1/);
+    assert.match(f.api.state.result.detail, /Office@S1: QUEUE_CHANGED/);
+    assert.match(f.api.state.result.detail, /No safe batch undo/);
+    assert.equal(f.writes().length, 1);
+  });
+
+  test(kind + ': partial native queue delivery to one alias retains the failed receipt', async () => {
+    const f = await selectedDestinations('end');
+    f.api.edit('selectionTarget', 'Office@S1'); await f.api.reviewTracks('end');
+    f.write((url, body, write) => {
+      const value = write(url, body), batch = value.queue_batch, failed = batch.added.pop();
+      value.zone = body.target; value.changed = false;
+      batch.complete = false; batch.undoable = false;
+      batch.failed.push({ household: failed.household, coordinator: failed.coordinator, zone: 'Office',
+        error: { code: 'QUEUE_CHANGED', detail: 'The queue changed before insertion.', retryable: false } });
+      return value;
+    });
+    assert.equal(await f.confirm(), true);
+    assert.equal(f.api.state.result.partial, true);
+    assert.match(f.api.state.result.detail, /Office@S1: QUEUE_CHANGED/);
+    assert.equal(f.writes().length, 1);
+  });
+
+  test(kind + ': a mismatched saved occurrence receipt remains uncertain after one dispatch', async () => {
+    const f = await selectedDestinations('next');
+    f.write((url, body, write) => { const value = write(url, body); value.positions.reverse(); return value; });
+    assert.equal(await f.confirm(), false);
+    assert.equal(f.api.state.result.status, 'uncertain');
+    assert.equal(f.writes().length, 1);
+  });
+
+  test(kind + ': the shipped selection panel exposes the independent native destination', async () => {
+    const f = await selectedDestinations('next', { dom: true });
+    const root = kind === 'phone' ? f.api.node : f.doc.getElementById('source-contents');
+    const input = descendants(root).find(node => node.getAttribute?.('aria-label') === 'Selected-track destination');
+    assert.ok(input);
+    assert.equal(input.value, 'downstairs');
+    input.value = 'Office@S1'; input.fire('input');
+    assert.equal(f.api.state.selectionTarget, 'Office@S1');
+    assert.deepEqual(f.api.state.contentsSelection, [2, 1]);
+    assert.equal(f.api.state.pending, null);
+    await (kind === 'phone' ? f.api.loadTargetSuggestions() : f.api.loadTargets());
+    const suggestions = descendants(root).find(node => node.getAttribute?.('aria-label') === 'Selected-track destination suggestions');
+    assert.ok(suggestions.children.some(option => option.value === 'all@S1'));
+    assert.ok(suggestions.children.some(option => option.value === 'downstairs'));
+    assert.equal(suggestions.children.some(option => option.value === 'Den@S2'), false);
+    assert.equal(suggestions.children.some(option => option.value === 'everywhere'), false);
+  });
+}

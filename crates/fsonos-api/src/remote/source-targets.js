@@ -105,7 +105,7 @@ const SourceTargetsRemote = (() => {
     return catalog;
   }
 
-  async function inspect({ call, player, target, item, mode, signal, valid = () => {} }) {
+  async function inspect({ call, player, target, item, mode, sourceGroup, signal, valid = () => {} }) {
     target = query(target);
     if (!['play', 'next', 'end'].includes(mode) || !item || ['sonos_playlist_track', 'sonos_playlist'].includes(item.kind)) {
       fail('Choose a source link or a complete household source title for this room set.');
@@ -116,6 +116,18 @@ const SourceTargetsRemote = (() => {
     };
     const resolve = () => resolveTarget(read, target);
     const resolution = await resolve(), groups = targetGroups(resolution);
+    if (item.kind === 'sonos_playlist_tracks') {
+      if (!sourceGroup || groups.some(group => group.household !== sourceGroup.household)) {
+        fail('Selected saved tracks can play only in their original household. Choose a room or room set in ' + (sourceGroup?.household || 'that household') + '.');
+      }
+      const sources = player.groups(await read('zones'));
+      if (!sources.some(group => group.target === sourceGroup.target && group.signature === sourceGroup.signature)) {
+        fail('The saved playlist’s original group changed. Read its current household and tracks again.');
+      }
+      player.verifyPlaylistTracks(await read('sourcePlaylistContents', {
+        query: player.tracksQuery(item, sourceGroup.target),
+      }), item, sourceGroup);
+    }
     if (item.kind === 'line_in') {
       const group = lineInHousehold(groups);
       player.verifyLineIn(await read('sourceLineInSources', { query: { zone: group.target } }), item);
@@ -142,13 +154,14 @@ const SourceTargetsRemote = (() => {
         ]) });
       }
       return Object.freeze({ group, item: selected, before,
-        sourceLabel: selected.kind === 'tracks' ? `${selected.tracks.length} ordered track(s)`
+        sourceLabel: selected.kind === 'sonos_playlist_tracks' ? `${selected.tracks.length} selected track(s) from ${selected.playlistTitle} (${sourceGroup.target})`
+          : selected.kind === 'tracks' ? `${selected.tracks.length} ordered track(s)`
           : selected.kind === 'line_in' ? player.lineInLabel(selected)
             : selected.id ? `${selected.title} (${selected.id})` : selected.uri });
     }, valid));
     if ((await resolve()).signature !== resolution.signature) fail('The resolved room set changed during review. Review its current groups again.');
-    return Object.freeze({ target, item, mode, resolution, groups, entries, signature: JSON.stringify([
-      resolution.signature, entries.map(e => [e.group.household, e.group.coordinator_id, e.item, e.before.signature]),
+    return Object.freeze({ target, item, mode, resolution, groups, entries, ...(sourceGroup ? { sourceGroup } : {}), signature: JSON.stringify([
+      resolution.signature, sourceGroup?.signature, entries.map(e => [e.group.household, e.group.coordinator_id, e.item, e.before.signature]),
     ]) });
   }
 
@@ -158,6 +171,16 @@ const SourceTargetsRemote = (() => {
     if (typeof revision !== 'string' || !/^[a-f0-9]{64}$/.test(revision)
         || !['play', 'next', 'end'].includes(choice.mode) || reviewed.mode !== choice.mode) {
       fail('Review this source action and its exact room set again before sending it.');
+    }
+    if (choice.item.kind === 'sonos_playlist_tracks') {
+      if (!reviewed.sourceGroup || reviewed.item !== choice.item
+          || reviewed.groups.some(group => group.household !== reviewed.sourceGroup.household)) {
+        fail('Review the exact saved selection, its original household and its destinations again.');
+      }
+      return Object.freeze({ route: 'sourcePlaylistTracks', body: Object.freeze({
+        ...player.commandBody(choice, reviewed.sourceGroup.target), target, expected_target_revision: revision,
+        ...(reviewed.groups.length === 1 ? { expected_queue_revision: reviewed.entries[0].before.queue.revision } : {}),
+      }) });
     }
     let source;
     if (choice.item.kind === 'line_in') {
@@ -264,11 +287,28 @@ const SourceTargetsRemote = (() => {
   }
 
   function result(value, reviewed, player) {
+    if (reviewed.item?.kind === 'sonos_playlist_tracks') {
+      const item = reviewed.item, mode = reviewed.mode === 'end' ? 'append' : reviewed.mode;
+      const zone = reviewed.groups.length === 1 && (mode === 'play' || value?.queue_batch?.complete === true)
+        ? reviewed.groups[0].coordinator : reviewed.target;
+      if (!value || value.zone !== zone || value.playlist !== item.id || value.mode !== mode
+          || JSON.stringify(value.positions) !== JSON.stringify(item.positions)
+          || JSON.stringify(value.titles) !== JSON.stringify(item.tracks.map(track => track.title))) {
+        fail('The native selection receipt does not match the reviewed tracks and destinations. Read every destination before another action; this request was not repeated.');
+      }
+      player.outcome(value);
+      if (mode === 'play') {
+        if (value.queue_batch != null) fail('The playback receipt contains an unexpected queue addition. Read the destinations before another action.');
+      } else {
+        if (value.batch != null || !value.queue_batch) fail('The daemon did not return the native selection’s per-group queue receipts. Read the queues before another add.');
+        value = value.queue_batch;
+      }
+    }
     if (reviewed.mode === 'play') return playbackResult(value, reviewed, player);
     const groups = reviewed.groups;
     const bad = () => fail('The daemon did not return one complete queue receipt for every reviewed group. Read their queues before another add; this request was not repeated.');
     const queued = (value, group) => {
-      if (reviewed.item?.kind === 'tracks') {
+      if (['tracks', 'sonos_playlist_tracks'].includes(reviewed.item?.kind)) {
         const before = reviewed.entries.find(entry => entry.group === group)?.before.queue;
         if (!before || value?.count !== reviewed.item.tracks.length || value.first > before.total + 1) bad();
       }
