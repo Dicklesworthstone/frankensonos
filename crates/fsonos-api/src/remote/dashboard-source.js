@@ -21,9 +21,9 @@ const DashboardSource = (() => {
       const count = review.targets.groups.length;
       if (review.item.kind === 'sonos_playlist_tracks') {
         const action = review.mode === 'play'
-          ? 'Replace each queue and start the first selected track, with shuffle and repeat off.'
-          : 'Add to each group’s queue without starting or resuming playback; each insertion point is shown below.';
-        return `Send these ${review.item.positions.length} tracks, in the order shown, from ${review.targets.sourceGroup.target} to ${count} existing group(s). ${action} The saved playlist and group membership stay unchanged.`;
+          ? 'Replace each then-current queue and start the first selected track, with shuffle and repeat off.'
+          : 'Add to each group’s then-current queue without starting or resuming playback; the observed insertion points are shown below.';
+        return `Send these ${review.item.positions.length} tracks, in the order shown, from ${review.targets.sourceGroup.target} to ${count} existing group(s). ${action} The saved playlist and group membership stay unchanged. Each queue is checked again before one request; another controller can still change it after these reads.`;
       }
       if (review.item.kind === 'line_in') return `Play the analog input from ${review.item.room} in ${count} existing group(s) within one household. Each current source is replaced; queues and group membership remain available. Cable and signal state are not reported; start your source device yourself.`;
       if (review.mode !== 'play') return `Add this source to ${count} existing group(s) without starting or resuming playback. Each group uses its own queue and current occurrence, shown below.`;

@@ -1887,7 +1887,7 @@ const SourcePlayerRemote = (() => {
             if (pending.item.kind === 'sonos_playlist_tracks') {
               const tracks = el('ol', { class: 'source-selected-tracks', 'aria-label': 'Reviewed saved tracks in playback order' });
               renderSelectedTracks(tracks, pending.item, doc);
-              consent.append(tracks, el('p', { class: 'source-help', text: `Read from ${pending.targets.sourceGroup.target}. The exact saved occurrences are checked again. Every destination receives the order shown.${pending.mode === 'play' ? ' Playback starts with shuffle and repeat off.' : ' Current playback continues.'} The saved playlist stays unchanged.` }));
+              consent.append(tracks, el('p', { class: 'source-help', text: `Read from ${pending.targets.sourceGroup.target}. The exact saved occurrences are checked again. Every destination receives the order shown in its then-current queue.${pending.mode === 'play' ? ' Playback starts with shuffle and repeat off.' : ' Current playback continues.'} The saved playlist stays unchanged. Each queue is checked again before one request; another controller can still change it after these reads.` }));
             }
             consent.append(affected,
               ...(pending.item.kind === 'line_in' ? [el('p', { class: 'source-help', text: `Analog input from ${pending.item.room}, within one household. Existing queues and group membership remain available. Cable and signal state are not reported; start your source device yourself.` })] : []),

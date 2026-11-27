@@ -285,6 +285,7 @@ const SourceTargetsRemote = (() => {
   }
 
   function result(value, reviewed, player) {
+    let nativeNotes = [];
     if (reviewed.item?.kind === 'sonos_playlist_tracks') {
       const item = reviewed.item, mode = reviewed.mode === 'end' ? 'append' : reviewed.mode;
       const zone = reviewed.groups.length === 1 && (mode === 'play' || value?.queue_batch?.complete === true)
@@ -299,6 +300,7 @@ const SourceTargetsRemote = (() => {
         if (value.queue_batch != null) fail('The playback receipt contains an unexpected queue addition. Read the destinations before another action.');
       } else {
         if (value.batch != null || !value.queue_batch) fail('The daemon did not return the native selection’s per-group queue receipts. Read the queues before another add.');
+        nativeNotes = (value.notes || []).map(note => note.detail);
         value = value.queue_batch;
       }
     }
@@ -308,7 +310,11 @@ const SourceTargetsRemote = (() => {
     const queued = (value, group) => {
       if (['tracks', 'sonos_playlist_tracks'].includes(reviewed.item?.kind)) {
         const before = reviewed.entries.find(entry => entry.group === group)?.before.queue;
-        if (!before || value?.count !== reviewed.item.tracks.length || value.first > before.total + 1) bad();
+        // Native room sets bind the audience, not every browser queue token.
+        // Their confirmed offsets can reflect queue growth after these reads.
+        const unboundNative = reviewed.item.kind === 'sonos_playlist_tracks' && groups.length > 1;
+        if (!before || value?.count !== reviewed.item.tracks.length
+            || (!unboundNative && value.first > before.total + 1)) bad();
       }
       return player.queued(value, group);
     };
@@ -339,7 +345,7 @@ const SourceTargetsRemote = (() => {
     if (!value.logged) details.push('The action was not logged; no batch undo is available.');
     else if (!value.undoable) details.push('No safe batch undo is available. Inspect the queues before another add.');
     if (value.failed.length) details.push('Check each failed group before another action. Do not repeat the whole batch.');
-    return Object.freeze({ status: 'accepted', detail: details.join('\n'), partial: !value.complete, complete: value.complete,
+    return Object.freeze({ status: 'accepted', detail: [...details, ...nativeNotes].join('\n'), partial: !value.complete, complete: value.complete,
       logged: value.logged, undoable: value.undoable });
   }
   return { routes, query, nameKey, prepareNative, prepareTracks, reviewGroups, lineInCatalog, inspect, request, result, failure, suggestions: R.suggestionsOf };

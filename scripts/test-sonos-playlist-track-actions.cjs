@@ -529,6 +529,74 @@ for (const kind of ['phone', 'dashboard']) {
     assert.match(f.api.state.result.detail, /Office@S1/);
   });
 
+  test(kind + ': native room-set receipts retain actual offsets when a queue grows after browser reads', async () => {
+    for (const mode of ['next', 'end']) {
+      const f = await selectedDestinations(mode), reviewed = f.api.state.pending;
+      assert.equal(Object.hasOwn(reviewed.body, 'expected_queue_revision'), false);
+      f.write((url, body, write) => {
+        const value = write(url, body); value.queue_batch.added[1].queue.first = 42; return value;
+      });
+      assert.equal(await f.confirm(reviewed), true);
+      assert.equal(f.api.state.result.complete, true);
+      assert.match(f.api.state.result.detail, /Office@S1:.*position 42/);
+      assert.equal(await f.confirm(reviewed), false); assert.equal(f.writes().length, 1);
+    }
+  });
+
+  test(kind + ': native queue proof and occurrence counts still reject contradictory insertion receipts', async () => {
+    for (const single of [false, true]) {
+      const f = await selectedDestinations('next');
+      if (single) { f.api.edit('selectionTarget', 'Office@S1'); await f.api.reviewTracks('next'); }
+      const reviewed = f.api.state.pending;
+      assert.equal(Object.hasOwn(reviewed.body, 'expected_queue_revision'), single);
+      f.write((url, body, write) => {
+        const value = write(url, body), queue = value.queue_batch.added.at(-1).queue;
+        if (single) queue.first = 42; else queue.count = 1;
+        return value;
+      });
+      assert.equal(await f.confirm(reviewed), false);
+      assert.equal(f.api.state.result.status, 'uncertain');
+      assert.equal(await f.confirm(reviewed), false); assert.equal(f.writes().length, 1);
+    }
+  });
+
+  test(kind + ': complete and partial native queue receipts retain command-wide notes', async () => {
+    for (const partial of [false, true]) {
+      const f = await selectedDestinations('end');
+      f.write((url, body, write) => {
+        const value = write(url, body);
+        value.notes.push({ code: 'POLICY', detail: 'Native command policy receipt retained.' });
+        if (partial) {
+          const failed = value.queue_batch.added.pop();
+          value.queue_batch.complete = false; value.queue_batch.undoable = false;
+          value.queue_batch.failed.push({ household: failed.household, coordinator: failed.coordinator, zone: 'Office',
+            error: { code: 'OUTCOME_UNCERTAIN', detail: 'Office reply was lost.', retryable: false } });
+        }
+        return value;
+      });
+      assert.equal(await f.confirm(), true);
+      assert.equal(f.api.state.result.partial, partial);
+      assert.match(f.api.state.result.detail, /Native command policy receipt retained/);
+      if (partial) assert.match(f.api.state.result.detail, /Office@S1: OUTCOME_UNCERTAIN/);
+      assert.equal(f.writes().length, 1);
+    }
+  });
+
+  test(kind + ': native receipts reject unrelated playback and queue envelopes', async () => {
+    for (const mode of ['play', 'next']) {
+      const f = await selectedDestinations(mode), reviewed = f.api.state.pending;
+      f.write((url, body, write) => {
+        const value = write(url, body);
+        if (mode === 'play') value.queue_batch = {};
+        else value.batch = { complete: true, results: [] };
+        return value;
+      });
+      assert.equal(await f.confirm(reviewed), false);
+      assert.equal(f.api.state.result.status, 'uncertain');
+      assert.equal(await f.confirm(reviewed), false); assert.equal(f.writes().length, 1);
+    }
+  });
+
   test(kind + ': destination edits keep ordered selections and retire the old review', async () => {
     const f = await selectedDestinations(), prior = f.api.state.pending, page = f.api.state.contents;
     f.api.edit('selectionTarget', 'Office@S1');
