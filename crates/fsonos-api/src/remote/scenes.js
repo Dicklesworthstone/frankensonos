@@ -1,4 +1,4 @@
-// Saved scenes: inspect, capture, apply with fade, and remove through reviewed writes.
+// Saved scenes: inspect, capture, edit complete typed definitions, apply and remove.
 'use strict';
 
 const ScenesRemote = (() => {
@@ -310,6 +310,109 @@ const ScenesRemote = (() => {
       group: { target: group.target, members: [...group.members].sort() } });
   }
 
+  // Captured queues and URI metadata deliberately do not have an authored
+  // round trip. Never open a partial editor that would discard those fields.
+  function editingIssue(scene) {
+    if (!validRevision(scene.revision)) return 'Refresh scenes from a daemon that provides editing revisions.';
+    if (!text(scene.name, 64) || scene.name !== scene.name.trim()) return 'This saved name cannot be retained by the scene editor.';
+    if (scene.groups.length > 32) return 'This scene has more than the editor’s 32 groups. Its saved definition is unchanged.';
+    for (const group of scene.groups) {
+      const kind = group.source.kind;
+      if (['queue', 'queue_backup'].includes(kind)) return 'Editing is unavailable for captured queue bookmarks and backups: the public save API cannot preserve their captured contents and identity.';
+      if (kind === 'uri') return 'Editing is unavailable for captured URI sources: the public scene view omits playback metadata that a replacement could lose.';
+      if (kind === 'favorite') return 'Editing is unavailable for favorite scenes: replacing their definition would resolve the favorite again instead of preserving its saved source identity.';
+      if (!['keep', 'dj', 'tracks', 'sonos_playlist'].includes(kind)) return 'This scene contains a source the editor cannot preserve.';
+      if (kind !== 'keep' && group.playing == null) return 'This scene has an implicit source playback setting that the replacement API cannot retain exactly.';
+    }
+    if (!scene.groups.length && !Object.keys(scene.volumes).length && !Object.keys(scene.mutes).length) {
+      return 'An empty saved definition cannot be edited: an empty save request captures the house instead.';
+    }
+    return '';
+  }
+
+  function draftFromScene(scene, references, nextId) {
+    const issue = editingIssue(scene);
+    if (issue) throw new Error(issue);
+    const target = ref => {
+      if (!Object.hasOwn(references, ref)) throw new Error('A saved room could not be resolved exactly. The scene was not changed.');
+      return references[ref].target;
+    };
+    const used = new Set();
+    const settings = (values, field, convert) => {
+      const mapped = new Set();
+      return Object.fromEntries(Object.entries(values).map(([ref, value]) => {
+        const room = target(ref);
+        if (mapped.has(room)) throw new Error(`The scene repeats a physical room in its ${field} settings. Its saved definition is unchanged.`);
+        mapped.add(room);
+        return [room, convert(value)];
+      }));
+    };
+    return freeze({ references, groups: scene.groups.map(group => {
+      const source = group.source;
+      const coordinator = target(group.coordinator), members = group.members.map(target);
+      for (const room of [coordinator, ...members]) {
+        if (used.has(room)) throw new Error('The scene repeats a physical room in its groups. Its saved definition is unchanged.');
+        used.add(room);
+      }
+      const draft = { id: nextId(), coordinator, members,
+        roomReferences: { coordinator: group.coordinator,
+          members: Object.fromEntries(group.members.map(ref => [target(ref), ref])) },
+        kind: source.kind, value: source.kind === 'dj' ? source.mood || '' : source.name || '',
+        playing: group.playing == null ? 'keep' : group.playing ? 'play' : 'pause' };
+      if (source.kind === 'tracks') {
+        draft.importedTracks = source.tracks;
+        draft.value = source.tracks.map(track => track.source_uri
+          + (track.title ? ` | ${track.title.replace(/[\r\n]+/g, ' ')}` : '')).join('\n');
+      }
+      if (source.kind === 'sonos_playlist') draft.savedPlaylist = source.playlist;
+      if (source.kind === 'dj') {
+        draft.originalDirection = source.direction ?? null;
+        draft.directionEdited = [];
+        const direction = { ...directionApi().draft() };
+        for (const [key, value] of Object.entries(source.direction?.constraints || {})) {
+          direction[key] = Array.isArray(value) ? value.join('\n') : typeof value === 'boolean' ? value : String(value);
+        }
+        if (source.direction?.for_secs != null && source.direction.for_secs % 60 === 0) {
+          direction.minutes = String(source.direction.for_secs / 60);
+        }
+        draft.direction = direction;
+      }
+      return draft;
+    }), volumes: settings(scene.volumes, 'volume', String),
+    mutes: settings(scene.mutes, 'mute', value => value ? 'muted' : 'unmuted'),
+    volumeReferences: Object.fromEntries(Object.keys(scene.volumes).map(ref => [target(ref), ref])),
+    muteReferences: Object.fromEntries(Object.keys(scene.mutes).map(ref => [target(ref), ref])) });
+  }
+
+  function savedDirection(group, mood) {
+    if (!Object.hasOwn(group, 'originalDirection')) return directionApi().fromDraft(group.direction ?? directionApi().draft(), mood);
+    const edited = group.directionEdited || [];
+    if (!edited.length) return group.originalDirection == null ? null : directionApi().read(group.originalDirection, mood);
+    // Patch only fields the person changed. An unrelated change must preserve
+    // exact seconds and individual names containing newlines or punctuation.
+    const constraints = { ...(group.originalDirection?.constraints || {}) };
+    const fields = edited.filter(key => key !== 'minutes');
+    const parsed = directionApi().fromDraft({ ...directionApi().draft(),
+      ...Object.fromEntries(fields.map(key => [key, group.direction[key]])) }, mood).constraints;
+    for (const key of fields) {
+      if (Object.hasOwn(parsed, key)) constraints[key] = parsed[key];
+      else delete constraints[key];
+    }
+    const result = { constraints };
+    if (group.originalDirection?.for_secs != null) result.for_secs = group.originalDirection.for_secs;
+    if (edited.includes('minutes')) {
+      const minutes = group.direction.minutes;
+      if (minutes === '') delete result.for_secs;
+      else {
+        if (!/^\d+$/.test(minutes) || !integer(Number(minutes), 1, 10080)) {
+          throw new Error('DJ duration must be 1–10080 whole minutes, or blank for until cleared.');
+        }
+        result.for_secs = Number(minutes) * 60;
+      }
+    }
+    return directionApi().read(result, mood);
+  }
+
   function definition(draft, rooms, name) {
     name = name.trim();
     if (!text(name, 64)) throw new Error('Use a scene name of 1 to 64 characters.');
@@ -344,7 +447,10 @@ const ScenesRemote = (() => {
         if (!text(g.value.trim(), 128)) throw new Error('The DJ mood name is too long.');
         source.mood = g.value.trim();
       }
-      if (g.kind === 'dj') source.direction = directionApi().fromDraft(g.direction ?? directionApi().draft(), source.mood);
+      if (g.kind === 'dj') {
+        const direction = savedDirection(g, source.mood);
+        if (direction != null) source.direction = direction;
+      }
       return { coordinator: leader.target, members: [...g.members], source,
         ...(g.playing === 'keep' ? {} : { playing: g.playing === 'play' }) };
     });
@@ -417,6 +523,10 @@ const ScenesRemote = (() => {
         if (!active()) return null;
         const room = rooms.find((r) => r.target === group.coordinator);
         if (identity.room !== room.room || identity.household !== room.household) throw new Error('The playlist’s selected room changed.');
+        const saved = draft.groups[i].savedPlaylist;
+        if (saved && (saved.household !== identity.household || saved.id !== chosen.id || saved.title !== chosen.title)) {
+          throw new Error('The saved playlist identity changed. Choose its replacement explicitly before saving the scene.');
+        }
         dependencies.push({ kind: 'sonos_playlist', zone: group.coordinator, id: chosen.id, title: chosen.title, identity });
         preview.groups[i].source = { kind: 'sonos_playlist', name: chosen.id,
           playlist: { household: room.household, id: chosen.id, title: chosen.title } };
@@ -432,6 +542,31 @@ const ScenesRemote = (() => {
     }
     const targets = new Set(prepared.body.groups.flatMap((g) => [g.coordinator, ...g.members])
       .concat(Object.keys(prepared.body.volumes), Object.keys(prepared.body.mutes)));
+    if (draft.references) {
+      const retained = new Set();
+      const reference = (target, original) => {
+        if (original == null || draft.references[original]?.target !== target) return target;
+        retained.add(original);
+        return original;
+      };
+      prepared.body.groups = prepared.body.groups.map((group, index) => {
+        const saved = draft.groups[index].roomReferences;
+        return { ...group, coordinator: reference(group.coordinator, saved?.coordinator),
+          members: group.members.map(target => reference(target, saved?.members[target])) };
+      });
+      for (const [field, saved] of [['volumes', draft.volumeReferences], ['mutes', draft.muteReferences]]) {
+        prepared.body[field] = Object.fromEntries(Object.entries(prepared.body[field])
+          .map(([target, value]) => [reference(target, saved?.[target]), value]));
+      }
+      for (const original of retained) {
+        const saved = draft.references[original];
+        const identity = resolvedRoom(await call('sceneTargets', { query: { target: original } }), original);
+        if (!active()) return null;
+        if (JSON.stringify(identity) !== JSON.stringify(saved.identity)) {
+          throw new Error('A saved room reference changed. Refresh scenes and open the edit again.');
+        }
+      }
+    }
     return freeze({ ...prepared, dependencies, preview: sceneOf({ name: prepared.name, saved: 0, ...preview }),
       rooms: rooms.filter((r) => targets.has(r.target)) });
   }
@@ -459,8 +594,13 @@ const ScenesRemote = (() => {
       }
       mapped.set(target, room.target);
     }
-    if (new Set(mapped.values()).size !== mapped.size) throw new Error('The saved scene repeats a room identity.');
-    const settings = (values) => Object.fromEntries(Object.entries(values).map(([room, value]) => [mapped.get(room), value]));
+    const groupRooms = saved.groups.flatMap(group => [group.coordinator, ...group.members]).map(room => mapped.get(room));
+    if (new Set(groupRooms).size !== groupRooms.length) throw new Error('The saved scene repeats a room identity in its groups.');
+    const settings = values => {
+      const entries = Object.entries(values).map(([room, value]) => [mapped.get(room), value]);
+      if (new Set(entries.map(([room]) => room)).size !== entries.length) throw new Error('The saved scene repeats a room identity in its settings.');
+      return Object.fromEntries(entries);
+    };
     const comparable = { ...saved,
       groups: saved.groups.map((g) => ({ ...g, coordinator: mapped.get(g.coordinator), members: g.members.map((m) => mapped.get(m)) })),
       volumes: settings(saved.volumes), mutes: settings(saved.mutes) };
@@ -499,7 +639,7 @@ const ScenesRemote = (() => {
     let disposed = false;
     let sourceRequest = 0;
     const state = { open: false, rows: [], loaded: false, loading: false, writing: false,
-      pending: null, name: '', fade: '0', backupQueues: false, message: '', result: null, draft: null, rooms: null, saved: null,
+      pending: null, name: '', fade: '0', backupQueues: false, message: '', result: null, draft: null, rooms: null, saved: null, editing: null,
       sourceChoices: Object.create(null) };
     const publish = () => { if (!disposed) { try { changed(state); } catch (_) {} } };
     const current = (version) => !disposed && state.open && epoch === version;
@@ -509,7 +649,7 @@ const ScenesRemote = (() => {
       if (disposed || state.writing) return false;
       state.open = true;
       invalidate();
-      state.draft = state.rooms = null;
+      state.draft = state.rooms = state.editing = null;
       state.sourceChoices = Object.create(null);
       const version = epoch;
       state.loading = true;
@@ -530,7 +670,7 @@ const ScenesRemote = (() => {
     }
 
     function editName(value) {
-      if (disposed || !state.open || state.loading || state.writing) return;
+      if (disposed || !state.open || state.loading || state.writing || state.editing) return;
       ++epoch; state.pending = null; state.name = String(value ?? ''); publish();
     }
     function editFade(value) {
@@ -573,7 +713,7 @@ const ScenesRemote = (() => {
       let selection;
       try { selection = librarySelection(value); } catch (_) { return false; }
       state.open = true; invalidate();
-      state.rooms = null; state.name = ''; state.result = state.saved = null; state.sourceChoices = Object.create(null);
+      state.rooms = state.editing = null; state.name = ''; state.result = state.saved = null; state.sourceChoices = Object.create(null);
       const version = epoch;
       state.loading = true; state.message = 'Reading saved scenes and checking the selected listening group…'; publish();
       void (async () => {
@@ -598,7 +738,7 @@ const ScenesRemote = (() => {
       return true;
     }
     async function beginDefinition() {
-      if (!editable() || state.pending) return false;
+      if (!editable() || state.pending || state.editing) return false;
       const version = ++epoch;
       state.loading = true;
       state.message = '';
@@ -609,10 +749,46 @@ const ScenesRemote = (() => {
         if (!current(version)) return false;
         if (!rooms.length) throw new Error('No rooms are available for a custom scene.');
         state.rooms = rooms;
+        state.editing = null;
         state.draft = freeze({ groups: [], volumes: {}, mutes: {} });
         return true;
       } catch (e) {
         if (current(version)) state.message = errorText(e);
+        return false;
+      } finally {
+        if (current(version)) { state.loading = false; publish(); }
+      }
+    }
+    async function beginEdit(name) {
+      if (!editable() || state.pending || state.draft || typeof name !== 'string') return false;
+      const row = state.rows.find(scene => nameKey(scene.name) === nameKey(name));
+      if (!row) return false;
+      const issue = editingIssue(row);
+      if (issue) { state.message = issue; publish(); return false; }
+      const version = ++epoch;
+      state.loading = true; state.message = 'Reading the saved scene and its exact room identities…';
+      state.sourceChoices = Object.create(null); state.result = state.saved = null; publish();
+      try {
+        const [value, zones] = await Promise.all([call('scene', { params: { name: row.name } }), call('zones')]);
+        if (!current(version)) return false;
+        const exact = sceneOf(value), rooms = roomsOf(zones);
+        if (signature(exact) !== signature(row)) throw new Error('That scene changed. Refresh scenes before editing it.');
+        const references = Object.create(null);
+        const used = new Set(exact.groups.flatMap(group => [group.coordinator, ...group.members])
+          .concat(Object.keys(exact.volumes), Object.keys(exact.mutes)));
+        for (const reference of used) {
+          const identity = resolvedRoom(await call('sceneTargets', { query: { target: reference } }), reference);
+          if (!current(version)) return false;
+          const room = rooms.find(room => room.room === identity.room && room.household === identity.household);
+          if (!room) throw new Error('A saved room is unavailable. The scene was not changed.');
+          references[reference] = { target: room.target, identity };
+        }
+        state.draft = draftFromScene(exact, references, () => ++groupId);
+        state.rooms = rooms; state.name = exact.name; state.editing = exact;
+        state.message = 'Edit the saved definition, then review it. Saving leaves playback unchanged; routines using this scene will use its new definition on their next run.';
+        return true;
+      } catch (error) {
+        if (current(version)) state.message = errorText(error);
         return false;
       } finally {
         if (current(version)) { state.loading = false; publish(); }
@@ -643,7 +819,12 @@ const ScenesRemote = (() => {
       let next = { ...group, [key]: key === 'members' ? [...value] : value };
       if (['coordinator', 'kind', 'value'].includes(key)) delete next.choice;
       if (['coordinator', 'kind', 'value'].includes(key)) delete next.importedTracks;
+      if (['coordinator', 'kind', 'value'].includes(key)) delete next.savedPlaylist;
+      if (['coordinator', 'kind'].includes(key)) {
+        delete next.originalDirection; delete next.directionEdited;
+      }
       if (key === 'coordinator') {
+        delete next.roomReferences;
         next = { ...next, members: [], kind: 'keep', value: '', playing: 'keep' };
         delete next.direction;
       }
@@ -659,7 +840,7 @@ const ScenesRemote = (() => {
       if (!editable() || !state.draft?.groups.includes(group) || group.kind !== 'dj') return false;
       try {
         const direction = directionApi().editDraft(group.direction, field, value);
-        const next = { ...group, direction };
+        const next = { ...group, direction, directionEdited: [...new Set([...(group.directionEdited || []), field])] };
         return changeDraft({ ...state.draft, groups: state.draft.groups.map((g) => g === group ? next : g) });
       } catch (e) {
         state.message = errorText(e);
@@ -720,6 +901,10 @@ const ScenesRemote = (() => {
       // item displayed for this draft group's currently selected destination.
       if (choice === null ? group.kind !== 'dj' : choices?.phase !== 'ready' || !choices.items.includes(choice)) return false;
       const next = { ...group, value: choice?.id || '', choice };
+      delete next.savedPlaylist;
+      if (group.kind === 'dj' && Object.hasOwn(group, 'originalDirection') && group.originalDirection == null) {
+        delete next.originalDirection; delete next.directionEdited;
+      }
       return changeDraft({ ...state.draft, groups: state.draft.groups.map((g) => g === group ? next : g) });
     }
     function removeGroup(group) {
@@ -733,7 +918,7 @@ const ScenesRemote = (() => {
     }
     function discardDefinition() {
       if (disposed || state.writing) return false;
-      ++epoch; state.pending = null; state.loading = false; state.draft = state.rooms = null;
+      ++epoch; state.pending = null; state.loading = false; state.draft = state.rooms = state.editing = null;
       state.sourceChoices = Object.create(null);
       publish();
       return true;
@@ -748,8 +933,11 @@ const ScenesRemote = (() => {
         const prepared = await prepareDefinition(state.draft, state.rooms, state.name, call, () => current(version));
         if (!current(version) || !prepared) return false;
         const row = state.rows.find((r) => nameKey(r.name) === nameKey(prepared.name)) || null;
+        if (state.editing && (!row || signature(row) !== signature(state.editing) || prepared.name !== state.editing.name)) {
+          throw new Error('The saved scene no longer matches this edit. Refresh scenes before editing it again.');
+        }
         state.pending = Object.freeze({ action: 'define', name: prepared.name, prepared,
-          draft: state.draft, row, expectedRevision: revisionOf(row) });
+          draft: state.draft, row, expectedRevision: revisionOf(row), editing: state.editing != null });
         return true;
       } catch (e) {
         if (current(version)) state.message = errorText(e);
@@ -804,6 +992,9 @@ const ScenesRemote = (() => {
           const saved = sceneOf(await call('sceneSave', { params: { name: reviewed.name },
             body: { ...(prepared ? prepared.body : reviewed.backupQueues ? { backup_queues: true } : {}),
               expected_revision: reviewed.expectedRevision } }));
+          if (reviewed.editing && !validRevision(saved.revision)) {
+            throw new Error('The reply did not include a valid revision for the edited scene.');
+          }
           if (prepared) await savedDefinition(saved, prepared, call);
           if (saved.name !== reviewed.name) throw new Error('The reply did not confirm the reviewed scene name.');
           if (!prepared && saved.groups.some((g) => g.source.kind === (reviewed.backupQueues ? 'queue' : 'queue_backup'))) {
@@ -811,7 +1002,7 @@ const ScenesRemote = (() => {
           }
           if (!disposed) {
             state.saved = saved;
-            state.draft = state.rooms = null;
+            state.draft = state.rooms = state.editing = null;
             state.sourceChoices = Object.create(null);
             state.message = prepared ? `Saved custom scene “${saved.name}”. No playback was changed. Refresh and review it before applying.`
               : `Captured the current house as “${saved.name}”. Refresh before another scene change.`;
@@ -866,9 +1057,9 @@ const ScenesRemote = (() => {
     }
 
     return { state, refresh, editName, editFade, editBackupQueues, review, cancel, confirm,
-      beginDefinition, offerSelection, addGroup, editGroup, editDirection, removeGroup, editRoom, discardDefinition, reviewDefinition,
+      beginDefinition, beginEdit, offerSelection, addGroup, editGroup, editDirection, removeGroup, editRoom, discardDefinition, reviewDefinition,
       choicesFor, loadSources, filterSources, pageSources, chooseSource,
-      close() { state.open = false; invalidate(); state.draft = state.rooms = null; state.sourceChoices = Object.create(null); publish(); },
+      close() { state.open = false; invalidate(); state.draft = state.rooms = state.editing = null; state.sourceChoices = Object.create(null); publish(); },
       dispose() { disposed = true; ++epoch; } };
   }
 
@@ -891,14 +1082,16 @@ const ScenesRemote = (() => {
       const group = `Group ${index + 1}`;
       const section = el('section', { class: 'scene-music-picker', 'aria-label': `${group} music choices` });
       const selected = g.choice || choices?.items.find((item) => item.id === g.value);
-      const selectedName = !dj ? selected?.title || g.value : g.value || 'Automatic DJ';
+      const selectedName = !dj ? selected?.title || g.savedPlaylist?.title || g.value : g.value || 'Automatic DJ';
       if (selectedName) {
         const summary = el('div', { class: 'scene-source-selected', 'aria-label': `${group} selected source` },
           el('span', { class: 'scene-source-eyebrow', text: favorites ? 'Selected favorite' : playlists ? 'Selected saved playlist' : 'Selected DJ mood' }),
           el('strong', { text: selectedName }));
         if (selected?.description) summary.append(el('span', { text: selected.description }));
         if (dj && !g.value) summary.append(el('span', {
-          text: 'Use the house’s time-of-day program with the filters below. Empty settings clear temporary steering when this scene is applied.',
+          text: Object.hasOwn(g, 'originalDirection') && g.originalDirection == null && !g.directionEdited?.length
+            ? 'Keep the scene’s existing DJ start behavior and the group’s current steering. Choose Automatic DJ to explicitly return to the program on recall.'
+            : 'Use the house’s time-of-day program with the filters below. Empty settings clear temporary steering when this scene is applied.',
         }));
         if (choices?.phase === 'ready' && g.value && !choices.items.some((item) => item.id === g.value
             && (!g.choice || JSON.stringify(item) === JSON.stringify(g.choice)))) {
@@ -970,8 +1163,9 @@ const ScenesRemote = (() => {
     }
     function definitionForm(s) {
       const form = el('section', { class: 'scene-definition', 'aria-label': 'Custom scene definition' },
-        el('h3', { text: 'Build a custom scene' }),
+        el('h3', { text: s.editing ? `Edit scene “${s.editing.name}”` : 'Build a custom scene' }),
         el('p', { text: 'Only save a definition here; no speaker is changed. Declare exact groups, or leave groups empty for a volume/mute-only scene. Unlisted members of a declared group will detach when it is applied.' }));
+      if (s.editing) form.append(el('p', { text: 'The saved name stays the same so existing routines keep using this scene. Changes take effect on its next recall or routine run. Cancel leaves the saved scene unchanged.' }));
       const busy = !s.loaded || s.loading || s.writing || !!s.pending;
       const select = (label, key, value, choices, work, unavailable = false) => {
         const node = el('select', { 'aria-label': label, 'data-scene-focus': key, disabled: busy || unavailable,
@@ -1032,6 +1226,16 @@ const ScenesRemote = (() => {
           direction.setAttribute('data-scene-direction-id', String(g.id));
           direction.setAttribute('aria-label', `Group ${i + 1} DJ direction`);
           field.append(direction);
+          if (Object.hasOwn(g, 'originalDirection')) {
+            if (g.originalDirection == null && !g.directionEdited?.length) field.append(el('p', {
+              text: 'This scene’s existing DJ start behavior is retained. Editing a direction field explicitly replaces its temporary steering on recall.' }));
+            if (g.originalDirection?.for_secs % 60 && !g.directionEdited?.includes('minutes')) field.append(el('p', {
+              text: `Its exact ${g.originalDirection.for_secs}-second direction duration is retained until you edit the duration field.` }));
+            if (Object.entries(g.originalDirection?.constraints || {}).some(([key, values]) => Array.isArray(values)
+                && !g.directionEdited?.includes(key) && values.some(value => typeof value === 'string' && /[\r\n]/.test(value)))) {
+              field.append(el('p', { text: 'Full saved names, including embedded line breaks, are retained until you edit their field.' }));
+            }
+          }
         }
         field.append(select(`Group ${i + 1} playback`, `playing-${g.id}`, g.playing,
           [...(g.kind === 'keep' ? [['keep', 'Leave playback unchanged']] : []), ['play', 'Playing'], ['pause', 'Paused']],
@@ -1054,8 +1258,8 @@ const ScenesRemote = (() => {
             (v) => control.editRoom(room.target, 'mutes', v))));
       }
       form.append(settings, el('div', { class: 'row' },
-        button('Cancel custom scene', 'discard-definition', () => control.discardDefinition(), s.writing),
-        button('Review custom scene', 'review-definition', () => reviewCustom(), busy)));
+        button(s.editing ? 'Cancel edit' : 'Cancel custom scene', 'discard-definition', () => control.discardDefinition(), s.writing),
+        button(s.editing ? 'Review changes' : 'Review custom scene', 'review-definition', () => reviewCustom(), busy)));
       return form;
     }
     let reviewFocus = null;
@@ -1088,7 +1292,7 @@ const ScenesRemote = (() => {
           button('New custom scene', 'new-definition', () => control.beginDefinition(), !s.loaded || s.loading || s.writing || !!s.pending || !!s.draft)));
       const name = el('input', { type: 'text', maxlength: 128, value: s.name,
         placeholder: 'Scene name', 'aria-label': 'Scene name', 'data-scene-focus': 'name',
-        disabled: s.loading || s.writing, oninput: (e) => control.editName(e.target.value) });
+        disabled: s.loading || s.writing || !!s.editing, oninput: (e) => control.editName(e.target.value) });
       const backup = el('input', { type: 'checkbox', checked: s.backupQueues,
         'data-scene-focus': 'backup-queues', disabled: s.loading || s.writing || !!s.draft,
         onchange: (e) => control.editBackupQueues(e.target.checked) });
@@ -1138,6 +1342,7 @@ const ScenesRemote = (() => {
       }
       if (s.loaded && !s.rows.length) body.append(el('p', { text: 'No saved scenes yet.' }));
       for (const row of s.rows) {
+        const issue = editingIssue(row);
         const fade = el('input', { type: 'number', min: 0, max: 60, step: 1, value: s.fade,
           'aria-label': `Fade seconds for ${row.name}`, 'data-scene-focus': `fade-${row.name}`,
           disabled: !s.loaded || s.loading || s.writing || !!s.pending || !!s.draft, oninput: (e) => control.editFade(e.target.value) });
@@ -1146,7 +1351,9 @@ const ScenesRemote = (() => {
           el('div', { class: 'scene-fade' }, el('label', { text: 'Apply fade (0–60 s)' }), fade),
           el('div', { class: 'row' },
             button('Review apply', `apply-${row.name}`, () => control.review('apply', row.name), !s.loaded || s.loading || s.writing || !!s.pending || !!s.draft),
+            button('Edit saved scene', `edit-${row.name}`, () => control.beginEdit(row.name), !!issue || !s.loaded || s.loading || s.writing || !!s.pending || !!s.draft),
             button('Review delete', `delete-${row.name}`, () => control.review('delete', row.name), !s.loaded || s.loading || s.writing || !!s.pending || !!s.draft))));
+        if (issue) body.append(el('p', { class: 'small-note', text: `${row.name}: ${issue}` }));
       }
       // Keep keyboard review usable without stealing focus from elsewhere.
       const key = focus && (s.pending ? 'cancel' : focus === 'cancel' ? reviewFocus : focus === 'confirm' ? 'refresh' : focus);
@@ -1182,7 +1389,7 @@ const ScenesRemote = (() => {
     } };
   }
 
-  return { routes, sceneOf, scenesOf, signature, detail, appliedOf, roomsOf, sourceUri, trackSelection, librarySelection, definition, prepareDefinition,
+  return { routes, sceneOf, scenesOf, signature, detail, appliedOf, roomsOf, sourceUri, trackSelection, librarySelection, editingIssue, definition, prepareDefinition,
     sourceChoicesOf, sourcePage, model, panel };
 })();
 

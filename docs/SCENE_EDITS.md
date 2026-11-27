@@ -27,6 +27,35 @@ Names retain the daemon's case-equivalence rules. Conditional writes work both
 through the selected daemon and with `--direct`. A failed remote request
 never writes a fallback copy in the CLI's local store.
 
+## Phone remote
+
+Open **Scenes**, refresh the saved definitions, and choose **Edit saved scene**.
+The editor restores the existing groups, playback choices, room volumes and
+mutes. It supports DJ sources and directions, ordered tracks or episodes,
+native saved playlists, and groups that keep their current source. Change the
+desired fields, choose **Review changes**, then confirm the replacement.
+Editing and saving do not change current playback.
+
+The saved name stays fixed so existing routines continue using the scene.
+Unchanged fields retain their original values, including room reference scope,
+repeated tracks and full titles, exact DJ expiry in seconds, and the difference
+between legacy retained steering and an explicit automatic program reset.
+For a legacy scene without a direction, choosing **Automatic DJ** explicitly
+replaces retained steering with automatic program behavior. Native
+playlist references retain their household, ID and title; a changed playlist
+requires an explicit replacement selection.
+
+Review and confirmation recheck the saved scene, room identities and source
+dependencies. The single save carries the original `expected_revision`; a
+competing edit requires a new review. Cancel leaves the stored scene unchanged,
+and a lost or incomplete acknowledgement remains uncertain without replay.
+
+Scenes containing captured queue bookmarks or backups, raw URI playback
+metadata, or resolved favorite sources show why editing is unavailable. Their
+public replacement representation cannot preserve every captured field, so
+the editor does not offer a partial replacement. The dashboard retains its
+separate capture and recall workflow.
+
 ## Native Apple remote
 
 The iPhone, iPad and Mac remote retains the saved scene's revision through its
@@ -70,6 +99,17 @@ the start of the request. Applying a scene retains its existing separate
 playback contract.
 
 ## Regression coverage
+
+Phone editor coverage runs with:
+
+```bash
+node --test scripts/test-scene-editing.cjs scripts/test-remote-scenes.cjs \
+  scripts/test-dashboard-scenes.cjs scripts/test-schedule-editing.cjs
+```
+
+The editor tests exercise the actual panel's edit, review and save flow, exact
+typed-definition round trips, room scopes, DJ fields and expiry, repeated
+tracks, source replacement, concurrent edits, cancellation and uncertain saves.
 
 The CLI/MCP regression cases exercise create-only authoring, matching
 replacement, stale captures and queue backups, stale deletion, successful

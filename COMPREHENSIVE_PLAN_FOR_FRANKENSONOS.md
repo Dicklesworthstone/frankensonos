@@ -1624,6 +1624,17 @@ The focused phone/dashboard suite passes all 140 tests, including final-write
 conflicts and retained review proofs. New Rust storage, HTTP and public undo
 regressions remain unexecuted after local dependency compilation was terminated.
 
+The phone remote now edits complete supported saved definitions in place.
+Existing groups, playback choices, volumes, mutes, DJ direction, ordered tracks
+and native playlist references populate the editor, while the saved name stays
+fixed for routines. Unchanged fields retain exact room reference scope, DJ
+expiry seconds, legacy direction absence, track order and repeated occurrences.
+Review and confirmation recheck the saved revision, room identities and source
+dependencies before one conditional save, without changing music. Captured
+queue, URI-metadata and resolved-favorite sources remain unavailable for editing
+because the public replacement API cannot preserve all of their stored fields.
+Focused Node tests cover the shipped panel and conditional write path.
+
 Authored `kind: tracks` sources now retain 1–10 concrete Spotify track or
 episode identities with exact order, repeated occurrences and optional titles.
 CLI, HTTP and MCP author and expose the full sequence; the web custom scene
