@@ -393,6 +393,29 @@ private enum MusicLibraryMode: String, CaseIterable {
                     }.buttonStyle(.bordered)
                 }
             }
+            VStack(alignment: .leading, spacing: 8) {
+                Text("Send selection to").font(.subheadline.weight(.semibold))
+                TextField("Source group, room, or saved alias", text: Binding(
+                    get: { model.sonosPlaylistTracks.target },
+                    set: { model.changeSonosPlaylistDestination($0, selection: selection.id) }
+                )).textFieldStyle(.roundedBorder).disabled(!ready)
+                Menu {
+                    Button("Source group · \(zone.title)") {
+                        model.changeSonosPlaylistDestination("", selection: selection.id)
+                    }
+                    Button("Every group in \(zone.household)") {
+                        model.changeSonosPlaylistDestination("all@\(zone.household)", selection: selection.id)
+                    }
+                    ForEach((model.house?.snapshot?.zones ?? []).filter { $0.household == zone.household }) { destination in
+                        Button("\(destination.title) · \(destination.household)") {
+                            model.changeSonosPlaylistDestination(destination.id.address, selection: selection.id)
+                        }
+                    }
+                } label: { Label("Choose destination groups", systemImage: "speaker.wave.2") }
+                    .buttonStyle(.bordered).disabled(!ready)
+                Text("Choose groups in this household, or type a saved alias. Each group receives the selection once. The saved playlist stays anchored to its original room.")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
             Menu {
                 ForEach(SonosPlaylistAction.allCases, id: \.self) { action in
                     Button(action.title) {
@@ -402,7 +425,7 @@ private enum MusicLibraryMode: String, CaseIterable {
             } label: {
                 Label("Review selected tracks", systemImage: "play.circle").frame(minHeight: 32)
             }.buttonStyle(.borderedProminent).disabled(!ready || model.panelProblem != nil)
-            Text("Play now replaces the queue in this order with shuffle and repeat off. Queue next and Add to end leave playback alone. Review checks every selected occurrence and the destination queue again.")
+            Text("Play now replaces each destination queue in this order with shuffle and repeat off. Queue next and Add to end leave playback alone. Review shows the affected groups and checks the selected source and destination observations again.")
                 .font(.caption).foregroundStyle(.secondary)
         }.remoteCard()
     }

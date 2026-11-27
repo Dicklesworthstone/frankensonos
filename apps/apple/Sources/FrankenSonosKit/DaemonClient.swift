@@ -248,6 +248,10 @@ public struct DaemonClient: Sendable {
         try Task.checkCancellation()
         do {
             let reply = try await transport.send(request)
+            if !(200..<300).contains(reply.status), case .sonosPlaylistTracks(let selection) = command,
+               let failure = try selection.failure(reply.data) {
+                throw failure
+            }
             try Self.check(reply)
             return try command.receipt(reply.data, in: zone)
         } catch {

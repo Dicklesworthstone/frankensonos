@@ -246,7 +246,7 @@ import FrankenSonosKit
         SonosPlaylistManagementNotice(bridge: bridge)
         FavoriteManagementNotice(bridge: bridge)
         if let result = model.result {
-            ResultNotice(title: result.title, scope: result.scene.map { "Scene: " + $0 + " · saved house scope" } ?? result.target.address,
+            ResultNotice(title: result.title, scope: result.destination ?? result.scene.map { "Scene: " + $0 + " · saved house scope" } ?? result.target.address,
                          detail: result.detail, warning: result.kind != .confirmed, dismiss: { model.dismissResult() })
         }
         if let result = model.scheduleResult {
@@ -561,8 +561,20 @@ import FrankenSonosKit
                     Text(review.command.explanation)
                     requestDetails
                     Divider()
-                    Text("Observed: \(review.state.playbackLabel) • \(review.state.track?.displayTitle ?? "No reported track")")
-                    if let volume = review.state.volume { Text("Room level: \(volume)") }
+                    if review.playlistDestinations.isEmpty {
+                        Text("Observed: \(review.state.playbackLabel) • \(review.state.track?.displayTitle ?? "No reported track")")
+                        if let volume = review.state.volume { Text("Room level: \(volume)") }
+                    } else {
+                        ForEach(review.playlistDestinations) { destination in
+                            VStack(alignment: .leading, spacing: 6) {
+                                Text("\(destination.zone.title) · \(destination.zone.household)").font(.headline)
+                                Text("Observed: \(destination.state.playbackLabel) • \(destination.state.track?.displayTitle ?? "No reported track")")
+                                Text("Queue: \(destination.queueTotal) entries" +
+                                    (destination.playing.map { " · current position \($0)" } ?? " · no current queue entry"))
+                                    .font(.callout).foregroundStyle(.secondary)
+                            }
+                        }
+                    }
                     if let favorite = review.favorite { Text("Favorite: \(favorite.title)") }
                     if let work = review.dj?.now { Text("DJ selection: \(work.composer) — \(work.title)") }
                     Divider()

@@ -11,6 +11,7 @@ public struct CommandReview: Identifiable, Sendable {
     public let dj: DJStatus?
     public let favorite: Favorite?
     public let sleepTimer: SleepTimer?
+    public let playlistDestinations: [SonosPlaylistDestinationReview]
     public let observedAt: Date
     fileprivate let observation: CommandObservation
 }
@@ -45,6 +46,7 @@ public actor CommandReviewSession {
         let review = CommandReview(id: UUID(), command: bound, zone: zone,
                                    state: try observed.state(for: command, in: zone),
                                    dj: observed.dj, favorite: observed.favorite, sleepTimer: observed.sleepTimer,
+                                   playlistDestinations: observed.playlistTargets?.destinations.map(\.review) ?? [],
                                    observedAt: Date(), observation: observed)
         pending = review.id
         return review
@@ -165,9 +167,16 @@ fileprivate struct CommandObservation: Sendable {
     let scene: Scene?
     let sleepTimer: SleepTimer?
     let sourceQueue: SourceQueueReview?
+    let playlistTargets: SonosPlaylistTargetObservation?
 
     func bindQueueRevision(_ command: NativeCommand) throws -> NativeCommand {
         guard case .sonosPlaylistTracks(let selection) = command else { return command }
+        if selection.target != nil {
+            guard let playlistTargets else {
+                throw ContractError.invalid("Read every destination before reviewing selected saved tracks.")
+            }
+            return .sonosPlaylistTracks(try selection.bound(to: playlistTargets))
+        }
         guard let sourceQueue else {
             throw ContractError.invalid("Read the destination queue before reviewing selected saved tracks.")
         }
@@ -195,6 +204,10 @@ fileprivate struct CommandObservation: Sendable {
             throw ContractError.invalid("The selected group changed. Review its current membership again.")
         }
         try command.validateTopology(reviewed: zone, current: zones)
+        let playlistTargets: SonosPlaylistTargetObservation?
+        if case .sonosPlaylistTracks(let selection) = command, selection.target != nil {
+            playlistTargets = try await SonosPlaylistTargetObservation.read(client, selection: selection, zones: zones)
+        } else { playlistTargets = nil }
         let relevant = affectedZones(command, zone: zone, zones: zones)
         let rooms: Set<RoomID>
         if command.requiresFreshTopology || command.savedScene != nil {
@@ -261,6 +274,7 @@ fileprivate struct CommandObservation: Sendable {
             try selection.validate(await client.sonosPlaylists(zone), in: zone)
         case .sonosPlaylistTracks(let selection):
             try await selection.validate { try await client.sonosPlaylistContents($0) }
+            try await playlistTargets?.confirm(client, selection: selection)
         case .listeningSettings(let change):
             try await change.preflight(client, in: zone)
         default: break
@@ -268,7 +282,8 @@ fileprivate struct CommandObservation: Sendable {
         try Task.checkCancellation()
         let sourceQueue = command.needsSourceQueueReview ? try await SourceQueueReview.read(client, in: zone) : nil
         try Task.checkCancellation()
-        let result = Self(house: house, dj: dj, favorite: favorite, scene: scene, sleepTimer: sleepTimer, sourceQueue: sourceQueue)
+        let result = Self(house: house, dj: dj, favorite: favorite, scene: scene, sleepTimer: sleepTimer,
+                          sourceQueue: sourceQueue, playlistTargets: playlistTargets)
         let state = try result.state(for: command, in: zone)
         try command.validate(before: state, current: state)
         return result
@@ -276,6 +291,12 @@ fileprivate struct CommandObservation: Sendable {
 
     func validate(_ current: Self, command: NativeCommand, zone: Zone) throws {
         try command.validate(before: state(for: command, in: zone), current: current.state(for: command, in: zone))
+        if case .sonosPlaylistTracks(let selection) = command, selection.target != nil {
+            guard let playlistTargets, let after = current.playlistTargets else {
+                throw ContractError.invalid("The destination groups are unavailable. Review the selected tracks again.")
+            }
+            try playlistTargets.validate(after, selection: selection)
+        }
         if command.needsSourceQueueReview {
             guard let sourceQueue, let after = current.sourceQueue else {
                 throw ContractError.invalid("The destination queue is unavailable. Review this source again.")

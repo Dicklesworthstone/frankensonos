@@ -38,7 +38,8 @@ struct SourceQueueReview: Decodable, Sendable {
 extension NativeCommand {
     var needsSourceQueueReview: Bool {
         switch self {
-        case .queueAdd, .queueFavorite, .sonosPlaylist, .sonosPlaylistTracks: true
+        case .queueAdd, .queueFavorite, .sonosPlaylist: true
+        case .sonosPlaylistTracks(let selection): selection.target == nil
         case .playlistTrack(let selection): selection.isQueueAdd
         case .playSource(let uri):
             if let canonical = try? SceneDefinition.sourceURI(uri) {

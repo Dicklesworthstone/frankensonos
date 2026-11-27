@@ -70,6 +70,9 @@ public enum NativeCommand: Equatable, Sendable {
         case .announce(let announcement): announcement.title
         }
     }
+    public var destinationSummary: String? {
+        if case .sonosPlaylistTracks(let selection) = self { selection.destinationSummary } else { nil }
+    }
     public var explanation: String {
         switch self {
         case .queueAdd(let uri, _): Self.sourceExplanation(uri, queued: true)
@@ -275,7 +278,9 @@ public enum NativeCommand: Equatable, Sendable {
         case .queueAdd(_, let next): matches = !next || before.samePlayback(as: current)
         case .queueFavorite(let favorite): matches = !favorite.next || before.samePlayback(as: current)
         case .sonosPlaylist(let selection): matches = selection.action == .append || before.samePlayback(as: current)
-        case .sonosPlaylistTracks(let selection): matches = selection.action == .append || before.samePlayback(as: current)
+        case .sonosPlaylistTracks(let selection):
+            // Explicit destinations have their own playback and queue observations.
+            matches = selection.target != nil || selection.action == .append || before.samePlayback(as: current)
         case .playlistTrack(let selection): matches = selection.allowsTrackProgress || before.samePlayback(as: current)
         default: matches = before.samePlayback(as: current)
         }

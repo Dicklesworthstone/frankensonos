@@ -6,9 +6,16 @@ public struct RemoteResult: Identifiable, Sendable {
     public let target: RoomID
     /// A scene is house-wide; `target` only identifies the initiating selection.
     public let scene: String?
+    public let destination: String?
     public let title: String
     public let detail: String
     public let kind: Kind
+
+    public init(target: RoomID, scene: String?, title: String, detail: String, kind: Kind,
+                destination: String? = nil) {
+        self.target = target; self.scene = scene; self.title = title
+        self.detail = detail; self.kind = kind; self.destination = destination
+    }
 }
 
 /// The native screen's state, independent of SwiftUI so its real command and
@@ -327,12 +334,23 @@ public struct RemoteResult: Identifiable, Sendable {
         sonosPlaylistTracks.clear()
     }
 
+    public func changeSonosPlaylistDestination(_ value: String, selection: UUID) {
+        guard canPrepare && panel == .sonosPlaylists && !panelLoading,
+              sonosPlaylistRequest != nil && sonosPlaylistContents != nil,
+              sonosPlaylistTracks.id == selection else { return }
+        sonosPlaylistTracks.setDestination(value); panelProblem = nil
+    }
+
     public func prepareSonosPlaylistTracks(_ action: SonosPlaylistAction, selection: UUID, in expectedZone: Zone) {
         guard canPrepare && panel == .sonosPlaylists && !panelLoading && panelProblem == nil,
               let zone = selectedZone, expectedZone.sameGroup(as: zone),
               let request = sonosPlaylistRequest, let page = sonosPlaylistContents,
               sonosPlaylistTracks.isCurrent(selection, page: page, request: request) else { return }
-        do { prepare(.sonosPlaylistTracks(try SonosPlaylistTracksSelection(sonosPlaylistTracks, action: action)), in: zone) }
+        do {
+            let target = sonosPlaylistTracks.target.trimmingCharacters(in: .whitespacesAndNewlines)
+            prepare(.sonosPlaylistTracks(try SonosPlaylistTracksSelection(sonosPlaylistTracks,
+                action: action, target: target.isEmpty ? nil : target)), in: zone)
+        }
         catch { panelProblem = error.localizedDescription }
     }
 
@@ -389,7 +407,8 @@ public struct RemoteResult: Identifiable, Sendable {
                 self.review = review
             } catch {
                 if let self, self.epoch == token && !Task.isCancelled {
-                    self.result = RemoteResult(target: target, scene: command.savedScene?.name, title: "Nothing sent", detail: error.localizedDescription, kind: .notSent)
+                    self.result = RemoteResult(target: target, scene: command.savedScene?.name, title: "Nothing sent", detail: error.localizedDescription, kind: .notSent,
+                                               destination: command.destinationSummary)
                 }
             }
         }
@@ -405,13 +424,15 @@ public struct RemoteResult: Identifiable, Sendable {
             do {
                 let receipt = try await commands.execute(reviewed)
                 self?.result = RemoteResult(target: target, scene: reviewed.command.savedScene?.name, title: receipt.title, detail: receipt.detail,
-                                            kind: receipt.partial ? .partial : .confirmed)
+                                            kind: receipt.partial ? .partial : .confirmed,
+                                            destination: reviewed.command.destinationSummary)
             } catch {
                 let uncertain: Bool
                 if case ClientError.uncertain = error { uncertain = true } else { uncertain = false }
                 self?.result = RemoteResult(target: target, scene: reviewed.command.savedScene?.name,
                                             title: uncertain ? "Outcome uncertain — not repeated" : "Nothing sent",
-                                            detail: error.localizedDescription, kind: uncertain ? .uncertain : .notSent)
+                                            detail: error.localizedDescription, kind: uncertain ? .uncertain : .notSent,
+                                            destination: reviewed.command.destinationSummary)
             }
             // A late acknowledgement stays attributed to its original room,
             // even after selection or lifecycle changes. Refresh is not an ACK.
@@ -445,6 +466,10 @@ public struct RemoteResult: Identifiable, Sendable {
             choseInitialRoom = true; selectedRoom = first.id
         }
         let newZone = selectedZone
+        if actionPhase != .confirming, let review,
+           review.playlistDestinations.contains(where: { destination in
+               value.snapshot?.zones.contains(where: { $0.sameGroup(as: destination.zone) }) != true
+           }) { cancelReview() }
         observeCatalogs(value.catalogs, since: previous?.catalogs ?? .init())
         let layoutChanged = oldZone.map { old in newZone.map { !old.sameGroup(as: $0) } ?? true } ?? (newZone != nil)
         if selectedPlaybackIsFresh { timelineFrozenAt = nil }
