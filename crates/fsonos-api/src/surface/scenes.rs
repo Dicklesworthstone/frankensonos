@@ -789,7 +789,11 @@ fn describe(households: &[HouseholdState], op: &SceneOp) -> String {
                 .map(|direction| DjDirectionDto::from(direction).summary(mood.as_deref()))
                 .or_else(|| mood.clone());
             let action = if *start { "starts" } else { "loads" };
-            let state = if *start { "" } else { " ready without playback" };
+            let state = if *start {
+                ""
+            } else {
+                " ready without playback"
+            };
             match detail {
                 Some(detail) => {
                     format!("{} {action} the DJ ({detail}){state}", room(coordinator))
@@ -993,7 +997,7 @@ impl SceneHooks for SceneDj<'_> {
         mood: Option<&str>,
         direction: Option<&DjDirection>,
     ) -> Result<(), String> {
-        self.prepare_dj(coordinator, mood, direction, true)
+        self.prepare_dj_at(self.households, coordinator, mood, direction, true)
     }
 
     fn load_dj_with_direction(
@@ -1002,13 +1006,25 @@ impl SceneHooks for SceneDj<'_> {
         mood: Option<&str>,
         direction: Option<&DjDirection>,
     ) -> Result<(), String> {
-        self.prepare_dj(coordinator, mood, direction, false)
+        self.prepare_dj_at(self.households, coordinator, mood, direction, false)
+    }
+
+    fn prepare_dj(
+        &self,
+        households: &[HouseholdState],
+        coordinator: &PlayerId,
+        mood: Option<&str>,
+        direction: Option<&DjDirection>,
+        start: bool,
+    ) -> Result<(), String> {
+        self.prepare_dj_at(households, coordinator, mood, direction, start)
     }
 }
 
 impl SceneDj<'_> {
-    fn prepare_dj(
+    fn prepare_dj_at(
         &self,
+        households: &[HouseholdState],
         coordinator: &PlayerId,
         mood: Option<&str>,
         direction: Option<&DjDirection>,
@@ -1019,7 +1035,7 @@ impl SceneDj<'_> {
         let steer = dj_start::steering(s, mood, direction).map_err(|failure| failure.detail)?;
         let at = DjSpeakers {
             transport: &*s.transport,
-            households: self.households,
+            households,
             coordinator,
         };
         let started = s.with_dj_store(|store| {

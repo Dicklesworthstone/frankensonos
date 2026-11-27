@@ -125,12 +125,8 @@ fn repeated_load_and_silent_readiness_reuse_the_prepared_set_without_a_library()
         let retained = feed.snapshot();
         let empty = WorkPool::default();
         let before = rig.sim.soap_log().len();
-        feed.load_ready(
-            &rig.speakers(&rig.lan),
-            plan(&empty, MIDNIGHT + 10),
-            &store,
-        )
-        .unwrap();
+        feed.load_ready(&rig.speakers(&rig.lan), plan(&empty, MIDNIGHT + 10), &store)
+            .unwrap();
         assert_eq!(feed.snapshot(), retained);
         assert!(writes(&rig, before).is_empty());
         let before = rig.sim.soap_log().len();
@@ -221,7 +217,10 @@ fn a_fresh_owned_playing_observation_resumes_maintenance_and_records_one_listen(
         assert!(!feed.is_suspended());
         assert!(feed.accepted_playback());
         assert_eq!(plays(&store).len(), 1);
-        assert!(writes(&rig, before).is_empty(), "observing resume sends no Play");
+        assert!(
+            writes(&rig, before).is_empty(),
+            "observing resume sends no Play"
+        );
 
         let next = feed.queued()[1].first().unwrap();
         transport::seek_track(&rig.lan, rig.host(), next).unwrap();
@@ -271,7 +270,10 @@ fn explicit_start_and_skip_can_play_a_silently_prepared_set() {
             assert_eq!(rig.queue(), queue);
             assert_eq!(rig.position(), selected);
             assert_eq!(sample(&rig).transport, Some(TransportState::Playing));
-            assert!(plays(&store).is_empty(), "wait for an actual Playing observation");
+            assert!(
+                plays(&store).is_empty(),
+                "wait for an actual Playing observation"
+            );
         }
     }
 }

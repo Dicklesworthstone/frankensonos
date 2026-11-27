@@ -523,7 +523,11 @@ fn a_quiet_scene_still_pauses_when_its_playback_snapshot_failed() {
             .filter(|entry| !entry.action.starts_with("Get"))
             .map(|entry| entry.action.as_str())
             .collect();
-        assert_eq!(writes, ["Pause"], "{room}: the source and queue stay intact");
+        assert_eq!(
+            writes,
+            ["Pause"],
+            "{room}: the source and queue stay intact"
+        );
         assert_eq!(soap::get_media_info(&lan, host).unwrap().uri, uri);
         assert_eq!(
             soap::get_transport_info(&lan, host).unwrap().state,
@@ -717,5 +721,137 @@ fn a_paused_dj_scene_dispatches_only_the_silent_hook_without_a_fade_in() {
             soap::get_transport_info(&lan, host).unwrap().state,
             TransportState::Paused
         );
+    }
+}
+
+#[derive(Debug, PartialEq, Eq)]
+struct PreparedDj {
+    source: PlayingDj,
+    start: bool,
+    members: Vec<PlayerId>,
+}
+
+#[derive(Default)]
+struct GroupAwareDj(Mutex<Vec<PreparedDj>>);
+
+impl SceneHooks for GroupAwareDj {
+    fn start_dj(&self, _: &PlayerId, _: Option<&str>) -> Result<(), String> {
+        panic!("the scene must provide its confirmed group layout")
+    }
+
+    fn prepare_dj(
+        &self,
+        households: &[HouseholdState],
+        coordinator: &PlayerId,
+        mood: Option<&str>,
+        direction: Option<&DjDirection>,
+        start: bool,
+    ) -> Result<(), String> {
+        let group = households
+            .iter()
+            .flat_map(|household| &household.groups)
+            .find(|group| group.coordinator == *coordinator)
+            .ok_or_else(|| format!("missing confirmed DJ coordinator {}", coordinator.0))?;
+        let mut members = group.members.clone();
+        members.sort_by(|a, b| a.0.cmp(&b.0));
+        self.0.lock().unwrap().push(PreparedDj {
+            source: PlayingDj {
+                coordinator: coordinator.clone(),
+                mood: mood.map(str::to_string),
+                direction: direction.cloned(),
+            },
+            start,
+            members,
+        });
+        Ok(())
+    }
+}
+
+#[test]
+fn dj_hooks_receive_the_confirmed_group_after_promoting_a_member_in_both_generations() {
+    for start in [false, true] {
+        let sim = sim();
+        let lan = sim.lan();
+        let h = houses(&sim, &lan);
+        let groups = [("Kitchen", "Office"), ("Living Room", "Bedroom")];
+        for (previous, next) in groups {
+            control::join(&lan, &h, &id(&h, next), &id(&h, previous)).unwrap();
+        }
+        let initial = houses(&sim, &lan);
+        for (previous, next) in groups {
+            assert_eq!(
+                resolve_room(&initial, next).unwrap().coordinator.id,
+                id(&initial, previous)
+            );
+        }
+        let direction = DjDirection {
+            for_secs: Some(3_600),
+            ..Default::default()
+        };
+        let scene = Scene {
+            name: "Move the DJ coordinator".into(),
+            groups: groups
+                .iter()
+                .map(|(previous, next)| SceneGroup {
+                    coordinator: (*next).into(),
+                    members: vec![(*previous).into()],
+                    source: SceneSource::Dj {
+                        mood: Some("calm".into()),
+                        direction: Some(direction.clone()),
+                    },
+                    playing: Some(start),
+                })
+                .collect(),
+            volumes: BTreeMap::new(),
+            mutes: BTreeMap::new(),
+            writer: None,
+        };
+        let dj = GroupAwareDj::default();
+        let (_, report) = apply(
+            &lan,
+            &initial,
+            &scene,
+            &ApplyOptions {
+                fade: None,
+                hooks: &dj,
+            },
+        );
+        assert!(report.is_complete(), "start={start}: {report:?}");
+        let final_houses = houses(&sim, &lan);
+        let calls = dj.0.lock().unwrap();
+        assert_eq!(calls.len(), groups.len());
+        for (previous, next) in groups {
+            let coordinator = id(&initial, next);
+            let call = calls
+                .iter()
+                .find(|call| call.source.coordinator == coordinator)
+                .unwrap();
+            let mut members = vec![id(&initial, previous), coordinator.clone()];
+            members.sort_by(|a, b| a.0.cmp(&b.0));
+            assert_eq!(
+                *call,
+                PreparedDj {
+                    source: PlayingDj {
+                        coordinator: coordinator.clone(),
+                        mood: Some("calm".into()),
+                        direction: Some(direction.clone()),
+                    },
+                    start,
+                    members,
+                }
+            );
+            for room in [previous, next] {
+                assert_eq!(
+                    resolve_room(&final_houses, room).unwrap().coordinator.id,
+                    coordinator
+                );
+            }
+            // The planning snapshot is still the original layout; the hook
+            // received the separately confirmed state after the scene's joins.
+            assert_eq!(
+                resolve_room(&initial, next).unwrap().coordinator.id,
+                id(&initial, previous)
+            );
+        }
     }
 }

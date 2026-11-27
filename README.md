@@ -946,9 +946,9 @@ For a scene that keeps its current source, only a known paused or stopped
 snapshot can skip an explicitly requested Pause. Buffering, unknown, or failed
 snapshots no longer make a quiet scene a no-op.
 
-These scene changes include planner, S1/S2 simulator, policy, scheduler and
-daemon persistence regressions. They remain unexecuted because the session's
-execution environment became unavailable; GitHub checks are pending.
+When a scene changes the DJ's group, steering and playback use the newly
+confirmed membership. An existing DJ can continue its selected music after
+rooms join or leave the group, for both audible and silent recall.
 
 Next:
 

@@ -19,6 +19,7 @@ struct Probe {
     load_checks: Arc<AtomicUsize>,
     loads: Arc<AtomicUsize>,
     loaded_clients: Arc<Mutex<Vec<String>>>,
+    audiences: Arc<Mutex<Vec<(&'static str, Vec<PlayerId>)>>>,
     fail_after_start: Arc<AtomicBool>,
     previews: Arc<Mutex<Vec<Option<DjSteer>>>>,
     steers: Arc<Mutex<Vec<DjSteer>>>,
@@ -28,6 +29,19 @@ struct Probe {
     fail_group: Arc<Mutex<Option<PlayerId>>>,
     play: Arc<AtomicBool>,
     regroup_on_ready: Arc<Mutex<Option<(SimLan, IpAddr, PlayerId)>>>,
+}
+
+impl Probe {
+    fn remember_audience(&self, at: DjSpeakers<'_>, action: &'static str) {
+        let mut members = at
+            .households
+            .iter()
+            .flat_map(|house| &house.groups)
+            .find(|group| group.coordinator == *at.coordinator)
+            .map_or_else(Vec::new, |group| group.members.clone());
+        members.sort_by(|left, right| left.0.cmp(&right.0));
+        self.audiences.lock().unwrap().push((action, members));
+    }
 }
 
 fn done() -> OutcomeDto {
@@ -88,8 +102,12 @@ impl DjEngine for Probe {
         _: &dyn Clock,
         client: &Client,
     ) -> Result<OutcomeDto, Failure> {
+        self.remember_audience(at, "load");
         self.loads.fetch_add(1, Ordering::SeqCst);
-        self.loaded_clients.lock().unwrap().push(client.key().into());
+        self.loaded_clients
+            .lock()
+            .unwrap()
+            .push(client.key().into());
         let player = at
             .households
             .iter()
@@ -127,6 +145,7 @@ impl DjEngine for Probe {
         _: &dyn Clock,
     ) -> Result<OutcomeDto, Failure> {
         assert_eq!(action, DjAction::Start);
+        self.remember_audience(at, "start");
         self.starts.fetch_add(1, Ordering::SeqCst);
         self.started_groups
             .lock()
@@ -161,11 +180,12 @@ impl DjEngine for Probe {
 
     fn steer(
         &self,
-        _: DjSpeakers<'_>,
+        at: DjSpeakers<'_>,
         _: &mut dyn Store,
         steer: &DjSteer,
         _: &dyn Clock,
     ) -> Result<OutcomeDto, Failure> {
+        self.remember_audience(at, "steer");
         self.steers.lock().unwrap().push(steer.clone());
         Ok(done())
     }
@@ -519,7 +539,9 @@ fn a_silent_dj_scene_loads_its_direction_without_play_or_implicit_fade_and_caps(
                 .all(|call| call.action != "Play" && call.action != "SetVolume")
         );
         assert_ne!(
-            soap::get_transport_info(&house.sim.lan(), host).unwrap().state,
+            soap::get_transport_info(&house.sim.lan(), host)
+                .unwrap()
+                .state,
             TransportState::Playing
         );
         assert_eq!(soap::get_volume(&house.sim.lan(), host).unwrap(), 85);
@@ -610,6 +632,65 @@ fn scheduled_silent_dj_scenes_retry_readiness_but_never_replay_a_dispatched_load
                 );
             }
             assert_eq!(probe.loads.load(Ordering::SeqCst), 1);
+        }
+    }
+}
+
+#[test]
+fn a_dj_scene_passes_its_confirmed_group_to_steering_and_playback() {
+    for s2 in [false, true] {
+        for start in [false, true] {
+            let probe = Probe::default();
+            probe.ready.store(true, Ordering::SeqCst);
+            probe.play.store(true, Ordering::SeqCst);
+            let house = House::new(s2, &action()).with_dj(&probe);
+            let scene = Scene {
+                name: "Together".into(),
+                groups: vec![SceneGroup {
+                    coordinator: "Room0".into(),
+                    members: vec!["Room1".into()],
+                    source: SceneSource::Dj {
+                        mood: Some("calm".into()),
+                        direction: None,
+                    },
+                    playing: Some(start),
+                }],
+                volumes: BTreeMap::new(),
+                mutes: BTreeMap::new(),
+                writer: Some(Client::Cli.key().into()),
+            };
+            house
+                .surface
+                .with_store(|store| Ok(scenes::save(store, &scene, house.at.timestamp())))
+                .unwrap()
+                .unwrap()
+                .unwrap();
+            // The survey intentionally retains the initial, separate groups.
+            // Both engine calls need the layout confirmed by scene execution.
+            let before = house.sim.soap_log().len();
+            let outcome = house.surface.apply_scene(&Client::Cli, "Together").unwrap();
+            assert!(outcome.complete && outcome.changed, "{outcome:?}");
+            let mut expected: Vec<_> = ["Room0", "Room1"]
+                .iter()
+                .map(|room| PlayerId(house.sim.player(room).unwrap().uuid.clone()))
+                .collect();
+            expected.sort_by(|left, right| left.0.cmp(&right.0));
+            assert_eq!(
+                *probe.audiences.lock().unwrap(),
+                vec![
+                    ("steer", expected.clone()),
+                    (if start { "start" } else { "load" }, expected),
+                ]
+            );
+            assert_eq!(probe.starts.load(Ordering::SeqCst), usize::from(start));
+            assert_eq!(probe.loads.load(Ordering::SeqCst), usize::from(!start));
+            assert_eq!(
+                house.sim.soap_log()[before..]
+                    .iter()
+                    .filter(|call| call.action == "Play")
+                    .count(),
+                usize::from(start)
+            );
         }
     }
 }

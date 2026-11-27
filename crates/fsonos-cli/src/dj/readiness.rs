@@ -69,7 +69,10 @@ fn check_for(
     clock: &dyn Clock,
     load: bool,
 ) -> Result<(), Failure> {
-    let request = StartRequest { steer, silent: load };
+    let request = StartRequest {
+        steer,
+        silent: load,
+    };
     {
         let state = dj.state();
         if state.plan_is_current(store, dj.moods_file.as_ref())? {

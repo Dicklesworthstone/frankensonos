@@ -100,9 +100,11 @@ fn ready_state<T: Transport + ?Sized>(
     allow_stopped: bool,
 ) -> Result<bool, FeedError> {
     let live = fsonos_proto::control::get_transport_info(at.transport, host_of(at)?)?;
-    Ok((matches!(live.state, TransportState::Playing | TransportState::Paused)
-        || (allow_stopped && live.state == TransportState::Stopped))
-        && live.status != "ERROR_OCCURRED")
+    Ok(
+        (matches!(live.state, TransportState::Playing | TransportState::Paused)
+            || (allow_stopped && live.state == TransportState::Stopped))
+            && live.status != "ERROR_OCCURRED",
+    )
 }
 
 /// Preserve elapsed playback: neither changing the source nor seeking is

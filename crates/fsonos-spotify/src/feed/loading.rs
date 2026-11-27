@@ -80,7 +80,10 @@ pub(super) fn hold<T: Transport + ?Sized>(
     };
     confirm()?;
     if let Err(error) = set_normal_play_mode(at.transport, host_of(at)?) {
-        if matches!(&error, ProtoError::Network { .. } | ProtoError::Malformed(_)) {
+        if matches!(
+            &error,
+            ProtoError::Network { .. } | ProtoError::Malformed(_)
+        ) {
             return Err(uncertain("SetPlayMode", error));
         }
         return Err(error.into());

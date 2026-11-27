@@ -1703,11 +1703,20 @@ explicit successful DJ start/skip. Suspension survives daemon restart, and
 legacy saved feeds default to the prior active behavior. Unsupported DJ hooks
 refuse at readiness rather than emulating a silent load with audible playback.
 
+DJ scene execution now passes the confirmed post-regrouping household layout
+to both steering and playback preparation. An existing feed therefore checks
+ownership against the group the scene actually established, instead of the
+earlier planning inventory. Audible and silent recalls retain their selected
+queue occurrence and elapsed position when the coordinator remains the same;
+the scene hook also receives a newly promoted coordinator's confirmed group.
+
 Retained-source scenes also require a known Paused or Stopped observation to
 omit an explicit pause. A Transitioning/Unknown state or failed snapshot still
-plans Pause. Added planner, S1/S2 simulator, daemon persistence, policy and
-scheduler regressions are pending execution after the local environment became
-unavailable; static review is not a Rust build or runtime pass.
+plans Pause. Added regressions cover planning, S1/S2 simulator execution, daemon
+persistence, caller/writer policy, scheduled readiness and actual DJ-engine
+continuation after regrouping. Targeted formatting passes. Workspace compilation
+was terminated with exit 137 during dependencies before project checking; the
+new Rust tests remain unexecuted, and static review is not a runtime pass.
 
 ### 12.8 An instant CLI through the daemon
 

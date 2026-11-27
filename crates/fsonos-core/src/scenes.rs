@@ -355,6 +355,25 @@ pub trait SceneHooks {
         None
     }
 
+    /// Prepare a DJ source using the confirmed layout after scene regrouping.
+    /// Group and queue ownership checks must use this snapshot, which may
+    /// differ from the inventory that was used to plan the scene. The default
+    /// preserves hooks that implement the audible and silent entry points.
+    fn prepare_dj(
+        &self,
+        _households: &[HouseholdState],
+        coordinator: &PlayerId,
+        mood: Option<&str>,
+        direction: Option<&DjDirection>,
+        start: bool,
+    ) -> Result<(), String> {
+        if start {
+            self.start_dj_with_direction(coordinator, mood, direction)
+        } else {
+            self.load_dj_with_direction(coordinator, mood, direction)
+        }
+    }
+
     /// Start the DJ in the group `coordinator` leads, in `mood`, or steer
     /// the one already playing there.
     fn start_dj(&self, coordinator: &PlayerId, mood: Option<&str>) -> Result<(), String>;
@@ -1207,17 +1226,13 @@ fn run<T: Transport + ?Sized>(
             mood,
             direction,
             start,
-        } => {
-            if *start {
-                options
-                    .hooks
-                    .start_dj_with_direction(coordinator, mood.as_deref(), direction.as_ref())
-            } else {
-                options
-                    .hooks
-                    .load_dj_with_direction(coordinator, mood.as_deref(), direction.as_ref())
-            }
-        }
+        } => options.hooks.prepare_dj(
+            households,
+            coordinator,
+            mood.as_deref(),
+            direction.as_ref(),
+            *start,
+        ),
         SceneOp::Play { coordinator } => control::resume(t, households, coordinator).map_err(s),
         // A stream that cannot pause stops (control::pause_at).
         SceneOp::Pause { coordinator } => control::pause(t, households, coordinator).map_err(s),
