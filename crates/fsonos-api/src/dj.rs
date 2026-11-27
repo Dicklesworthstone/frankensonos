@@ -92,6 +92,24 @@ pub trait DjEngine: Send + Sync {
         Ok(())
     }
 
+    /// Check a silent load before any scene writes. Unlike `start_ready`,
+    /// the default refuses: an older engine must not start music and pause
+    /// it afterward to emulate loading. Supporting engines check prospective
+    /// steering, playable music and queue ownership without changing state.
+    fn load_ready(
+        &self,
+        at: DjSpeakers<'_>,
+        store: &dyn Store,
+        steer: Option<&DjSteer>,
+        clock: &dyn Clock,
+    ) -> Result<(), Failure> {
+        let _ = (at, store, steer, clock);
+        Err(Failure::new(
+            ErrorCode::NotImplemented,
+            "this DJ cannot load a queue without starting playback",
+        ))
+    }
+
     /// Start, skip or stop the DJ in the group `at.coordinator` leads.
     /// `clock` is the house's: its local day and time pick the time-of-day
     /// program and the energy target.
@@ -133,6 +151,38 @@ pub trait DjEngine: Send + Sync {
     ) -> Result<OutcomeDto, Failure> {
         before()?;
         self.act_as(at, store, action, clock, client)
+    }
+
+    /// Prepare an owned DJ queue for the caller without sending Play.
+    /// Supporting engines retain a suspended feed before speaker writes and
+    /// keep it suspended through playback events, maintenance and restart.
+    /// An explicit subsequent start can resume the prepared queue.
+    fn load_as(
+        &self,
+        at: DjSpeakers<'_>,
+        store: &mut dyn Store,
+        clock: &dyn Clock,
+        client: &Client,
+    ) -> Result<OutcomeDto, Failure> {
+        let _ = (at, store, clock, client);
+        Err(Failure::new(
+            ErrorCode::NotImplemented,
+            "this DJ cannot load a queue without starting playback",
+        ))
+    }
+
+    /// Recheck the retained audience after waiting for an engine lock and
+    /// before changing silent-feed ownership or persistent state.
+    fn load_as_checked(
+        &self,
+        at: DjSpeakers<'_>,
+        store: &mut dyn Store,
+        clock: &dyn Clock,
+        client: &Client,
+        before: &dyn Fn() -> Result<(), Failure>,
+    ) -> Result<OutcomeDto, Failure> {
+        before()?;
+        self.load_as(at, store, clock, client)
     }
 
     /// The initiating policy client of this feed, including after restart

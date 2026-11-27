@@ -104,6 +104,7 @@ impl Rig {
         control::play_queue_from_in_order(&lan, &self.households, &self.coordinator, 1).unwrap();
         let feed = QueueFeed::restore(
             FeedSnapshot {
+                suspended: false,
                 zone: self.coordinator.0.clone(),
                 earlier: Vec::new(),
                 lookahead: 1,

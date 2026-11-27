@@ -12,6 +12,7 @@ use std::net::IpAddr;
 fn pending(id: &PlayerId) -> QueueFeed {
     QueueFeed::restore(
         FeedSnapshot {
+            suspended: false,
             zone: id.0.clone(),
             earlier: Vec::new(),
             lookahead: 1,

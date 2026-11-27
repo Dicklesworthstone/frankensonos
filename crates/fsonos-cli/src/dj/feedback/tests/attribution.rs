@@ -99,6 +99,7 @@ fn sample(work: &Work, index: usize) -> Movement {
 fn feed(queued: QueuedWork) -> QueueFeed {
     QueueFeed::restore(
         FeedSnapshot {
+            suspended: false,
             zone: "test-coordinator".into(),
             earlier: Vec::new(),
             lookahead: 1,
@@ -175,6 +176,7 @@ impl LiveFeedback {
                 id.clone(),
                 QueueFeed::restore(
                     FeedSnapshot {
+                        suspended: false,
                         zone: id.0.clone(),
                         earlier: Vec::new(),
                         lookahead: 1,

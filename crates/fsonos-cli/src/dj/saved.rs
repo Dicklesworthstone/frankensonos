@@ -314,6 +314,7 @@ mod tests {
             added: true,
         };
         FeedSnapshot {
+            suspended: false,
             zone: zone.into(),
             earlier: vec!["RINCON_000000000000091400".into()],
             lookahead: 1,

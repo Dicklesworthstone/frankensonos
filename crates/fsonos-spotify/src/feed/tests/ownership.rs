@@ -57,6 +57,7 @@ fn restored(rig: &Rig, played: Vec<QueuedWork>, queued: Vec<QueuedWork>) -> Queu
             played,
             recovery: RecoveryBudget::default(),
             dry_end: None,
+            suspended: false,
         },
         DjConfig {
             trim_queue_at: u32::MAX,

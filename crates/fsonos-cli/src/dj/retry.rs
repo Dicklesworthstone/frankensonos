@@ -153,6 +153,7 @@ mod tests {
         house.apply_topology(&get_zone_group_state(&lan, player.ip).unwrap());
         let feed = QueueFeed::restore(
             FeedSnapshot {
+                suspended: false,
                 zone: id.0.clone(),
                 earlier: Vec::new(),
                 lookahead: 1,

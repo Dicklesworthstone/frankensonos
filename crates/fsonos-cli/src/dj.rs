@@ -91,6 +91,31 @@ const PLAN_RETRY: Duration = Duration::from_secs(30);
 /// Share one inexpensive input check across every room and playback event.
 const PLAN_CHECK: Duration = Duration::from_secs(30);
 
+// Silent scene preparation shares start's ownership and persistence lifecycle.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum FeedAction {
+    Start,
+    Load,
+    Skip,
+    Stop,
+}
+
+impl FeedAction {
+    fn is_start(self) -> bool {
+        matches!(self, Self::Start | Self::Load)
+    }
+}
+
+impl From<DjAction> for FeedAction {
+    fn from(action: DjAction) -> Self {
+        match action {
+            DjAction::Start => Self::Start,
+            DjAction::Skip => Self::Skip,
+            DjAction::Stop => Self::Stop,
+        }
+    }
+}
+
 /// See the module docs.
 pub struct SpotifyDj {
     /// `moods.toml`, read on each start and checked on each skip (an edit
@@ -838,20 +863,103 @@ impl SpotifyDj {
         }
     }
 
-    /// A start, skip or stop (see [`DjEngine::act`]).
+    fn act_checked(
+        &self,
+        at: DjSpeakers<'_>,
+        store: &mut dyn Store,
+        action: FeedAction,
+        clock: &dyn Clock,
+        client: &Client,
+        before: &dyn Fn() -> Result<(), Failure>,
+    ) -> Result<OutcomeDto, Failure> {
+        if action.is_start() && saved::identity(client).is_none() {
+            return Err(Failure::invalid(
+                "the DJ's initiating policy client is invalid",
+            ));
+        }
+        let mut state = self.state();
+        before()?;
+        let was_feeding = state
+            .feeds
+            .get(at.coordinator)
+            .is_some_and(QueueFeed::is_active);
+        if action.is_start() {
+            if was_feeding
+                && let Some(starters) = state.starters.get_mut(at.coordinator)
+                && !starters.contains(client)
+            {
+                // A failed restart can replace stale owned items before its
+                // Play fails. Retain both callers until a successful start;
+                // missing legacy provenance remains missing on failure.
+                starters.push(client.clone());
+            }
+            if action == FeedAction::Load
+                && let Some(feed) = state.feeds.get_mut(at.coordinator)
+            {
+                // Persist silence before Pause, queue edits or source changes.
+                // A crash must not revive an earlier automatic continuation.
+                feed.suspend();
+            }
+            // Flush pending ownership removal too: a previous failed Stop
+            // save must not leave an older uncapped feed on disk while a new
+            // caller starts music. Failure here sends no speaker writes.
+            self.save_checked(&mut state)?;
+        } else if action == FeedAction::Stop {
+            self.checkpoint_stop(&mut state, at.coordinator)?;
+        }
+        // Explicit commands are never held behind automatic retry backoff.
+        state.refill_retries.remove(at.coordinator);
+        state.problems.remove(at.coordinator);
+        let done = self.carry_out(&mut state, at, store, action, clock);
+        if let Err(failure) = before() {
+            // A refused batch may already have appended whole works. A new
+            // feed must not continue that invalidated start on a later event.
+            // The pre-carry checkpoint contains no such feed, so even a failed
+            // final save cannot resurrect it. Leave speaker playback and the
+            // accepted queue entries alone; an existing feed keeps its intent.
+            if !was_feeding {
+                state.feeds.remove(at.coordinator);
+                state.starters.remove(at.coordinator);
+                state.listening.remove(at.coordinator);
+                state.refill_retries.remove(at.coordinator);
+            }
+            state
+                .problems
+                .insert(at.coordinator.clone(), failure.detail.clone());
+            self.save(&mut state);
+            return Err(failure);
+        }
+        if action.is_start()
+            && state
+                .feeds
+                .get(at.coordinator)
+                .is_some_and(QueueFeed::is_active)
+            && (done.is_ok() || !was_feeding)
+        {
+            state
+                .starters
+                .insert(at.coordinator.clone(), vec![client.clone()]);
+        }
+        state.handover.remember(at.households, at.coordinator);
+        // Even a failed start can leave a feed running, part-queued.
+        self.save(&mut state);
+        done
+    }
+
+    /// A start, silent preparation, skip or stop.
     fn carry_out(
         &self,
         state: &mut State,
         at: DjSpeakers<'_>,
         store: &mut dyn Store,
-        action: DjAction,
+        action: FeedAction,
         clock: &dyn Clock,
     ) -> Result<OutcomeDto, Failure> {
         let room = room(at);
         let stop_speakers = speakers(at);
         let now = clock.now().timestamp();
         match action {
-            DjAction::Start => {
+            FeedAction::Start | FeedAction::Load => {
                 // Receipt checks also see publications from another process.
                 // Starting another room need not rebuild the entire library.
                 self.take_library_fresh(state);
@@ -874,7 +982,12 @@ impl SpotifyDj {
                     QueueFeed::new(at.coordinator, DjConfig::default(), now.unsigned_abs())
                 });
                 let planning = plan(pool, feedback.as_ref(), &cx, &elsewhere);
-                let queued = match feed.start(&speakers, planning, store) {
+                let prepared = if action == FeedAction::Load {
+                    feed.load(&speakers, planning, store)
+                } else {
+                    feed.start(&speakers, planning, store)
+                };
+                let queued = match prepared {
                     Ok(queued) => queued,
                     Err(e) => {
                         // A start that queued nothing let go: no feed is
@@ -888,13 +1001,18 @@ impl SpotifyDj {
                 let next = queued
                     .get(1)
                     .map_or_else(String::new, |w| format!("; then {}", describe(w)));
+                let state = if action == FeedAction::Load {
+                    "prepared silently"
+                } else {
+                    "playing"
+                };
                 Ok(sent(format!(
-                    "the DJ is playing in {room}'s group{}: {}{next}",
+                    "the DJ is {state} in {room}'s group{}: {}{next}",
                     mood(&cx),
                     describe(&queued[0])
                 )))
             }
-            DjAction::Skip => {
+            FeedAction::Skip => {
                 if !state
                     .feeds
                     .get(at.coordinator)
@@ -930,7 +1048,7 @@ impl SpotifyDj {
                     .map_err(failure)?;
                 Ok(sent(format!("skipped to {}", describe(work))))
             }
-            DjAction::Stop => {
+            FeedAction::Stop => {
                 let feed = state
                     .feeds
                     .get_mut(at.coordinator)
@@ -972,6 +1090,16 @@ impl DjEngine for SpotifyDj {
         readiness::check(self, at, store, steer, clock)
     }
 
+    fn load_ready(
+        &self,
+        at: DjSpeakers<'_>,
+        store: &dyn Store,
+        steer: Option<&DjSteer>,
+        clock: &dyn Clock,
+    ) -> Result<(), Failure> {
+        readiness::check_load(self, at, store, steer, clock)
+    }
+
     fn act(
         &self,
         at: DjSpeakers<'_>,
@@ -1003,71 +1131,28 @@ impl DjEngine for SpotifyDj {
         client: &Client,
         before: &dyn Fn() -> Result<(), Failure>,
     ) -> Result<OutcomeDto, Failure> {
-        if action == DjAction::Start && saved::identity(client).is_none() {
-            return Err(Failure::invalid(
-                "the DJ's initiating policy client is invalid",
-            ));
-        }
-        let mut state = self.state();
-        before()?;
-        let was_feeding = state
-            .feeds
-            .get(at.coordinator)
-            .is_some_and(QueueFeed::is_active);
-        if action == DjAction::Start {
-            if was_feeding
-                && let Some(starters) = state.starters.get_mut(at.coordinator)
-                && !starters.contains(client)
-            {
-                // A failed restart can replace stale owned items before its
-                // Play fails. Retain both callers until a successful start;
-                // missing legacy provenance remains missing on failure.
-                starters.push(client.clone());
-            }
-            // Flush pending ownership removal too: a previous failed Stop
-            // save must not leave an older uncapped feed on disk while a new
-            // caller starts music. Failure here sends no speaker writes.
-            self.save_checked(&mut state)?;
-        } else if action == DjAction::Stop {
-            self.checkpoint_stop(&mut state, at.coordinator)?;
-        }
-        // Explicit commands are never held behind automatic retry backoff.
-        state.refill_retries.remove(at.coordinator);
-        state.problems.remove(at.coordinator);
-        let done = self.carry_out(&mut state, at, store, action, clock);
-        if let Err(failure) = before() {
-            // A refused batch may already have appended whole works. A new
-            // feed must not continue that invalidated start on a later event.
-            // The pre-carry checkpoint contains no such feed, so even a failed
-            // final save cannot resurrect it. Leave speaker playback and the
-            // accepted queue entries alone; an existing feed keeps its intent.
-            if !was_feeding {
-                state.feeds.remove(at.coordinator);
-                state.starters.remove(at.coordinator);
-                state.listening.remove(at.coordinator);
-                state.refill_retries.remove(at.coordinator);
-            }
-            state
-                .problems
-                .insert(at.coordinator.clone(), failure.detail.clone());
-            self.save(&mut state);
-            return Err(failure);
-        }
-        if action == DjAction::Start
-            && state
-                .feeds
-                .get(at.coordinator)
-                .is_some_and(QueueFeed::is_active)
-            && (done.is_ok() || !was_feeding)
-        {
-            state
-                .starters
-                .insert(at.coordinator.clone(), vec![client.clone()]);
-        }
-        state.handover.remember(at.households, at.coordinator);
-        // Even a failed start can leave a feed running, part-queued.
-        self.save(&mut state);
-        done
+        self.act_checked(at, store, action.into(), clock, client, before)
+    }
+
+    fn load_as(
+        &self,
+        at: DjSpeakers<'_>,
+        store: &mut dyn Store,
+        clock: &dyn Clock,
+        client: &Client,
+    ) -> Result<OutcomeDto, Failure> {
+        self.load_as_checked(at, store, clock, client, &|| Ok(()))
+    }
+
+    fn load_as_checked(
+        &self,
+        at: DjSpeakers<'_>,
+        store: &mut dyn Store,
+        clock: &dyn Clock,
+        client: &Client,
+        before: &dyn Fn() -> Result<(), Failure>,
+    ) -> Result<OutcomeDto, Failure> {
+        self.act_checked(at, store, FeedAction::Load, clock, client, before)
     }
 
     fn starter(&self, coordinator: &PlayerId) -> DjStarter {

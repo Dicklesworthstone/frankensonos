@@ -114,6 +114,7 @@ impl Rig {
                 played: Vec::new(),
                 recovery: Default::default(),
                 dry_end: None,
+                suspended: false,
                 playing: Some(4),
                 recorded: Some((4, TRACKS[3].into())),
             },

@@ -35,6 +35,7 @@ pub(super) fn check_readiness(
             coordinator,
             mood,
             direction,
+            start,
         } = op
         else {
             continue;
@@ -52,7 +53,13 @@ pub(super) fn check_readiness(
             coordinator,
         };
         surface
-            .with_dj_store(|store| Ok(dj.start_ready(at, store, steer.as_ref(), &*surface.clock)))?
+            .with_dj_store(|store| {
+                Ok(if *start {
+                    dj.start_ready(at, store, steer.as_ref(), &*surface.clock)
+                } else {
+                    dj.load_ready(at, store, steer.as_ref(), &*surface.clock)
+                })
+            })?
             .ok_or_else(|| {
                 Failure::new(ErrorCode::NotImplemented, "the DJ needs the daemon's store")
             })??;

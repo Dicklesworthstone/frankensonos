@@ -139,6 +139,7 @@ fn dj_plan(direction: Option<DjDirection>) -> ScenePlan {
             coordinator: PlayerId("RINCON_TEST".into()),
             mood: Some("calm".into()),
             direction,
+            start: true,
         }],
         notes: Vec::new(),
     }
@@ -271,6 +272,7 @@ fn capture_plan_and_dispatch_keep_the_full_direction_in_both_generations() {
                 coordinator: coordinator.clone(),
                 mood: Some("calm".into()),
                 direction: Some(direction()),
+                start: true,
             }]
         );
         let hook = DirectionHook::default();

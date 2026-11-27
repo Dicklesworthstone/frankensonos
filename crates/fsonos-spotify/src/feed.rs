@@ -56,6 +56,7 @@ use crate::steer::Steer;
 
 mod enqueue;
 mod history;
+mod loading;
 mod mode;
 mod readiness;
 mod reconcile;
@@ -359,6 +360,9 @@ pub struct QueueFeed {
     pub lookahead: usize,
     /// Started, and neither stopped nor let go.
     active: bool,
+    /// Silent preparation waits for a fresh owned Playing observation or an
+    /// explicit start/skip before automatic playback may continue.
+    suspended: bool,
     /// The DJ's works from the current one on, in queue order.
     queued: Vec<QueuedWork>,
     /// The DJ's works already played and still on the queue, in queue
@@ -401,6 +405,10 @@ pub struct FeedSnapshot {
     pub queued: Vec<QueuedWork>,
     pub playing: Option<u32>,
     pub recorded: Option<(u32, String)>,
+    /// A silently prepared scene remains silent across daemon restarts.
+    /// Legacy feeds retain their ordinary automatic continuation behavior.
+    #[serde(default)]
+    pub suspended: bool,
     /// Works already played and still on the queue (none in a feed saved
     /// before the DJ trimmed its queue).
     #[serde(default)]
@@ -425,6 +433,7 @@ impl QueueFeed {
             rng: Rng::new(seed),
             lookahead: 1,
             active: false,
+            suspended: false,
             queued: Vec::new(),
             played: Vec::new(),
             playing: None,
@@ -450,6 +459,7 @@ impl QueueFeed {
             queued: self.queued.clone(),
             playing: self.playing,
             recorded: self.recorded.clone(),
+            suspended: self.suspended,
             played: self.played.clone(),
             recovery: self.recovery.clone(),
             dry_end: self.dry_end,
@@ -471,6 +481,7 @@ impl QueueFeed {
             rng: Rng::new(seed),
             lookahead: snapshot.lookahead,
             active,
+            suspended: snapshot.suspended,
             queued: snapshot.queued,
             played: snapshot.played,
             playing: snapshot.playing,
@@ -575,12 +586,13 @@ impl QueueFeed {
         plan: Planning<'_>,
         store: &mut S,
     ) -> Result<&[QueuedWork], FeedError> {
-        if let Err(e) = self.begin(at, plan, store) {
+        if let Err(e) = self.begin(at, plan, store, true) {
             if self.queued.is_empty() && self.played.is_empty() {
                 self.release();
             }
             return Err(e);
         }
+        self.suspended = false;
         Ok(&self.queued)
     }
 
@@ -589,6 +601,7 @@ impl QueueFeed {
         at: &Speakers<'_, T>,
         plan: Planning<'_>,
         store: &mut S,
+        autoplay: bool,
     ) -> Result<(), FeedError> {
         self.accepted_playback = false;
         // An explicit start is the owner's decision to try this session anew.
@@ -597,7 +610,11 @@ impl QueueFeed {
             // Resuming: the queue and current movement may have changed since
             // the last event, including a seek back into a retained work.
             self.resync(at)?;
-            let continuation = mode::continuation(self, at);
+            let continuation = if autoplay {
+                mode::continuation(self, at)
+            } else {
+                mode::loading_continuation(self, at)
+            };
             if continuation.is_err() {
                 self.invalidate_queue();
             }
@@ -608,6 +625,10 @@ impl QueueFeed {
         };
         if let Some(selected) = &continuation {
             self.place_current(selected.position);
+        }
+        if !autoplay {
+            self.suspend();
+            control::pause_confirmed(at.transport, at.households, at.coordinator)?;
         }
         // An explicit start authorizes a new set even if reconciliation
         // relinquished every old occurrence. Automatic callers stay released.
@@ -622,7 +643,12 @@ impl QueueFeed {
             self.enqueue(at, plan, store, want - self.queued.len(), &mut proof)?;
         }
         if let Some(selected) = continuation {
-            if let Err(error) = mode::resume(self, at, &selected) {
+            let result = if autoplay {
+                mode::resume(self, at, &selected)
+            } else {
+                loading::hold(self, at, &selected)
+            };
+            if let Err(error) = result {
                 self.invalidate_queue();
                 return Err(error);
             }
@@ -630,7 +656,16 @@ impl QueueFeed {
             let first = self.queued[0]
                 .first()
                 .expect("a queued work has a queued movement");
-            mode::start(at, first)?;
+            if autoplay {
+                mode::start(at, first)?;
+            } else {
+                control::load_queue_from_in_order(
+                    at.transport,
+                    at.households,
+                    at.coordinator,
+                    first,
+                )?;
+            }
             self.playing = Some(first);
             self.jumped = true;
         }
@@ -679,6 +714,13 @@ impl QueueFeed {
             // Temporary announcements, radio and Connect retain the DJ set,
             // but cannot move its cursor, record listens, trim or refill it.
             return Ok(0);
+        }
+        if self.suspended {
+            if !loading::observed_resume(self, at, playback)? {
+                return Ok(0);
+            }
+            self.suspended = false;
+            self.dry_end = None;
         }
         if self.recovery.in_flight() {
             // Unwinding may leave a live engine in the same uncertain state
@@ -1050,6 +1092,8 @@ impl QueueFeed {
             .first()
             .expect("a queued work has a queued movement");
         mode::start(at, first)?;
+        self.suspended = false;
+        self.dry_end = None;
         self.playing = Some(first);
         self.jumped = true;
         self.recovery.reset_attempts();
@@ -1106,6 +1150,7 @@ impl QueueFeed {
     /// Forget the queue and stop feeding it.
     fn release(&mut self) {
         self.active = false;
+        self.suspended = false;
         self.queued.clear();
         self.played.clear();
         self.playing = None;
@@ -1699,6 +1744,7 @@ mod tests {
 
     mod history;
     mod invalidation;
+    mod loading;
     mod navigation;
     mod ownership;
     mod recovery;

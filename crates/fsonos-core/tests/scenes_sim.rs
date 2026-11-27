@@ -2,6 +2,7 @@
 //! generations: save the house, change it, apply the scene, and get the
 //! same house back.
 
+use fsonos_core::dj_direction::DjDirection;
 use fsonos_core::fade::Fader;
 use fsonos_core::scenes::{
     self, ApplyOptions, PlayingDj, Scene, SceneError, SceneGroup, SceneHooks, SceneOp, SceneSource,
@@ -604,5 +605,117 @@ fn quiet_retained_sources_are_noops_when_the_transport_is_known_inactive() {
                 assert_eq!(soap::get_transport_info(&lan, host).unwrap().state, state);
             }
         }
+    }
+}
+
+#[derive(Default)]
+struct SilentDj(Mutex<Vec<PlayingDj>>);
+
+impl SceneHooks for SilentDj {
+    fn start_dj(&self, _: &PlayerId, _: Option<&str>) -> Result<(), String> {
+        panic!("a paused scene must never call the audible DJ hook")
+    }
+
+    fn load_dj_with_direction(
+        &self,
+        coordinator: &PlayerId,
+        mood: Option<&str>,
+        direction: Option<&DjDirection>,
+    ) -> Result<(), String> {
+        self.0.lock().unwrap().push(PlayingDj {
+            coordinator: coordinator.clone(),
+            mood: mood.map(str::to_string),
+            direction: direction.cloned(),
+        });
+        Ok(())
+    }
+}
+
+#[test]
+fn a_paused_dj_scene_dispatches_only_the_silent_hook_without_a_fade_in() {
+    let sim = sim();
+    let lan = sim.lan();
+    let h = houses(&sim, &lan);
+    for room in ["Den", "Living Room"] {
+        play_favorite(&lan, &h, room, "Sim Radio");
+        let coordinator = id(&h, room);
+        let host = resolve_room(&h, room).unwrap().coordinator.ip;
+        soap::pause(&lan, host).unwrap();
+        let direction = DjDirection {
+            for_secs: Some(3_600),
+            ..Default::default()
+        };
+        let scene = Scene {
+            name: "Prepare the DJ".into(),
+            groups: vec![SceneGroup {
+                coordinator: room.into(),
+                members: Vec::new(),
+                source: SceneSource::Dj {
+                    mood: Some("calm".into()),
+                    direction: Some(direction.clone()),
+                },
+                playing: Some(false),
+            }],
+            volumes: BTreeMap::new(),
+            mutes: BTreeMap::new(),
+            writer: None,
+        };
+        let fader = Fader::default();
+        let dj = SilentDj::default();
+        let options = ApplyOptions {
+            fade: Some((&fader, Duration::from_millis(50))),
+            hooks: &dj,
+        };
+        let before = sim.soap_log().len();
+        let (ops, report) = apply(&lan, &h, &scene, &options);
+        assert!(report.is_complete(), "{room}: {report:?}");
+        assert_eq!(report.faded, 0);
+        assert_eq!(
+            ops,
+            [SceneOp::Dj {
+                coordinator: coordinator.clone(),
+                mood: Some("calm".into()),
+                direction: Some(direction.clone()),
+                start: false,
+            }]
+        );
+        assert_eq!(
+            *dj.0.lock().unwrap(),
+            [PlayingDj {
+                coordinator,
+                mood: Some("calm".into()),
+                direction: Some(direction),
+            }]
+        );
+        assert!(
+            sim.soap_log()[before..]
+                .iter()
+                .all(|entry| entry.action.starts_with("Get") || entry.action == "Browse"),
+            "{room}: the core must not start music, pause afterward or fade in"
+        );
+
+        // Compatibility with older hooks must be an explicit refusal, never
+        // a fallback to an audible start whose later Pause could fail.
+        let audible_only = Dj::default();
+        let report = scenes::apply(
+            &lan,
+            &h,
+            &scenes::ScenePlan {
+                ops,
+                notes: Vec::new(),
+            },
+            &ApplyOptions {
+                fade: None,
+                hooks: &audible_only,
+            },
+        );
+        assert!(!report.is_complete(), "{room}: {report:?}");
+        assert_eq!(report.failed.len(), 1);
+        assert!(report.failed[0].1.contains("paused"));
+        assert!(audible_only.0.lock().unwrap().is_empty());
+        assert_eq!(
+            soap::get_transport_info(&lan, host).unwrap().state,
+            TransportState::Paused
+        );
     }
 }

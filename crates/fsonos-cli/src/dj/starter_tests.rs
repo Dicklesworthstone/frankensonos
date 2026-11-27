@@ -15,6 +15,8 @@ use serde_json::Value;
 use std::cell::Cell;
 use std::net::IpAddr;
 
+mod silent;
+
 struct Rig {
     sim: SimHandle,
     households: Vec<HouseholdState>,

@@ -406,6 +406,7 @@ mod tests {
 
     fn saved(from: &PlayerId) -> FeedSnapshot {
         FeedSnapshot {
+            suspended: false,
             zone: from.0.clone(),
             earlier: Vec::new(),
             lookahead: 1,

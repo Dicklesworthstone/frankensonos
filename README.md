@@ -933,6 +933,23 @@ playback snapshot was unavailable. Both the caller's and the saved author's
 pause permissions apply to that silent load, along with permission to play
 the selected source.
 
+A paused DJ scene also prepares its queue without sending Play. An existing
+owned queue keeps its selected occurrence and elapsed position; a new set
+loads its first work silently. The daemon saves that suspended intent before
+changing an existing feed, so queued playback events and a restart cannot
+restart the music automatically. Resume the room or explicitly start the DJ
+when you want to listen. Both the applying caller and the saved author need
+`dj_start` and `pause` permission. Readiness is checked before scene changes,
+and scheduled recalls use the same silent path.
+
+For a scene that keeps its current source, only a known paused or stopped
+snapshot can skip an explicitly requested Pause. Buffering, unknown, or failed
+snapshots no longer make a quiet scene a no-op.
+
+These scene changes include planner, S1/S2 simulator, policy, scheduler and
+daemon persistence regressions. They remain unexecuted because the session's
+execution environment became unavailable; GitHub checks are pending.
+
 Next:
 
 - Real-hardware CI (a nightly `fsonos selftest` against a real house), then

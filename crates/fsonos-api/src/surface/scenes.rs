@@ -782,14 +782,19 @@ fn describe(households: &[HouseholdState], op: &SceneOp) -> String {
             coordinator,
             mood,
             direction,
+            start,
         } => {
             let detail = direction
                 .as_ref()
                 .map(|direction| DjDirectionDto::from(direction).summary(mood.as_deref()))
                 .or_else(|| mood.clone());
+            let action = if *start { "starts" } else { "loads" };
+            let state = if *start { "" } else { " ready without playback" };
             match detail {
-                Some(detail) => format!("{} starts the DJ ({detail})", room(coordinator)),
-                None => format!("{} starts the DJ", room(coordinator)),
+                Some(detail) => {
+                    format!("{} {action} the DJ ({detail}){state}", room(coordinator))
+                }
+                None => format!("{} {action} the DJ{state}", room(coordinator)),
             }
         }
         SceneOp::Tracks {
@@ -988,6 +993,27 @@ impl SceneHooks for SceneDj<'_> {
         mood: Option<&str>,
         direction: Option<&DjDirection>,
     ) -> Result<(), String> {
+        self.prepare_dj(coordinator, mood, direction, true)
+    }
+
+    fn load_dj_with_direction(
+        &self,
+        coordinator: &PlayerId,
+        mood: Option<&str>,
+        direction: Option<&DjDirection>,
+    ) -> Result<(), String> {
+        self.prepare_dj(coordinator, mood, direction, false)
+    }
+}
+
+impl SceneDj<'_> {
+    fn prepare_dj(
+        &self,
+        coordinator: &PlayerId,
+        mood: Option<&str>,
+        direction: Option<&DjDirection>,
+        start: bool,
+    ) -> Result<(), String> {
         let s = self.surface;
         let dj = s.dj.as_deref().ok_or("this surface runs no DJ")?;
         let steer = dj_start::steering(s, mood, direction).map_err(|failure| failure.detail)?;
@@ -1003,7 +1029,11 @@ impl SceneHooks for SceneDj<'_> {
                 return Ok(Err(refused));
             }
             let was_feeding = dj.feeds(coordinator);
-            let started = dj.act_as(at, store, DjAction::Start, &*s.clock, self.client);
+            let started = if start {
+                dj.act_as(at, store, DjAction::Start, &*s.clock, self.client)
+            } else {
+                dj.load_as(at, store, &*s.clock, self.client)
+            };
             if started.is_ok() || (!was_feeding && dj.feeds(coordinator)) {
                 s.dj_starters.started(coordinator, self.client);
             }
@@ -1509,7 +1539,7 @@ impl Surface {
                 notes,
             });
         }
-        // A scene that starts the DJ changes its stored steering too.
+        // Starting or silently loading the DJ changes its stored steering too.
         let dj_zones: Vec<PlayerId> = plan
             .ops
             .iter()
@@ -1796,6 +1826,7 @@ fn authorize_op(guard: &Guard<'_>, op: &SceneOp) -> Result<(), Failure> {
             | SceneOp::Uri { start: false, .. }
             | SceneOp::SonosPlaylist { start: false, .. }
             | SceneOp::Tracks { start: false, .. }
+            | SceneOp::Dj { start: false, .. }
     ) {
         // Silent loading may pause the old source before selecting the new one.
         guard.authorize("pause", false)?;

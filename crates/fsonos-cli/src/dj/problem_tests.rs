@@ -23,6 +23,7 @@ const TRACKS: [&str; 2] = [
 /// A feed on Den's queue: one two-movement work, the second playing.
 fn fed(den: &PlayerId) -> FeedSnapshot {
     FeedSnapshot {
+        suspended: false,
         zone: den.0.clone(),
         earlier: Vec::new(),
         lookahead: 1,

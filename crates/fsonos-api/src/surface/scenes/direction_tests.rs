@@ -33,6 +33,7 @@ fn authored_direction_normalizes_all_fields_and_round_trips_without_expiry_times
         coordinator: PlayerId("RINCON_TEST".into()),
         mood: mood.clone(),
         direction: Some(direction.clone()),
+        start: true,
     };
     let described = describe(&[], &op);
     assert!(described.contains("Jazz only"));
@@ -95,4 +96,18 @@ fn invalid_or_misplaced_direction_fails_pure_source_validation() {
             ErrorCode::InvalidArgument
         );
     }
+}
+
+#[test]
+fn silent_dj_steps_describe_preparation_without_promising_playback() {
+    let op = SceneOp::Dj {
+        coordinator: PlayerId("RINCON_TEST".into()),
+        mood: Some("calm".into()),
+        direction: None,
+        start: false,
+    };
+    assert!(!op.starts());
+    let described = describe(&[], &op);
+    assert!(described.contains("loads the DJ (calm) ready without playback"));
+    assert!(!described.contains("starts"));
 }

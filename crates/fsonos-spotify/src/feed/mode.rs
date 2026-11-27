@@ -26,11 +26,29 @@ pub(super) fn start<T: Transport + ?Sized>(
 }
 
 /// Repeating an explicit start continues an owned playing or paused occurrence.
-/// New sessions, another source and stopped/exhausted queues use the ordinary
-/// ordered start. Reads that cannot establish that distinction remain errors.
+/// A silently prepared stopped occurrence also resumes in place. New sessions,
+/// another source and ordinary stopped/exhausted queues use the ordered start.
+/// Reads that cannot establish that distinction remain errors.
 pub(super) fn continuation<T: Transport + ?Sized>(
     feed: &QueueFeed,
     at: &Speakers<'_, T>,
+) -> Result<Option<Selected>, FeedError> {
+    selected_continuation(feed, at, feed.is_suspended())
+}
+
+/// Silent recall also retains a stopped queue's selected owned movement.
+/// A new queue with no selected slot still needs its ordinary first load.
+pub(super) fn loading_continuation<T: Transport + ?Sized>(
+    feed: &QueueFeed,
+    at: &Speakers<'_, T>,
+) -> Result<Option<Selected>, FeedError> {
+    selected_continuation(feed, at, true)
+}
+
+fn selected_continuation<T: Transport + ?Sized>(
+    feed: &QueueFeed,
+    at: &Speakers<'_, T>,
+    allow_stopped: bool,
 ) -> Result<Option<Selected>, FeedError> {
     if !feed.is_active() {
         return Ok(None);
@@ -41,7 +59,9 @@ pub(super) fn continuation<T: Transport + ?Sized>(
         return Ok(None);
     }
     let live = fsonos_proto::control::get_transport_info(at.transport, host)?;
-    if live.status == "ERROR_OCCURRED" || live.state == TransportState::Stopped {
+    let stopped = live.state == TransportState::Stopped;
+    let unselected = allow_stopped && stopped && get_position_info(at.transport, host)?.track == 0;
+    if live.status == "ERROR_OCCURRED" || (stopped && (!allow_stopped || unselected)) {
         // A stopped queue may have no selected track yet (a partial first
         // start), so it cannot require an owned playing-occurrence proof.
         if Group::read(at)?.is_none() || stop::source(at, host)? != own_queue {
@@ -49,7 +69,9 @@ pub(super) fn continuation<T: Transport + ?Sized>(
         }
         return Ok(None);
     }
-    if !matches!(live.state, TransportState::Playing | TransportState::Paused) {
+    if !matches!(live.state, TransportState::Playing | TransportState::Paused)
+        && !(allow_stopped && stopped)
+    {
         return Err(changed_selection());
     }
     let selected = match stop::selected(feed, at)? {
@@ -57,9 +79,9 @@ pub(super) fn continuation<T: Transport + ?Sized>(
         Selection::Unowned => None,
         Selection::DifferentSource | Selection::Changed => return Err(changed_selection()),
     };
-    // A stopped/unknown state arriving during the proof is a conflict, not
-    // the definite stopped queue observed before it began.
-    if !resumable(at)? {
+    // Ordinary starts reject a stop arriving during the proof. Silent loads
+    // and prepared sets may retain the same selected stopped occurrence.
+    if !ready_state(at, allow_stopped)? {
         return Err(changed_selection());
     }
     Ok(selected)
@@ -73,12 +95,14 @@ fn changed_selection() -> FeedError {
     .into()
 }
 
-fn resumable<T: Transport + ?Sized>(at: &Speakers<'_, T>) -> Result<bool, FeedError> {
+fn ready_state<T: Transport + ?Sized>(
+    at: &Speakers<'_, T>,
+    allow_stopped: bool,
+) -> Result<bool, FeedError> {
     let live = fsonos_proto::control::get_transport_info(at.transport, host_of(at)?)?;
-    Ok(
-        matches!(live.state, TransportState::Playing | TransportState::Paused)
-            && live.status != "ERROR_OCCURRED",
-    )
+    Ok((matches!(live.state, TransportState::Playing | TransportState::Paused)
+        || (allow_stopped && live.state == TransportState::Stopped))
+        && live.status != "ERROR_OCCURRED")
 }
 
 /// Preserve elapsed playback: neither changing the source nor seeking is
@@ -94,7 +118,7 @@ pub(super) fn resume<T: Transport + ?Sized>(
         if !matches!(
             stop::selected(feed, at)?,
             Selection::Owned(selected) if &selected == expected
-        ) || !resumable(at)?
+        ) || !ready_state(at, feed.is_suspended())?
         {
             return Err(changed_selection());
         }
@@ -487,6 +511,7 @@ mod replay {
                     played: vec![Self::work(0)],
                     recovery: Default::default(),
                     dry_end: None,
+                    suspended: false,
                     playing: Some(3),
                     recorded: Some((3, TRACKS[2].into())),
                 },

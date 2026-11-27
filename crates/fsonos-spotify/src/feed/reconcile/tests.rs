@@ -39,6 +39,7 @@ fn snapshot(played: Vec<QueuedWork>, queued: Vec<QueuedWork>) -> FeedSnapshot {
         played,
         recovery: Default::default(),
         dry_end: None,
+        suspended: false,
     }
 }
 

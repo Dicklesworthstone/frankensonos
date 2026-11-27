@@ -36,6 +36,11 @@ pub(super) fn direction(
     context(&candidate, store, at.coordinator, Some(steer), clock).map(|_| ())
 }
 
+struct StartRequest<'a> {
+    steer: Option<&'a DjSteer>,
+    silent: bool,
+}
+
 pub(super) fn check(
     dj: &SpotifyDj,
     at: DjSpeakers<'_>,
@@ -43,15 +48,37 @@ pub(super) fn check(
     steer: Option<&DjSteer>,
     clock: &dyn Clock,
 ) -> Result<(), Failure> {
+    check_for(dj, at, store, steer, clock, false)
+}
+
+pub(super) fn check_load(
+    dj: &SpotifyDj,
+    at: DjSpeakers<'_>,
+    store: &dyn Store,
+    steer: Option<&DjSteer>,
+    clock: &dyn Clock,
+) -> Result<(), Failure> {
+    check_for(dj, at, store, steer, clock, true)
+}
+
+fn check_for(
+    dj: &SpotifyDj,
+    at: DjSpeakers<'_>,
+    store: &dyn Store,
+    steer: Option<&DjSteer>,
+    clock: &dyn Clock,
+    load: bool,
+) -> Result<(), Failure> {
+    let request = StartRequest { steer, silent: load };
     {
         let state = dj.state();
         if state.plan_is_current(store, dj.moods_file.as_ref())? {
-            return check_plan(&state, &state, dj, at, store, steer, clock);
+            return check_plan(&state, &state, dj, at, store, request, clock);
         }
     }
     let candidate = State::read_plan(store, dj.moods_file.as_ref(), clock.now().timestamp())?;
     let state = dj.state();
-    check_plan(&candidate, &state, dj, at, store, steer, clock)
+    check_plan(&candidate, &state, dj, at, store, request, clock)
 }
 
 fn check_plan(
@@ -60,9 +87,10 @@ fn check_plan(
     dj: &SpotifyDj,
     at: DjSpeakers<'_>,
     store: &dyn Store,
-    steer: Option<&DjSteer>,
+    request: StartRequest<'_>,
     clock: &dyn Clock,
 ) -> Result<(), Failure> {
+    let StartRequest { steer, silent } = request;
     let context = context(candidate, store, at.coordinator, steer, clock)?;
     // Feedback and listening change without changing the catalog receipt.
     // Refresh the former here; start_ready reads current history itself.
@@ -80,11 +108,12 @@ fn check_plan(
         context.now.unsigned_abs(),
     );
     let feed = state.feeds.get(at.coordinator).unwrap_or(&fresh);
-    feed.start_ready(
-        &speakers(at),
-        plan(&candidate.pool, Some(&feedback), &context, &elsewhere),
-        store,
-    )
+    let planning = plan(&candidate.pool, Some(&feedback), &context, &elsewhere);
+    if silent {
+        feed.load_ready(&speakers(at), planning, store)
+    } else {
+        feed.start_ready(&speakers(at), planning, store)
+    }
     .map_err(failure)
 }
 

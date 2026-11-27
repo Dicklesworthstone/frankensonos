@@ -1687,6 +1687,28 @@ The whole silent source operation requires both its playback permission and
 `pause` for the caller and saved writer. Denied source operations are omitted
 before readiness reads, while independently permitted room changes remain.
 
+DJ sources now use the same explicit silent intent. `SceneOp::Dj.start` is
+false exactly when `playing` is false; the executor calls a separate silent
+hook instead of starting and then pausing. Readiness, caller/writer pause
+authorization, scheduled retries and scene receipts carry that intent.
+A silent DJ load does not invoke playback cap lowering or a fade-in; explicit
+scene volume changes retain their normal policy checks.
+
+The feeder prepares whole works without Play, preserves the selected occurrence
+and elapsed position of a still-owned queue, and saves a suspended feed.
+Existing feeds checkpoint suspension and caller provenance before speaker I/O.
+Stopped/error callbacks and stale Playing callbacks cannot release suspension;
+normal feeding resumes only after fresh owned playback confirmation or an
+explicit successful DJ start/skip. Suspension survives daemon restart, and
+legacy saved feeds default to the prior active behavior. Unsupported DJ hooks
+refuse at readiness rather than emulating a silent load with audible playback.
+
+Retained-source scenes also require a known Paused or Stopped observation to
+omit an explicit pause. A Transitioning/Unknown state or failed snapshot still
+plans Pause. Added planner, S1/S2 simulator, daemon persistence, policy and
+scheduler regressions are pending execution after the local environment became
+unavailable; static review is not a Rust build or runtime pass.
+
 ### 12.8 An instant CLI through the daemon
 
 [`d-cli-daemon-client`] The CLI uses a running daemon's warm state when one

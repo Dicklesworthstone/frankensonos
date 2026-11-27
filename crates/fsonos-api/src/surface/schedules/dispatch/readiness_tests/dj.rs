@@ -5,6 +5,7 @@ use crate::plan::DjAction;
 use fsonos_core::clock::Clock;
 use fsonos_core::dj_direction::{DjConstraints, DjDirection};
 use fsonos_core::playback::PlayerPlayback;
+use fsonos_core::policy::Client;
 use fsonos_core::scenes::{SceneGroup, SceneSource};
 use fsonos_core::store::Store;
 use fsonos_types::PlayerId;
@@ -15,6 +16,9 @@ struct Probe {
     ready: Arc<AtomicBool>,
     checks: Arc<AtomicUsize>,
     starts: Arc<AtomicUsize>,
+    load_checks: Arc<AtomicUsize>,
+    loads: Arc<AtomicUsize>,
+    loaded_clients: Arc<Mutex<Vec<String>>>,
     fail_after_start: Arc<AtomicBool>,
     previews: Arc<Mutex<Vec<Option<DjSteer>>>>,
     steers: Arc<Mutex<Vec<DjSteer>>>,
@@ -63,6 +67,55 @@ impl DjEngine for Probe {
                 ErrorCode::NotReady,
                 "DJ library or renderer pending",
             ))
+        }
+    }
+
+    fn load_ready(
+        &self,
+        at: DjSpeakers<'_>,
+        store: &dyn Store,
+        steer: Option<&DjSteer>,
+        clock: &dyn Clock,
+    ) -> Result<(), Failure> {
+        self.load_checks.fetch_add(1, Ordering::SeqCst);
+        self.start_ready(at, store, steer, clock)
+    }
+
+    fn load_as(
+        &self,
+        at: DjSpeakers<'_>,
+        _: &mut dyn Store,
+        _: &dyn Clock,
+        client: &Client,
+    ) -> Result<OutcomeDto, Failure> {
+        self.loads.fetch_add(1, Ordering::SeqCst);
+        self.loaded_clients.lock().unwrap().push(client.key().into());
+        let player = at
+            .households
+            .iter()
+            .find_map(|house| house.player(at.coordinator))
+            .unwrap();
+        if soap::get_transport_info(at.transport, player.ip)
+            .map_err(fsonos_core::CoreError::from)?
+            .state
+            == TransportState::Playing
+        {
+            soap::pause(at.transport, player.ip).map_err(fsonos_core::CoreError::from)?;
+        }
+        soap::set_av_transport_uri(
+            at.transport,
+            player.ip,
+            "x-rincon-mp3radio://stream.example.invalid/prepared-dj.mp3",
+            "",
+        )
+        .map_err(fsonos_core::CoreError::from)?;
+        if self.fail_after_start.load(Ordering::SeqCst) {
+            Err(Failure::new(
+                ErrorCode::OutcomeUncertain,
+                "synthetic silent load lost its acknowledgement",
+            ))
+        } else {
+            Ok(done())
         }
     }
 
@@ -368,4 +421,195 @@ fn a_scheduled_scene_waits_for_its_dj_before_consuming_or_changing_any_room() {
     house.tick(&scheduler, house.at + chrono::TimeDelta::minutes(1));
     assert_eq!(house.recorded(), Some(house.at));
     assert_eq!(probe.starts.load(Ordering::SeqCst), 1);
+}
+
+fn silent_scene(house: &House, writer: &Client, direction: Option<DjDirection>) {
+    let scene = Scene {
+        name: "Prepared DJ".into(),
+        groups: vec![SceneGroup {
+            coordinator: "Room0".into(),
+            members: Vec::new(),
+            source: SceneSource::Dj {
+                mood: None,
+                direction,
+            },
+            playing: Some(false),
+        }],
+        volumes: BTreeMap::new(),
+        mutes: BTreeMap::new(),
+        writer: Some(writer.key().into()),
+    };
+    house
+        .surface
+        .with_store(|store| Ok(scenes::save(store, &scene, house.at.timestamp())))
+        .unwrap()
+        .unwrap()
+        .unwrap();
+}
+
+#[test]
+fn a_silent_dj_scene_loads_its_direction_without_play_or_implicit_fade_and_caps() {
+    for s2 in [false, true] {
+        let probe = Probe::default();
+        probe.ready.store(true, Ordering::SeqCst);
+        probe.play.store(true, Ordering::SeqCst);
+        let house = House::new(s2, &action()).with_dj(&probe);
+        let client = Client::Tailnet("tag:listener".into());
+        let constraints = DjConstraints {
+            include_artists: vec!["Synthetic artist".into()],
+            strict: true,
+            ..DjConstraints::default()
+        };
+        silent_scene(
+            &house,
+            &Client::Cli,
+            Some(DjDirection {
+                constraints,
+                for_secs: Some(1200),
+            }),
+        );
+        let host = house.sim.player("Room0").unwrap().ip;
+        soap::set_volume(&house.sim.lan(), host, 85).unwrap();
+        soap::set_av_transport_uri(
+            &house.sim.lan(),
+            host,
+            "x-rincon-mp3radio://stream.example.invalid/before-dj.mp3",
+            "",
+        )
+        .unwrap();
+        soap::play(&house.sim.lan(), host).unwrap();
+        let before = house.sim.soap_log().len();
+        let outcome = house
+            .surface
+            .apply_scene_with(
+                &client,
+                "Prepared DJ",
+                &crate::surface::scenes::SceneApplyRequest { fade_secs: Some(1) },
+            )
+            .unwrap();
+        assert!(outcome.complete && outcome.changed, "{outcome:?}");
+        assert!(
+            outcome
+                .steps
+                .iter()
+                .any(|step| step.contains("ready without playback")),
+            "{outcome:?}"
+        );
+        assert_eq!(probe.starts.load(Ordering::SeqCst), 0);
+        assert_eq!(probe.loads.load(Ordering::SeqCst), 1);
+        assert_eq!(probe.load_checks.load(Ordering::SeqCst), 1);
+        assert_eq!(
+            *probe.loaded_clients.lock().unwrap(),
+            vec![client.key().to_owned()]
+        );
+        let steers = probe.steers.lock().unwrap();
+        assert!(matches!(
+            steers.as_slice(),
+            [DjSteer::Set { mood: None, constraints, for_secs: Some(1200) }]
+                if constraints.strict
+                    && constraints.include_artists == ["Synthetic artist"]
+        ));
+        assert_eq!(
+            *probe.previews.lock().unwrap(),
+            vec![Some(steers[0].clone())]
+        );
+        assert!(
+            house.sim.soap_log()[before..]
+                .iter()
+                .all(|call| call.action != "Play" && call.action != "SetVolume")
+        );
+        assert_ne!(
+            soap::get_transport_info(&house.sim.lan(), host).unwrap().state,
+            TransportState::Playing
+        );
+        assert_eq!(soap::get_volume(&house.sim.lan(), host).unwrap(), 85);
+    }
+}
+
+#[test]
+fn silent_dj_loading_requires_pause_and_dj_start_for_both_scene_identities() {
+    for s2 in [false, true] {
+        for denied in ["pause", "dj_start"] {
+            for writer_denied in [false, true] {
+                let probe = Probe::default();
+                probe.ready.store(true, Ordering::SeqCst);
+                let house = House::new(s2, &action()).with_dj(&probe);
+                *house.surface.policy.write().unwrap() = Arc::new(
+                    Policy::from_toml(&format!(
+                        "[clients.\"tag:blocked\"]\ndeny = [\"{denied}\"]\n"
+                    ))
+                    .unwrap(),
+                );
+                let cli = Client::Cli;
+                let blocked = Client::Tailnet("tag:blocked".into());
+                let (writer, caller) = if writer_denied {
+                    (&blocked, &cli)
+                } else {
+                    (&cli, &blocked)
+                };
+                silent_scene(&house, writer, None);
+                let before = house.sim.soap_log().len();
+                let outcome = house.surface.apply_scene(caller, "Prepared DJ").unwrap();
+                assert!(outcome.complete && !outcome.changed, "{outcome:?}");
+                assert!(
+                    outcome
+                        .notes
+                        .iter()
+                        .any(|note| note.code == crate::failure::NoteCode::Skipped)
+                );
+                assert_eq!(probe.loads.load(Ordering::SeqCst), 0);
+                assert_eq!(probe.starts.load(Ordering::SeqCst), 0);
+                assert_eq!(probe.load_checks.load(Ordering::SeqCst), 0);
+                assert!(probe.steers.lock().unwrap().is_empty());
+                assert!(
+                    house.sim.soap_log()[before..]
+                        .iter()
+                        .all(|call| call.action.starts_with("Get") || call.action == "Browse")
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn scheduled_silent_dj_scenes_retry_readiness_but_never_replay_a_dispatched_load() {
+    for s2 in [false, true] {
+        for failed in [false, true] {
+            let probe = Probe::default();
+            let house = House::new(
+                s2,
+                &ScheduleAction::ApplyScene {
+                    name: "Prepared DJ".into(),
+                },
+            )
+            .with_dj(&probe);
+            silent_scene(&house, &Client::Cli, None);
+            let scheduler = Scheduler::new(&house.surface);
+            let before = house.sim.soap_log().len();
+            house.tick(&scheduler, house.at);
+            assert_eq!(house.recorded(), None);
+            assert_eq!(probe.load_checks.load(Ordering::SeqCst), 1);
+            assert_eq!(probe.loads.load(Ordering::SeqCst), 0);
+            assert_eq!(house.sim.soap_log().len(), before);
+            probe.ready.store(true, Ordering::SeqCst);
+            probe.fail_after_start.store(failed, Ordering::SeqCst);
+            house.tick(&scheduler, house.at + chrono::TimeDelta::minutes(1));
+            assert_eq!(house.recorded(), Some(house.at));
+            assert_eq!(probe.loads.load(Ordering::SeqCst), 1);
+            assert_eq!(probe.starts.load(Ordering::SeqCst), 0);
+            assert!(
+                house.sim.soap_log()[before..]
+                    .iter()
+                    .all(|call| call.action != "Play")
+            );
+            for minute in 2..4 {
+                assert!(
+                    house
+                        .tick(&scheduler, house.at + chrono::TimeDelta::minutes(minute))
+                        .is_empty()
+                );
+            }
+            assert_eq!(probe.loads.load(Ordering::SeqCst), 1);
+        }
+    }
 }

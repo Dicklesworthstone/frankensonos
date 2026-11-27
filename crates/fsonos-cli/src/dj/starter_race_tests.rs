@@ -51,6 +51,7 @@ fn running() -> Running {
     .unwrap();
     fsonos_core::control::play_queue_from_in_order(&lan, &households, &coordinator, 1).unwrap();
     let snapshot = FeedSnapshot {
+        suspended: false,
         zone: coordinator.0.clone(),
         earlier: Vec::new(),
         lookahead: 1,

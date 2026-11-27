@@ -870,3 +870,33 @@ fn a_scene_without_a_dj_engine_fails_before_regrouping_or_volume_changes() {
     );
     assert!(!kitchen(&sim).1);
 }
+
+#[test]
+fn a_legacy_dj_engine_refuses_silent_loading_before_any_house_changes() {
+    let sim = SimHousehold::standard().spawn().unwrap();
+    let s = surface(&sim, MemStore::default()).with_dj(Box::new(PlaysIn(Vec::new())));
+    let definition: SceneDefinition = serde_json::from_value(serde_json::json!({
+        "groups": [{"coordinator": "Kitchen", "members": ["Office"],
+            "source": {"kind": "dj"}, "playing": false}],
+        "volumes": {"Kitchen": 21, "Office": 23}
+    }))
+    .unwrap();
+    s.save_scene_from(&Client::Cli, "Prepared DJ", &definition)
+        .unwrap();
+    let before = sim.soap_log().len();
+    let failure = s
+        .apply_scene_with(
+            &agent(),
+            "Prepared DJ",
+            &SceneApplyRequest { fade_secs: Some(1) },
+        )
+        .unwrap_err();
+    assert_eq!(failure.code, ErrorCode::NotImplemented);
+    assert!(failure.detail.contains("without starting playback"));
+    assert!(
+        sim.soap_log()[before..]
+            .iter()
+            .all(|request| request.action.starts_with("Get") || request.action == "Browse")
+    );
+    assert!(!kitchen(&sim).1);
+}

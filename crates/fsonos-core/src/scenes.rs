@@ -241,11 +241,12 @@ pub enum SceneOp {
         backup: QueueBackup,
         start: bool,
     },
-    /// Start (or steer) the DJ.
+    /// Start (or steer) the DJ, or prepare it silently when `start` is false.
     Dj {
         coordinator: PlayerId,
         mood: Option<String>,
         direction: Option<DjDirection>,
+        start: bool,
     },
     Play {
         coordinator: PlayerId,
@@ -256,8 +257,8 @@ pub enum SceneOp {
 }
 
 impl SceneOp {
-    /// Whether this step starts the group's sound: a Play, the DJ, or a
-    /// source played rather than loaded.
+    /// Whether this step starts the group's sound: a Play, an audible DJ
+    /// start, or a source played rather than loaded.
     #[must_use]
     pub fn starts(&self) -> bool {
         match self {
@@ -266,8 +267,9 @@ impl SceneOp {
             | Self::Uri { start, .. }
             | Self::Tracks { start, .. }
             | Self::Queue { start, .. }
-            | Self::QueueBackup { start, .. } => *start,
-            Self::Dj { .. } | Self::Play { .. } => true,
+            | Self::QueueBackup { start, .. }
+            | Self::Dj { start, .. } => *start,
+            Self::Play { .. } => true,
             Self::Leave { .. }
             | Self::Join { .. }
             | Self::Volume { .. }
@@ -370,6 +372,18 @@ pub trait SceneHooks {
             return Err("this DJ hook cannot restore a saved direction".into());
         }
         self.start_dj(coordinator, mood)
+    }
+
+    /// Prepare a resumable DJ queue and direction without starting playback.
+    /// A hook that only supports audible starts must explicitly refuse rather
+    /// than start music and attempt to pause it afterward.
+    fn load_dj_with_direction(
+        &self,
+        _coordinator: &PlayerId,
+        _mood: Option<&str>,
+        _direction: Option<&DjDirection>,
+    ) -> Result<(), String> {
+        Err("this DJ hook cannot prepare a paused session".into())
     }
 }
 
@@ -662,6 +676,7 @@ fn plan_sources(
                 coordinator: coordinator.clone(),
                 mood: mood.clone(),
                 direction: direction.clone(),
+                start,
             }),
         };
         let starts = source.as_ref().is_some_and(SceneOp::starts);
@@ -744,7 +759,11 @@ pub fn fade_players(households: &[HouseholdState], plan: &ScenePlan) -> Vec<Play
                 start: true,
                 ..
             }
-            | SceneOp::Dj { coordinator, .. }
+            | SceneOp::Dj {
+                coordinator,
+                start: true,
+                ..
+            }
             | SceneOp::Play { coordinator } => Some(coordinator),
             _ => None,
         })
@@ -834,7 +853,11 @@ fn silence_starting<T: Transport + ?Sized>(
                 start: true,
                 ..
             }
-            | SceneOp::Dj { coordinator, .. } => {
+            | SceneOp::Dj {
+                coordinator,
+                start: true,
+                ..
+            } => {
                 let idle = control::playback(t, households, coordinator)
                     .is_ok_and(|now| now.transport.state != TransportState::Playing);
                 if idle {
@@ -1183,10 +1206,17 @@ fn run<T: Transport + ?Sized>(
             coordinator,
             mood,
             direction,
+            start,
         } => {
-            options
-                .hooks
-                .start_dj_with_direction(coordinator, mood.as_deref(), direction.as_ref())
+            if *start {
+                options
+                    .hooks
+                    .start_dj_with_direction(coordinator, mood.as_deref(), direction.as_ref())
+            } else {
+                options
+                    .hooks
+                    .load_dj_with_direction(coordinator, mood.as_deref(), direction.as_ref())
+            }
         }
         SceneOp::Play { coordinator } => control::resume(t, households, coordinator).map_err(s),
         // A stream that cannot pause stops (control::pause_at).
@@ -1843,6 +1873,64 @@ mod tests {
             scene.groups[0].playing = None;
             let unknown = [snap("A", &[], TransportState::Unknown, radio())];
             assert!(plan_apply(&scene, &h, &unknown).unwrap().ops.is_empty());
+        }
+    }
+
+    #[test]
+    fn a_paused_dj_scene_prepares_its_direction_without_start_pause_or_fade_in() {
+        let h = house(&[&[&["A"]]]);
+        let direction = DjDirection {
+            constraints: crate::dj_direction::DjConstraints {
+                include_genres: vec!["jazz".into()],
+                strict: true,
+                ..Default::default()
+            },
+            for_secs: Some(3_600),
+        };
+        let mut scene = Scene {
+            name: "Ready for later".into(),
+            groups: vec![group(
+                "A",
+                &[],
+                SceneSource::Dj {
+                    mood: Some("calm".into()),
+                    direction: Some(direction.clone()),
+                },
+                false,
+            )],
+            volumes: BTreeMap::new(),
+            mutes: BTreeMap::new(),
+            writer: None,
+        };
+        let dj = |start| SceneOp::Dj {
+            coordinator: pid("A"),
+            mood: Some("calm".into()),
+            direction: Some(direction.clone()),
+            start,
+        };
+        for state in [
+            Some(TransportState::Playing),
+            Some(TransportState::Paused),
+            Some(TransportState::Stopped),
+            Some(TransportState::Transitioning),
+            Some(TransportState::Unknown),
+            None,
+        ] {
+            let snaps: Vec<_> = state
+                .map(|state| snap("A", &[], state, radio()))
+                .into_iter()
+                .collect();
+            let plan = plan_apply(&scene, &h, &snaps).unwrap();
+            assert_eq!(plan.ops, [dj(false)], "{state:?}");
+            assert!(!plan.ops[0].starts());
+            assert!(fade_players(&h, &plan).is_empty(), "{state:?}");
+        }
+        for playing in [Some(true), None] {
+            scene.groups[0].playing = playing;
+            let plan = plan_apply(&scene, &h, &[]).unwrap();
+            assert_eq!(plan.ops, [dj(true)], "{playing:?}");
+            assert!(plan.ops[0].starts());
+            assert_eq!(fade_players(&h, &plan), [pid("A")]);
         }
     }
 }

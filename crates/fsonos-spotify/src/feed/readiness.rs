@@ -17,10 +17,36 @@ impl QueueFeed {
         plan: Planning<'_>,
         store: &S,
     ) -> Result<(), FeedError> {
+        self.ready(at, plan, store, true)
+    }
+
+    /// Check a silent preparation without pausing or changing its queue.
+    /// Already selected stopped movements retain their place, as in `load`.
+    pub fn load_ready<T: Transport + ?Sized, S: Store + ?Sized>(
+        &self,
+        at: &Speakers<'_, T>,
+        plan: Planning<'_>,
+        store: &S,
+    ) -> Result<(), FeedError> {
+        self.ready(at, plan, store, false)
+    }
+
+    fn ready<T: Transport + ?Sized, S: Store + ?Sized>(
+        &self,
+        at: &Speakers<'_, T>,
+        plan: Planning<'_>,
+        store: &S,
+        autoplay: bool,
+    ) -> Result<(), FeedError> {
         let mut preview = self.clone();
         if preview.active {
             preview.resync(at)?;
-            if let Some(selected) = super::mode::continuation(&preview, at)? {
+            let selected = if autoplay {
+                super::mode::continuation(&preview, at)?
+            } else {
+                super::mode::loading_continuation(&preview, at)?
+            };
+            if let Some(selected) = selected {
                 preview.place_current(selected.position);
             }
         } else {
