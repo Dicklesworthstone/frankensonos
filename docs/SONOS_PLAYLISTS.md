@@ -225,8 +225,11 @@ An uncertain request is never replayed automatically.
 
 Omitting `target` retains the existing one-group request and response.
 
-The phone and dashboard let you select up to ten occurrences from the displayed
-saved-playlist page. Their **Selected-track destination** field accepts another
+The phone and dashboard let you build an ordered selection of up to ten
+occurrences across saved-playlist pages. Next and Previous retain the selection;
+its list includes tracks from other pages and lets you move, remove or repeat
+individual entries. Repeated occurrences count toward the ten-entry limit.
+Their **Selected-track destination** field accepts another
 room, a saved room alias, or `all@household`; leave it blank to use the group
 where you read the playlist. **Read room and alias suggestions** offers rooms
 in that household and saved aliases. An alias is resolved during review, and
@@ -244,8 +247,15 @@ destination group.
 
 The result retains confirmed groups, failed or uncertain groups, exact queue
 insertion ranges, and queue-batch logging and undo availability. Closing the
-panel or losing a reply does not replay the request. Changing the page or
-saved-playlist observation clears obsolete selections. Playback requires
+panel or losing a reply does not replay the request. Review and confirmation
+read only ranges around selected occurrences, each at most 100 entries, from
+the original source group. They preserve the selected order and repetitions
+while checking the saved revision, total, titles and renderer identities.
+
+Explicit refresh, a different playlist or source group, and changed catalog
+observations clear obsolete selections. A failed page read retains the previous
+page and basket for retry; a changed revision or contradictory contents clears
+them. Playback requires
 `play_favorite`; queue modes require `add_to_queue`. The native Apple selection
 editor continues to use its original single-group destination.
 
@@ -771,6 +781,14 @@ late reads, one-shot submissions, lost replies and mismatched receipts. The
 track-action file now has 66 cases, including 34 additions for ordered batch
 selection and both production DOM panels. The focused source, contents,
 management, room-target and HTTP-budget suites pass together (422 tests).
+
+Cross-page basket coverage additionally runs with
+`node --test scripts/test-native-playlist-basket.cjs scripts/test-phone-playlist-basket.cjs scripts/test-dashboard-playlist-basket.cjs`.
+These suites execute the shared verifier, both shipped models and their DOM
+controls. They cover sparse selections in large playlists, exact reordered and
+repeated positions, all three modes and room-set destinations, bounded reads,
+off-page entries, selection limits, changed revisions, delayed replies and
+retry after a transient read failure.
 
 Batch simulator coverage in `fsonos-core/tests/native_track_batch_sim.rs` and
 the extended native selection and queue-replacement undo suites covers local

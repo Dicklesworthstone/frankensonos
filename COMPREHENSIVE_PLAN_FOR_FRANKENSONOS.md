@@ -1530,10 +1530,22 @@ keeps its own queue and audience proof. Destinations must stay within the
 source household. All groups are prepared before execution; ordered repeats,
 playback caps, silent queue modes and individual partial receipts use the
 existing shared engines. Source and target revisions are independent; a single
-queue revision is valid only for one destination. Browser and native Apple
-selection controls keep their existing one-group behavior. Added S1/S2 and
+queue revision is valid only for one destination. Phone and dashboard selections
+also expose the separate destination with room and alias suggestions, source
+group authority, per-group review and partial receipts. Native Apple selection
+controls retain their existing one-group destination. Added S1/S2 and
 surface regressions await execution after the workspace build was killed and
 the executor disconnected.
+
+Phone and dashboard saved-playlist selections now span pages while retaining
+up to ten exact occurrences. Users can reorder, remove or repeat entries in the
+selected list, including tracks outside the displayed page. Review and
+confirmation reread bounded ranges around those positions from the original
+catalog group, validate its revision and each occurrence, and preserve the
+requested order through the existing single-group or room-set submission.
+Explicit refresh and changed catalog or group observations retire the basket;
+transient page-read failures retain it for deliberate retry. Focused Node
+regressions cover both shipped controllers, shared verification and DOM panels.
 
 Explicit online Spotify catalog search now complements cached library search.
 The CLI `spotify-search`, HTTP `GET /spotify/search`, and MCP

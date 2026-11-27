@@ -18,7 +18,9 @@ async function fixture(kind) {
   let revision = 'saved:1', reader = null;
   const calls = [];
   const page = query => {
-    if (query.expected_revision && query.expected_revision !== revision) throw new Error('The playlist changed. Read tracks again.');
+    if (query.expected_revision && query.expected_revision !== revision) {
+      throw Object.assign(new Error('The playlist changed. Read tracks again.'), { code: 'QUEUE_CHANGED' });
+    }
     const offset = Number(query.offset), items = entries.slice(offset, offset + 2).map((item, i) => ({ ...item, position: offset + i + 1 }));
     return { zone: 'Den', playlist: clone(catalog.find(item => item.id === query.playlist)), revision,
       total: entries.length, offset, next_offset: offset + items.length < entries.length ? offset + items.length : null, items };

@@ -433,6 +433,60 @@ const SourcePlayerRemote = (() => {
       title: `${tracks.length} selected track(s) from ${page.playlist.title || page.playlist.id}`, mode });
   }
 
+  const playlistBasketPositions = basket => Object.freeze(basket ? basket.tracks.map(track => track.position) : []);
+
+  function verifyPlaylistBasket(basket, page, group) {
+    if (!basket) return null;
+    if (!page || !group || basket.group.target !== group.target || basket.group.signature !== group.signature
+        || basket.playlist.id !== page.playlist.id || basket.playlist.title !== page.playlist.title
+        || basket.revision !== page.revision || basket.total !== page.total
+        || basket.tracks.some(selected => {
+          if (selected.position <= page.offset || selected.position > page.offset + page.items.length) return false;
+          const track = page.items.find(track => track.position === selected.position);
+          return !track || track.uri !== selected.uri || track.title !== selected.title;
+        })) {
+      throw new Error('The saved playlist or its selected tracks changed. Refresh tracks and choose the selection again.');
+    }
+    return basket;
+  }
+
+  function togglePlaylistTrack(basket, page, position, group) {
+    preparePlaylistTrack(page, position, 'play');
+    if (!group || !text(group.target) || !text(group.signature)) throw new Error('Choose the saved playlist’s original group again.');
+    verifyPlaylistBasket(basket, page, group);
+    const selected = basket?.tracks.some(track => track.position === position);
+    if (!selected && (basket?.tracks.length || 0) >= MAX_PLAYLIST_TRACKS) throw new Error(`Choose at most ${MAX_PLAYLIST_TRACKS} tracks.`);
+    const tracks = selected ? basket.tracks.filter(track => track.position !== position)
+      : [...(basket?.tracks || []), Object.freeze({ ...page.items.find(track => track.position === position) })];
+    if (!tracks.length) return null;
+    return Object.freeze({ group: basket?.group || group, playlist: basket?.playlist || page.playlist,
+      revision: page.revision, total: page.total, tracks: Object.freeze(tracks) });
+  }
+
+  function editPlaylistBasket(basket, action, index) {
+    if (!basket || !Number.isInteger(index) || index < 0 || index >= basket.tracks.length
+        || !['up', 'down', 'remove', 'repeat'].includes(action)) throw new Error('Choose a current selected track.');
+    const tracks = [...basket.tracks];
+    if (action === 'remove') tracks.splice(index, 1);
+    else if (action === 'repeat') {
+      if (tracks.length >= MAX_PLAYLIST_TRACKS) throw new Error(`Choose at most ${MAX_PLAYLIST_TRACKS} tracks.`);
+      tracks.splice(index + 1, 0, Object.freeze({ ...tracks[index] }));
+    } else {
+      const next = index + (action === 'up' ? -1 : 1);
+      if (next < 0 || next >= tracks.length) throw new Error('This selected track is already at the end of the list.');
+      [tracks[index], tracks[next]] = [tracks[next], tracks[index]];
+    }
+    return tracks.length ? Object.freeze({ ...basket, tracks: Object.freeze(tracks) }) : null;
+  }
+
+  function preparePlaylistBasket(basket, mode, group) {
+    if (!basket || !group || basket.group.target !== group.target || basket.group.signature !== group.signature) {
+      throw new Error('Choose saved tracks from this group before reviewing the selection.');
+    }
+    return preparePlaylistTracks({ playlist: basket.playlist, revision: basket.revision, total: basket.total,
+      items: basket.tracks }, playlistBasketPositions(basket), mode);
+  }
+
   function tracksQuery(item, target) {
     const first = Math.min(...item.positions), last = Math.max(...item.positions);
     return { zone: target, playlist: item.id, offset: first - 1, limit: last - first + 1,
@@ -445,6 +499,26 @@ const SourcePlayerRemote = (() => {
       const track = page.items.find(track => track.position === selected.position);
       return !track || track.uri !== selected.uri || track.title !== selected.title;
     })) throw new Error('The selected saved tracks changed. Read tracks and choose them again.');
+  }
+
+  // A ten-occurrence basket may span a large playlist. Read only bounded ranges
+  // around its selected positions, retaining the owner's order for the command.
+  async function readPlaylistTracks({ call, item, group, valid = () => {} }) {
+    const prepared = preparePlaylistTracks({ playlist: { id: item.id, title: item.playlistTitle },
+      revision: item.revision, total: item.total, items: item.tracks }, item.positions, 'play').item;
+    if (item.kind !== 'sonos_playlist_tracks' || JSON.stringify(prepared.tracks) !== JSON.stringify(item.tracks)) {
+      throw new Error('The saved track selection is incomplete. Choose its tracks again.');
+    }
+    const positions = [...new Set(item.positions)].sort((left, right) => left - right);
+    while (positions.length) {
+      const first = positions[0], count = positions.findIndex(position => position - first >= 100);
+      const range = positions.splice(0, count < 0 ? positions.length : count);
+      const subset = { ...item, positions: range, tracks: item.tracks.filter(track => range.includes(track.position)) };
+      valid();
+      const value = await call('sourcePlaylistContents', { query: tracksQuery(subset, group.target) });
+      valid();
+      verifyPlaylistTracks(value, subset, group);
+    }
   }
 
   function tracksOutcome(value, reviewed) {
@@ -516,7 +590,7 @@ const SourcePlayerRemote = (() => {
     }
   }
 
-  function playlistTrackSelectionPanel(doc, { review, clear, destination, loadTargets }) {
+  function playlistTrackSelectionPanel(doc, { review, clear, destination, loadTargets, changeSelection }) {
     const node = doc.createElement('section'), help = doc.createElement('p'), list = doc.createElement('ol');
     node.className = 'source-track-selection'; node.setAttribute('aria-label', 'Selected saved tracks');
     help.className = 'source-help'; help.setAttribute('role', 'status'); help.setAttribute('aria-live', 'polite');
@@ -537,20 +611,21 @@ const SourcePlayerRemote = (() => {
     const destinationHelp = doc.createElement('p'); destinationHelp.className = 'source-help';
     destinationFields.append(destinationLabel, suggestions, read, destinationHelp);
     const actions = doc.createElement('div'); actions.className = 'source-track-actions';
-    let current = null, shown = null, shownPage = null, shownSuggestions = null, shownGroup = null;
+    let current = null, currentBasket = null, shown = null, shownPage = null, shownBasket = null, shownDisabled = null;
+    let shownSuggestions = null, shownGroup = null;
     const buttons = [['play', 'Play selected now'], ['next', 'Play selected next'], ['end', 'Add selected to queue']]
       .map(([mode, label]) => {
         const button = doc.createElement('button'); button.type = 'button'; button.textContent = label;
-        button.addEventListener('click', () => { if (!button.disabled) void review(mode, current); });
+        button.addEventListener('click', () => { if (!button.disabled) void review(mode, current, currentBasket); });
         actions.append(button); return button;
       });
     const reset = doc.createElement('button'); reset.type = 'button'; reset.textContent = 'Clear selection';
     reset.addEventListener('click', () => { if (!reset.disabled) clear(); }); actions.append(reset);
     node.append(help, list, destinationFields, actions);
-    return { node, render(page, positions, disabled, { target = '', group = null, choices = [] } = {}) {
-      current = page; node.hidden = !page;
-      help.textContent = positions.length ? `${positions.length} of ${MAX_PLAYLIST_TRACKS} selected, in the order shown. Clear the selection to review the whole playlist.`
-        : `Select up to ${MAX_PLAYLIST_TRACKS} tracks from this page in the order you want. Repeated saved occurrences remain separate. Changing pages clears the selection.`;
+    return { node, render(page, positions, disabled, { target = '', group = null, choices = [], basket = null } = {}) {
+      current = page; currentBasket = basket; node.hidden = !page;
+      help.textContent = positions.length ? `${positions.length} of ${MAX_PLAYLIST_TRACKS} selected, in the order shown. Next and Previous keep this selection. Reorder, repeat or remove tracks below; Refresh tracks clears it. Clear the selection to review the whole playlist.`
+        : `Select up to ${MAX_PLAYLIST_TRACKS} tracks across this playlist’s pages. Next and Previous keep your selection; Refresh tracks clears it. Repeated saved occurrences remain separate.`;
       list.hidden = !positions.length; actions.hidden = !positions.length;
       destinationFields.hidden = !positions.length || !destination;
       if (input.value !== target) input.value = target;
@@ -571,9 +646,37 @@ const SourcePlayerRemote = (() => {
         }
       }
       for (const button of [...buttons, reset]) button.disabled = disabled || !positions.length;
-      if (shown !== positions || shownPage !== page) {
-        shown = positions; shownPage = page;
-        renderSelectedTracks(list, { tracks: positions.map(position => page?.items.find(track => track.position === position)).filter(Boolean) }, doc);
+      if (shown !== positions || shownPage !== page || shownBasket !== basket || shownDisabled !== disabled) {
+        const focused = list.contains?.(doc.activeElement) ? doc.activeElement : null;
+        const focusAction = focused?.getAttribute('data-playlist-basket-action');
+        const focusIndex = Number(focused?.getAttribute('data-playlist-basket-index'));
+        const focusTrack = shownBasket?.tracks[focusIndex];
+        shown = positions; shownPage = page; shownBasket = basket; shownDisabled = disabled;
+        if (!basket || !changeSelection) {
+          renderSelectedTracks(list, { tracks: positions.map(position => page?.items.find(track => track.position === position)).filter(Boolean) }, doc);
+        } else {
+          list.replaceChildren();
+          const retainedIndex = basket.tracks.indexOf(focusTrack), nextFocus = retainedIndex < 0 ? Math.min(focusIndex, basket.tracks.length - 1) : retainedIndex;
+          let restoreFocus, fallbackFocus;
+          for (const [index, track] of basket.tracks.entries()) {
+            const row = doc.createElement('li'); row.textContent = `Track ${track.position}: ${track.title || 'Untitled track'}`;
+            const controls = doc.createElement('div'); controls.className = 'source-track-actions';
+            for (const [action, label] of [['up', 'Move up'], ['down', 'Move down'], ['repeat', 'Repeat'], ['remove', 'Remove']]) {
+              const button = doc.createElement('button'); button.type = 'button'; button.textContent = label;
+              button.setAttribute('data-playlist-basket-action', action); button.setAttribute('data-playlist-basket-index', String(index));
+              button.setAttribute('aria-label', `${label} selected track ${index + 1}: ${track.title || 'Untitled track'}`);
+              button.disabled = disabled || action === 'up' && index === 0 || action === 'down' && index === basket.tracks.length - 1
+                || action === 'repeat' && basket.tracks.length >= MAX_PLAYLIST_TRACKS;
+              button.addEventListener('click', () => { if (!button.disabled) changeSelection(action, index, basket); });
+              if (focusAction === action && nextFocus === index) restoreFocus = button;
+              if (focusAction && nextFocus === index && !button.disabled && !fallbackFocus) fallbackFocus = button;
+              controls.append(button);
+            }
+            row.append(controls); list.append(row);
+          }
+          const focus = restoreFocus && !restoreFocus.disabled ? restoreFocus : fallbackFocus;
+          focus?.focus?.({ preventScroll: true });
+        }
       }
     } };
   }
@@ -1130,7 +1233,7 @@ const SourcePlayerRemote = (() => {
     let epoch = 0, disposed = false, setReader = null;
     const state = { open: false, groups: [], target: '', sourceType: 'link', input: '', title: '', mode: 'play', pending: null,
       targetMode: 'group', targetQuery: '', targetSuggestions: [], nativeQuery: '', selectionTarget: '',
-      playlists: [], playlist: '', playlistTarget: '', playlistStatus: 'idle', contents: null, contentsHistory: [], contentsSelection: Object.freeze([]),
+      playlists: [], playlist: '', playlistTarget: '', playlistStatus: 'idle', contents: null, contentsHistory: [], contentsBasket: null, contentsSelection: Object.freeze([]),
       lineInSources: [], lineInUnavailable: [], lineIn: '', lineInTarget: '', lineInStatus: 'idle',
       reading: false, writing: false, message: '', result: null };
     const publish = () => { if (!disposed) { try { changed(state); } catch (_) { /* Presentation only. */ } } };
@@ -1165,7 +1268,8 @@ const SourcePlayerRemote = (() => {
       if (state.playlistStatus === 'loading') state.playlistStatus = 'idle';
       if (state.lineInStatus === 'loading') state.lineInStatus = 'idle';
     };
-    const clearContents = () => { state.contents = null; state.contentsHistory = []; state.contentsSelection = Object.freeze([]); state.selectionTarget = ''; };
+    const setBasket = basket => { state.contentsBasket = basket; state.contentsSelection = playlistBasketPositions(basket); };
+    const clearContents = () => { state.contents = null; state.contentsHistory = []; setBasket(null); state.selectionTarget = ''; };
     const clearPlaylists = () => { state.playlists = []; state.playlist = ''; state.playlistTarget = ''; state.playlistStatus = 'idle'; clearContents(); };
     const clearLineIn = () => { state.lineInSources = []; state.lineInUnavailable = []; state.lineIn = ''; state.lineInTarget = ''; state.lineInStatus = 'idle'; };
 
@@ -1269,15 +1373,20 @@ const SourcePlayerRemote = (() => {
           || !group || !item || state.playlistStatus !== 'ready' || state.playlistTarget !== group.target) return false;
       const request = contentsRequest(state.contents, state.contentsHistory, direction, item.id);
       if (!request) return false;
-      invalidate(); state.contentsSelection = Object.freeze([]); const version = epoch;
+      const navigating = direction === 'next' || direction === 'previous';
+      invalidate(); if (!navigating) setBasket(null); const version = epoch;
+      let received = false;
       state.reading = true; state.message = 'Reading saved tracks…'; publish();
       try {
         const value = await call('sourcePlaylistContents', { query: { zone: group.target, ...request.query } });
         if (!current(version)) return false;
-        state.contents = playlistContents(value, request.query, item, group); state.contentsHistory = request.history;
+        received = true;
+        const page = playlistContents(value, request.query, item, group);
+        verifyPlaylistBasket(state.contentsBasket, page, group);
+        state.contents = page; state.contentsHistory = request.history;
         state.message = ''; return true;
       } catch (error) {
-        if (current(version)) { clearContents(); state.message = problem(error); }
+        if (current(version)) { if (!navigating || received || error?.code === 'QUEUE_CHANGED') clearContents(); state.message = problem(error); }
         return false;
       } finally { if (current(version)) { state.reading = false; publish(); } }
     }
@@ -1371,7 +1480,7 @@ const SourcePlayerRemote = (() => {
       publish(); return true;
     }
 
-    async function inspect(group, mode, item) {
+    async function inspect(group, mode, item, valid = () => {}) {
       const fresh = groups(await call('zones'));
       if (!fresh.some((entry) => entry.signature === group.signature)) throw new Error('The destination group changed. Refresh rooms and review again.');
       if (item.kind === 'sonos_playlist') verifyPlaylist(await call('sourcePlaylists', { query: { zone: group.target } }), item);
@@ -1380,7 +1489,7 @@ const SourcePlayerRemote = (() => {
         verifyPlaylistTrack(await call('sourcePlaylistContents', { query: trackQuery(item, group.target) }), item, group);
       }
       if (item.kind === 'sonos_playlist_tracks') {
-        verifyPlaylistTracks(await call('sourcePlaylistContents', { query: tracksQuery(item, group.target) }), item, group);
+        await readPlaylistTracks({ call, item, group, valid });
       }
       const before = playback(await call('state', { params: { room: group.target } }), group);
       if (mode === 'play' && !item.container) return before;
@@ -1431,7 +1540,7 @@ const SourcePlayerRemote = (() => {
           throw new Error('Read the line-in sources for this destination first.');
         }
         ({ item, title } = choice || (state.sourceType === 'playlist'
-          ? state.contentsSelection.length ? preparePlaylistTracks(state.contents, state.contentsSelection, mode)
+          ? state.contentsSelection.length ? preparePlaylistBasket(state.contentsBasket, mode, group)
             : preparePlaylist(state.playlist, state.playlists, mode) : state.sourceType === 'line_in'
             ? prepareLineIn(state.lineIn, state.lineInSources, mode) : prepare(state.input, state.title, mode)));
       } catch (error) { state.message = problem(error); publish(); return false; }
@@ -1448,7 +1557,9 @@ const SourcePlayerRemote = (() => {
           state.pending = Object.freeze({ ...choice, group, targets: reviewed, body: request.body, route: request.route });
           return true;
         }
-        const before = await inspect(group, mode, item);
+        const before = await inspect(group, mode, item, () => {
+          if (!current(version)) throw new Error('The saved selection changed. Review its current tracks again.');
+        });
         if (!current(version)) return false;
         const body = commandBody({ item, title, mode }, group.target);
         if (item.kind === 'sonos_playlist_tracks') body.expected_queue_revision = before.queue.revision;
@@ -1470,28 +1581,35 @@ const SourcePlayerRemote = (() => {
     function selectTrack(position, page = state.contents) {
       if (disposed || !state.open || blocked() || manager.busy() || state.reading || collective() || state.sourceType !== 'playlist'
           || !page || page !== state.contents || page.playlist.id !== state.playlist) return false;
-      const selected = state.contentsSelection.includes(position);
+      let basket;
       try {
-        preparePlaylistTrack(page, position, 'play');
-        if (!selected && state.contentsSelection.length >= MAX_PLAYLIST_TRACKS) throw new Error(`Choose at most ${MAX_PLAYLIST_TRACKS} tracks.`);
+        basket = togglePlaylistTrack(state.contentsBasket, page, position, selected());
       } catch (error) { state.message = problem(error); publish(); return false; }
-      invalidate(); state.contentsSelection = Object.freeze(selected ? state.contentsSelection.filter(value => value !== position)
-        : [...state.contentsSelection, position]);
+      invalidate(); setBasket(basket);
       state.message = ''; publish(); return true;
     }
 
-    async function reviewTracks(mode, page = state.contents) {
+    function changeTrackSelection(action, index, basket = state.contentsBasket) {
       if (disposed || !state.open || blocked() || manager.busy() || state.reading || collective() || state.sourceType !== 'playlist'
-          || !page || page !== state.contents || page.playlist.id !== state.playlist) return false;
+          || !basket || basket !== state.contentsBasket) return false;
+      let next;
+      try { next = editPlaylistBasket(basket, action, index); }
+      catch (error) { state.message = problem(error); publish(); return false; }
+      invalidate(); setBasket(next); state.message = ''; publish(); return true;
+    }
+
+    async function reviewTracks(mode, page = state.contents, basket = state.contentsBasket) {
+      if (disposed || !state.open || blocked() || manager.busy() || state.reading || collective() || state.sourceType !== 'playlist'
+          || !page || page !== state.contents || page.playlist.id !== state.playlist || basket !== state.contentsBasket) return false;
       let choice;
-      try { choice = preparePlaylistTracks(page, state.contentsSelection, mode); }
+      try { choice = preparePlaylistBasket(basket, mode, selected()); }
       catch (error) { invalidate(); state.message = problem(error); publish(); return false; }
       return review(choice);
     }
 
     function clearTrackSelection() {
       if (disposed || !state.open || blocked() || manager.busy() || state.reading) return false;
-      invalidate(); state.contentsSelection = Object.freeze([]); state.message = ''; publish(); return true;
+      invalidate(); setBasket(null); state.message = ''; publish(); return true;
     }
 
     async function confirm(pending) {
@@ -1510,7 +1628,9 @@ const SourcePlayerRemote = (() => {
               sourceGroup: pending.targets.sourceGroup, item: pending.item, mode: pending.mode, signal: abort.signal, valid: () => {
                 if (!current(version)) throw new Error('The source review closed or changed before sending.');
               } });
-          } else before = await inspect(pending.group, pending.mode, pending.item);
+          } else before = await inspect(pending.group, pending.mode, pending.item, () => {
+            if (!current(version)) throw new Error('The saved selection closed or changed before sending.');
+          });
           if (sent || !current(version)) return;
           if (before.signature !== (pending.targets || pending.before).signature) throw new Error('Playback, the queue, or the resolved destinations changed since your review. Review the current destinations again.');
           setReader = null;
@@ -1545,7 +1665,7 @@ const SourcePlayerRemote = (() => {
     }
 
     return { state, manager, catalog, chooseCatalog, refresh, edit, loadTargetSuggestions, loadPlaylists, loadLineInSources, loadContents,
-      review, reviewTrack, selectTrack, reviewTracks, clearTrackSelection, confirm, offer, offerTracks, browseSaved, clearDraft,
+      review, reviewTrack, selectTrack, changeTrackSelection, reviewTracks, clearTrackSelection, confirm, offer, offerTracks, browseSaved, clearDraft,
       catalogChanged(change = null) {
         manager.catalogChanged(change);
         if (disposed || !['playlist', 'favorite'].includes(state.sourceType)
@@ -1643,6 +1763,7 @@ const SourcePlayerRemote = (() => {
     let shownLineIn = null, shownLineInStatus = '';
     const control = model({ call, execute, executeSet, changed: render });
     const selectionPanel = playlistTrackSelectionPanel(doc, { review: control.reviewTracks, clear: control.clearTrackSelection,
+      changeSelection: control.changeTrackSelection,
       destination: value => control.edit('selectionTarget', value), loadTargets: control.loadTargetSuggestions });
     contentsFields.append(selectionPanel.node);
     const managerPanel = playlistManagerPanel(control.manager, doc);
@@ -1720,7 +1841,7 @@ const SourcePlayerRemote = (() => {
       nextContents.hidden = state.contents?.next_offset == null; nextContents.disabled = busy;
       contentsHelp.textContent = contentsSummary(state.contents);
       selectionPanel.render(state.contents, state.contentsSelection, busy || !!state.managing.cached, {
-        target: state.selectionTarget, group: state.groups.find(group => group.target === state.target), choices: state.targetSuggestions,
+        target: state.selectionTarget, group: state.groups.find(group => group.target === state.target), choices: state.targetSuggestions, basket: state.contentsBasket,
       });
       if (shownContents !== state.contents || shownContentsBusy !== busy || shownContentsSelection !== state.contentsSelection) {
         shownContents = state.contents; shownContentsBusy = busy; shownContentsSelection = state.contentsSelection;
@@ -1897,7 +2018,8 @@ const SourcePlayerRemote = (() => {
     nativePlaylistTitle, playlistTrackEdit, playlistAppendSelection, appendedPlaylist, cachedPlaylistSelection, addedCachedPlaylist, managedPlaylist, playlistManager, playlistManagerPanel,
     lineInSources, lineInLabel, lineInHelp, prepareLineIn, verifyLineIn,
     preparePlaylistTrack, trackQuery, verifyPlaylistTrack, trackOutcome,
-    preparePlaylistTracks, tracksQuery, verifyPlaylistTracks, tracksOutcome, renderSelectedTracks, playlistTrackSelectionPanel, MAX_PLAYLIST_TRACKS,
+    preparePlaylistTracks, tracksQuery, verifyPlaylistTracks, readPlaylistTracks, tracksOutcome, renderSelectedTracks, playlistTrackSelectionPanel, MAX_PLAYLIST_TRACKS,
+    playlistBasketPositions, verifyPlaylistBasket, togglePlaylistTrack, editPlaylistBasket, preparePlaylistBasket,
     commandBody, offeredSource, groups, playback, queue, queued, outcome, model, panel, routes, modes, MAX_BYTES, MAX_TITLE,
     catalogKinds, catalogQuery, catalogPage, catalogModel, renderCatalog, CATALOG_LIMIT, MAX_QUERY_BYTES, MAX_CATALOG_OFFSET };
 })();

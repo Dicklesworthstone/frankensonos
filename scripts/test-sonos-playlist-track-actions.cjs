@@ -383,7 +383,7 @@ for (const kind of ['phone', 'dashboard']) {
     await f.api.reviewTracks('next'); assert.ok(f.api.state.pending); assert.equal(f.writes().length, 0);
   });
 
-  test(kind + ': selection is retired on refresh, page navigation, household changes and native invalidation', async () => {
+  test(kind + ': page navigation retains the selection while refresh and source changes clear it; all retire review', async () => {
     for (const change of ['refresh', 'page', 'household', 'catalog']) {
       const f = await fixture(kind);
       if (change === 'page') {
@@ -394,7 +394,7 @@ for (const kind of ['phone', 'dashboard']) {
       if (change === 'household') f.selectOtherHousehold();
       else if (change === 'catalog') f.api.catalogChanged({ household: 'S1', playlists: true });
       else await f.api.loadContents(change === 'page' ? 'next' : 'refresh');
-      assert.deepEqual(f.api.state.contentsSelection, []); assert.equal(f.api.state.pending, null);
+      assert.deepEqual(f.api.state.contentsSelection, change === 'page' ? [2, 1] : []); assert.equal(f.api.state.pending, null);
       assert.equal(f.api.selectTrack(2, page), false); assert.equal(await f.confirm(reviewed), false);
       assert.equal(f.writes().length, 0);
     }

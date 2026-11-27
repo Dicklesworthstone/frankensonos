@@ -124,9 +124,7 @@ const SourceTargetsRemote = (() => {
       if (!sources.some(group => group.target === sourceGroup.target && group.signature === sourceGroup.signature)) {
         fail('The saved playlist’s original group changed. Read its current household and tracks again.');
       }
-      player.verifyPlaylistTracks(await read('sourcePlaylistContents', {
-        query: player.tracksQuery(item, sourceGroup.target),
-      }), item, sourceGroup);
+      await player.readPlaylistTracks({ call: read, item, group: sourceGroup, valid });
     }
     if (item.kind === 'line_in') {
       const group = lineInHousehold(groups);

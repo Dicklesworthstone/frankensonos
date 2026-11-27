@@ -65,7 +65,7 @@ const DashboardSource = (() => {
     let version = 0, active = true, disposed = false, reading = null;
     const state = { open: false, target: '', scope: '', group: null, sourceType: 'link', input: '', title: '', mode: 'play',
       destinationMode: 'selected', destinationInput: '', nativeQuery: '', suggestions: [], selectionTarget: '',
-      playlists: [], playlist: '', playlistTarget: '', playlistStatus: 'idle', contents: null, contentsHistory: [], contentsSelection: Object.freeze([]),
+      playlists: [], playlist: '', playlistTarget: '', playlistStatus: 'idle', contents: null, contentsHistory: [], contentsSelection: Object.freeze([]), contentsBasket: null,
       lineInSources: [], lineInUnavailable: [], lineIn: '', lineInTarget: '', lineInStatus: 'idle',
       loading: false, writing: false, pending: null, result: null, message: '' };
     const publish = () => { if (!disposed) { try { changed(state); } catch (_) { /* Presentation only. */ } } };
@@ -101,7 +101,8 @@ const DashboardSource = (() => {
       if (state.lineInStatus === 'loading') state.lineInStatus = 'idle';
       if (message) state.message = message;
     }
-    const clearContents = () => { state.contents = null; state.contentsHistory = []; state.contentsSelection = Object.freeze([]); state.selectionTarget = ''; };
+    const setBasket = basket => { state.contentsBasket = basket; state.contentsSelection = P.playlistBasketPositions(basket); };
+    const clearContents = () => { state.contents = null; state.contentsHistory = []; setBasket(null); state.selectionTarget = ''; };
     const clearPlaylists = () => { state.playlists = []; state.playlist = ''; state.playlistTarget = ''; state.playlistStatus = 'idle'; clearContents(); };
     const clearLineIn = () => { state.lineInSources = []; state.lineInUnavailable = []; state.lineIn = ''; state.lineInTarget = ''; state.lineInStatus = 'idle'; };
     const manager = P.playlistManager({ call: targetCall, live,
@@ -233,17 +234,24 @@ const DashboardSource = (() => {
       if (!item) return false;
       const request = P.contentsRequest(state.contents, state.contentsHistory, direction, item.id);
       if (!request) return false;
-      retire(); state.contentsSelection = Object.freeze([]);
+      retire(); if (direction === 'refresh') setBasket(null);
       const v = version, selected = state.target, abort = new AbortController();
+      let received = false;
       reading = abort; state.loading = true; state.message = 'Reading saved tracks…'; publish();
       try {
         const query = new URLSearchParams({ zone: selected, ...request.query });
         const value = await call('/sonos/playlists/contents?' + query, undefined, { signal: abort.signal });
+        received = true;
         if (!live() || v !== version || abort.signal.aborted || !matching()) return false;
-        state.contents = P.playlistContents(value, request.query, item, state.group); state.contentsHistory = request.history;
+        const page = P.playlistContents(value, request.query, item, state.group);
+        setBasket(P.verifyPlaylistBasket(state.contentsBasket, page, state.group));
+        state.contents = page; state.contentsHistory = request.history;
         state.message = ''; return true;
       } catch (error) {
-        if (live() && v === version) { clearContents(); state.message = C.problem(error); }
+        if (live() && v === version) {
+          if (direction === 'refresh' || received || error?.code === 'QUEUE_CHANGED') clearContents();
+          state.message = C.problem(error);
+        }
         return false;
       } finally {
         if (reading === abort) { reading = null; state.loading = false; publish(); }
@@ -272,9 +280,8 @@ const DashboardSource = (() => {
         P.verifyPlaylistTrack(value, reviewed.item, reviewed.group);
       }
       if (reviewed.item.kind === 'sonos_playlist_tracks') {
-        const query = new URLSearchParams(P.tracksQuery(reviewed.item, reviewed.target));
-        const value = await call('/sonos/playlists/contents?' + query, undefined, options); valid();
-        P.verifyPlaylistTracks(value, reviewed.item, reviewed.group);
+        await P.readPlaylistTracks({ call: (route, args) => targetCall(route, { ...args, signal: options.signal }),
+          item: reviewed.item, group: reviewed.group, valid });
       }
       const base = '/zones/' + encodeURIComponent(reviewed.target);
       const queueNeeded = reviewed.mode !== 'play' || reviewed.item.container;
@@ -295,8 +302,8 @@ const DashboardSource = (() => {
       const v = version, at = now(), abort = new AbortController();
       let choice;
       try { choice = prepared || (nativeQuery() ? T.prepareNative(state.sourceType, state.nativeQuery, state.mode)
-        : state.sourceType === 'playlist' ? state.contentsSelection.length
-          ? P.preparePlaylistTracks(state.contents, state.contentsSelection, state.mode) : P.preparePlaylist(state.playlist, state.playlists, state.mode)
+        : state.sourceType === 'playlist' ? state.contentsBasket
+          ? P.preparePlaylistBasket(state.contentsBasket, state.mode, state.group) : P.preparePlaylist(state.playlist, state.playlists, state.mode)
         : state.sourceType === 'line_in' ? P.prepareLineIn(state.lineIn, state.lineInSources, state.mode)
           : P.prepare(state.input, state.title, state.mode)); }
       catch (error) { state.message = C.problem(error); publish(); return null; }
@@ -337,26 +344,32 @@ const DashboardSource = (() => {
     function selectTrack(position, page = state.contents) {
       if (!canReview() || targetSet() || state.sourceType !== 'playlist' || !page || page !== state.contents
           || page.playlist.id !== state.playlist) return false;
-      const selected = state.contentsSelection.includes(position);
+      let basket;
       try {
-        P.preparePlaylistTrack(page, position, 'play');
-        if (!selected && state.contentsSelection.length >= P.MAX_PLAYLIST_TRACKS) throw new Error(`Choose at most ${P.MAX_PLAYLIST_TRACKS} tracks.`);
+        basket = P.togglePlaylistTrack(state.contentsBasket, page, position, state.group);
       } catch (error) { state.message = C.problem(error); publish(); return false; }
-      retire(); state.contentsSelection = Object.freeze(selected ? state.contentsSelection.filter(value => value !== position)
-        : [...state.contentsSelection, position]);
+      retire(); setBasket(basket);
       state.message = ''; publish(); return true;
     }
-    async function reviewTracks(mode, page = state.contents) {
+    function changeTrackSelection(action, index, basket = state.contentsBasket) {
+      if (!canReview() || targetSet() || state.sourceType !== 'playlist' || !basket || basket !== state.contentsBasket) return false;
+      let changed;
+      try { changed = P.editPlaylistBasket(basket, action, index); }
+      catch (error) { state.message = C.problem(error); publish(); return false; }
+      if (changed === basket) return false;
+      retire(); setBasket(changed); state.message = ''; publish(); return true;
+    }
+    async function reviewTracks(mode, page = state.contents, basket = state.contentsBasket) {
       if (!canReview() || targetSet() || state.sourceType !== 'playlist' || !page || page !== state.contents
-          || page.playlist.id !== state.playlist) return null;
+          || page.playlist.id !== state.playlist || basket !== state.contentsBasket) return null;
       let choice;
-      try { choice = P.preparePlaylistTracks(page, state.contentsSelection, mode); }
+      try { choice = P.preparePlaylistBasket(basket, mode, state.group); }
       catch (error) { retire(); state.message = C.problem(error); publish(); return null; }
       return review(choice);
     }
     function clearTrackSelection() {
       if (!editable() || state.loading) return false;
-      retire(); state.contentsSelection = Object.freeze([]); state.message = ''; publish(); return true;
+      retire(); setBasket(null); state.message = ''; publish(); return true;
     }
     const canApply = () => !!(ready() && state.pending && state.pending.version === version && now() - state.pending.at < MAX_AGE);
     async function apply(reviewed = state.pending) {
@@ -436,7 +449,7 @@ const DashboardSource = (() => {
       publish(); return true;
     }
     return { state, manager, catalog, chooseCatalog, observe, editable, edit, loadTargets, loadPlaylists, loadLineInSources, loadContents,
-      canReview, review, reviewTrack, selectTrack, reviewTracks, clearTrackSelection, canApply, apply, open,
+      canReview, review, reviewTrack, selectTrack, changeTrackSelection, reviewTracks, clearTrackSelection, canApply, apply, open,
       catalogChanged(change = null) {
         manager.catalogChanged(change);
         const favorite = state.sourceType === 'favorite';
@@ -493,7 +506,7 @@ const DashboardSource = (() => {
     let shownSuggestions = null;
     const control = model({ call, controller, completed, now, changed: render });
     const selectionPanel = P.playlistTrackSelectionPanel(doc, { review: control.reviewTracks, clear: control.clearTrackSelection,
-      destination: value => control.edit('selectionTarget', value), loadTargets: control.loadTargets });
+      destination: value => control.edit('selectionTarget', value), loadTargets: control.loadTargets, changeSelection: control.changeTrackSelection });
     $('source-contents').append(selectionPanel.node);
     const managerPanel = P.playlistManagerPanel(control.manager, doc);
     $('source-playlist-manage').append(managerPanel.node);
@@ -598,7 +611,7 @@ const DashboardSource = (() => {
       for (const id of ['source-contents-previous', 'source-contents-next']) $(id).disabled = !control.canReview();
       $('source-contents-help').textContent = P.contentsSummary(s.contents);
       selectionPanel.render(s.contents, s.contentsSelection, !control.canReview(), {
-        target: s.selectionTarget, group: s.group, choices: s.suggestions,
+        target: s.selectionTarget, group: s.group, choices: s.suggestions, basket: s.contentsBasket,
       });
       if (shownContents !== s.contents || shownContentsReady !== control.canReview() || shownContentsSelection !== s.contentsSelection) {
         shownContents = s.contents; shownContentsReady = control.canReview(); shownContentsSelection = s.contentsSelection;

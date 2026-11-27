@@ -18,6 +18,9 @@ on:
       - "scripts/test-line-in-source.cjs"
       - "scripts/test-sonos-playlist-contents.cjs"
       - "scripts/test-sonos-playlist-track-actions.cjs"
+      - "scripts/test-native-playlist-basket.cjs"
+      - "scripts/test-phone-playlist-basket.cjs"
+      - "scripts/test-dashboard-playlist-basket.cjs"
       - "scripts/test-sonos-playlist-management.cjs"
       - "scripts/test-sonos-playlist-append.cjs"
       - "scripts/test-sonos-playlist-cached-add.cjs"
@@ -158,7 +161,7 @@ jobs:
         run: node --test scripts/test-remote-queue-coordination.cjs scripts/test-remote-queue-live.cjs scripts/test-remote-queue-http.cjs
       - name: Web direct source playback regressions
         if: ${{ !cancelled() }}
-        run: node --test scripts/test-remote-source-player.cjs scripts/test-remote-source-player-queue.cjs scripts/test-sonos-playlist-contents.cjs scripts/test-sonos-playlist-track-actions.cjs scripts/test-line-in-source.cjs
+        run: node --test scripts/test-remote-source-player.cjs scripts/test-remote-source-player-queue.cjs scripts/test-sonos-playlist-contents.cjs scripts/test-sonos-playlist-track-actions.cjs scripts/test-native-playlist-basket.cjs scripts/test-phone-playlist-basket.cjs scripts/test-dashboard-playlist-basket.cjs scripts/test-line-in-source.cjs
       - name: Native playlist and favorites management, saving and recovery regressions
         if: ${{ !cancelled() }}
         run: node --test scripts/test-sonos-playlist-management.cjs scripts/test-sonos-playlist-append.cjs scripts/test-sonos-playlist-cached-add.cjs scripts/test-playlist-save-remote.cjs scripts/test-dashboard-playlist-save.cjs scripts/test-dashboard-playlist-save-panel.cjs scripts/test-dashboard-playlist-store.cjs scripts/test-favorites-management.cjs scripts/test-favorites-panel.cjs

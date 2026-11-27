@@ -96,12 +96,14 @@ can drive:
 | **Three surfaces** | The `fsonos` CLI (`--json` everywhere), an HTTP API with an OpenAPI document, and an MCP server (tools plus `sonos://zones` and `sonos://dj` resources) over streamable HTTP or stdio, all answering alike, with the same stable error codes ([`docs/ERRORS.md`](docs/ERRORS.md)); room alias/default edits follow the selected daemon too; `fsonos policy check` validates a local policy file |
 | **A house without speakers** | `fsonos sim` starts virtual S1 and S2 households on loopback, so you can try every command, or develop an agent, with no hardware |
 
-The [native iPhone, iPad and Mac remote](docs/APPLE_REMOTE.md) can build an
-ordered selection of up to ten saved Sonos playlist occurrences across pages.
-Reorder, remove or repeat selected entries, then review Play now, Queue next or
-Add to end. Confirmation rechecks the saved contents and destination queue
-before one request. It also preserves the native playlist save, rename and
-removal workflow.
+The phone and dashboard browsers, and the
+[native iPhone, iPad and Mac remote](docs/APPLE_REMOTE.md), can build an ordered
+selection of up to ten saved Sonos playlist occurrences across pages. Reorder,
+remove or repeat selected entries, then review Play now, Queue next or Add to
+end. Browser selections can also target another room or a saved room set in
+the source household. Confirmation rechecks the saved contents and destination
+queues before one request. The native playlist save, rename and removal
+workflow remains available.
 
 Both browser library baskets offer **Save selection as scene**. Keep the exact
 track order, repeated occurrences and selected group's membership, choose
