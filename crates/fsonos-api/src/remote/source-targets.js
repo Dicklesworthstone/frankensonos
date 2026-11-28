@@ -116,15 +116,16 @@ const SourceTargetsRemote = (() => {
     };
     const resolve = () => resolveTarget(read, target);
     const resolution = await resolve(), groups = targetGroups(resolution);
-    if (item.kind === 'sonos_playlist_tracks') {
+    if (['sonos_playlist_tracks', 'native_queue_tracks'].includes(item.kind)) {
+      const queueSelection = item.kind === 'native_queue_tracks';
       if (!sourceGroup || groups.some(group => group.household !== sourceGroup.household)) {
-        fail('Selected saved tracks can play only in their original household. Choose a room or room set in ' + (sourceGroup?.household || 'that household') + '.');
+        fail('Selected native tracks can play only in their original household. Choose a room or room set in ' + (sourceGroup?.household || 'that household') + '.');
       }
       const sources = player.groups(await read('zones'));
       if (!sources.some(group => group.target === sourceGroup.target && group.signature === sourceGroup.signature)) {
-        fail('The saved playlist’s original group changed. Read its current household and tracks again.');
+        fail('The selection’s original group changed. Read its current household and tracks again.');
       }
-      await player.readPlaylistTracks({ call: read, item, group: sourceGroup, valid });
+      await (queueSelection ? player.readQueueSelection : player.readPlaylistTracks)({ call: read, item, group: sourceGroup, valid });
     }
     if (item.kind === 'line_in') {
       const group = lineInHousehold(groups);
@@ -153,13 +154,15 @@ const SourceTargetsRemote = (() => {
       }
       return Object.freeze({ group, item: selected, before,
         sourceLabel: selected.kind === 'sonos_playlist_tracks' ? `${selected.tracks.length} selected track(s) from ${selected.playlistTitle} (${sourceGroup.target})`
+          : selected.kind === 'native_queue_tracks' ? `${selected.tracks.length} selected queue occurrence(s) from ${selected.zone}`
           : selected.kind === 'tracks' ? `${selected.tracks.length} ordered track(s)`
           : selected.kind === 'line_in' ? player.lineInLabel(selected)
             : selected.id ? `${selected.title} (${selected.id})` : selected.uri });
     }, valid));
     if ((await resolve()).signature !== resolution.signature) fail('The resolved room set changed during review. Review its current groups again.');
     return Object.freeze({ target, item, mode, resolution, groups, entries, ...(sourceGroup ? { sourceGroup } : {}), signature: JSON.stringify([
-      resolution.signature, sourceGroup?.signature, entries.map(e => [e.group.household, e.group.coordinator_id, e.item, e.before.signature]),
+      resolution.signature, sourceGroup?.signature, ...(item.kind === 'native_queue_tracks' ? [sourceGroup?.sourceSignature] : []),
+      entries.map(e => [e.group.household, e.group.coordinator_id, e.item, e.before.signature]),
     ]) });
   }
 
@@ -170,13 +173,15 @@ const SourceTargetsRemote = (() => {
         || !['play', 'next', 'end'].includes(choice.mode) || reviewed.mode !== choice.mode) {
       fail('Review this source action and its exact room set again before sending it.');
     }
-    if (choice.item.kind === 'sonos_playlist_tracks') {
+    if (['sonos_playlist_tracks', 'native_queue_tracks'].includes(choice.item.kind)) {
+      const queueSelection = choice.item.kind === 'native_queue_tracks';
       if (!reviewed.sourceGroup || reviewed.item !== choice.item
           || reviewed.groups.some(group => group.household !== reviewed.sourceGroup.household)) {
-        fail('Review the exact saved selection, its original household and its destinations again.');
+        fail('Review the exact native selection, its original household and its destinations again.');
       }
-      return Object.freeze({ route: 'sourcePlaylistTracks', body: Object.freeze({
-        ...player.commandBody(choice, reviewed.sourceGroup.target), target, expected_target_revision: revision,
+      return Object.freeze({ route: queueSelection ? 'queueCopy' : 'sourcePlaylistTracks', body: Object.freeze({
+        ...(queueSelection ? player.queueSelectionBody(choice, reviewed.sourceGroup) : player.commandBody(choice, reviewed.sourceGroup.target)),
+        target, expected_target_revision: revision,
         ...(reviewed.groups.length === 1 ? { expected_queue_revision: reviewed.entries[0].before.queue.revision } : {}),
       }) });
     }
@@ -286,11 +291,12 @@ const SourceTargetsRemote = (() => {
 
   function result(value, reviewed, player) {
     let nativeNotes = [];
-    if (reviewed.item?.kind === 'sonos_playlist_tracks') {
+    if (['sonos_playlist_tracks', 'native_queue_tracks'].includes(reviewed.item?.kind)) {
       const item = reviewed.item, mode = reviewed.mode === 'end' ? 'append' : reviewed.mode;
       const zone = reviewed.groups.length === 1 && (mode === 'play' || value?.queue_batch?.complete === true)
         ? reviewed.groups[0].coordinator : reviewed.target;
-      if (!value || value.zone !== zone || value.playlist !== item.id || value.mode !== mode
+      if (!value || value.zone !== zone || value.mode !== mode
+          || (item.kind === 'native_queue_tracks' ? value.source_zone !== item.zone : value.playlist !== item.id)
           || JSON.stringify(value.positions) !== JSON.stringify(item.positions)
           || JSON.stringify(value.titles) !== JSON.stringify(item.tracks.map(track => track.title))) {
         fail('The native selection receipt does not match the reviewed tracks and destinations. Read every destination before another action; this request was not repeated.');
@@ -308,11 +314,11 @@ const SourceTargetsRemote = (() => {
     const groups = reviewed.groups;
     const bad = () => fail('The daemon did not return one complete queue receipt for every reviewed group. Read their queues before another add; this request was not repeated.');
     const queued = (value, group) => {
-      if (['tracks', 'sonos_playlist_tracks'].includes(reviewed.item?.kind)) {
+      if (['tracks', 'sonos_playlist_tracks', 'native_queue_tracks'].includes(reviewed.item?.kind)) {
         const before = reviewed.entries.find(entry => entry.group === group)?.before.queue;
         // Native room sets bind the audience, not every browser queue token.
         // Their confirmed offsets can reflect queue growth after these reads.
-        const unboundNative = reviewed.item.kind === 'sonos_playlist_tracks' && groups.length > 1;
+        const unboundNative = ['sonos_playlist_tracks', 'native_queue_tracks'].includes(reviewed.item.kind) && groups.length > 1;
         if (!before || value?.count !== reviewed.item.tracks.length
             || (!unboundNative && value.first > before.total + 1)) bad();
       }

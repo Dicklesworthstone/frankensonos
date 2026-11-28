@@ -11,6 +11,8 @@ on:
       - "scripts/test-remote-queue-coordination.cjs"
       - "scripts/test-remote-queue-live.cjs"
       - "scripts/test-remote-queue-http.cjs"
+      - "scripts/test-native-queue-copy.cjs"
+      - "scripts/test-queue-copy-panel.cjs"
       - "scripts/test-remote-play-mode.cjs"
       - "scripts/test-remote-equalizer.cjs"
       - "scripts/test-remote-source-player.cjs"
@@ -164,6 +166,9 @@ jobs:
       - name: Live queue and command coordination regressions
         if: ${{ !cancelled() }}
         run: node --test scripts/test-remote-queue-coordination.cjs scripts/test-remote-queue-live.cjs scripts/test-remote-queue-http.cjs
+      - name: Native queue selection copying and browser controls
+        if: ${{ !cancelled() }}
+        run: node --test scripts/test-native-queue-copy.cjs scripts/test-queue-copy-panel.cjs
       - name: Web direct source playback regressions
         if: ${{ !cancelled() }}
         run: node --test scripts/test-remote-source-player.cjs scripts/test-remote-source-player-queue.cjs scripts/test-sonos-playlist-contents.cjs scripts/test-sonos-playlist-track-actions.cjs scripts/test-native-playlist-basket.cjs scripts/test-phone-playlist-basket.cjs scripts/test-dashboard-playlist-basket.cjs scripts/test-phone-catalog-basket.cjs scripts/test-dashboard-catalog-basket.cjs scripts/test-line-in-source.cjs

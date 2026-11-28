@@ -409,6 +409,18 @@ const DashboardQueue = (() => {
       update();
     }, () => !!range());
     button('Play selected', 'play', () => review('play'), () => selection()?.rows.length === 1);
+    button('Copy selected to rooms…', 'copy', () => {
+      const choice = selection();
+      if (!choice || choice.rows.length > 10) return;
+      const event = new CustomEvent('fsonos:queue-selection', { cancelable: true, detail: { selection: {
+        zone: choice.target, revision: choice.page.revision, total: choice.page.total,
+        tracks: choice.rows.map(row => ({ position: row.position, title: row.title, uri: row.uri,
+          creator: row.creator || '', album: row.album || '' })),
+      } } });
+      if (document.dispatchEvent(event)) notice = 'Finish or close the existing queue-copy review, then choose Copy selected to rooms again.';
+      else notice = 'Choose destinations and review the ordered copy below. This queue has not changed.';
+      update();
+    }, () => !!selection() && selection().rows.length <= 10);
     button('Remove selected', 'remove', () => review('remove'), () => !!selection());
     button('Move up', 'up', () => review('move', selection().rows[0].position - 1), () => selection()?.rows[0].position > 1);
     button('Move down', 'down', () => review('move', selection().rows.at(-1).position + 2),

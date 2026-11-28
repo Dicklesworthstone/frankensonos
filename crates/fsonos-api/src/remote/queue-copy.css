@@ -1,0 +1,14 @@
+.queue-copy-panel{margin:1rem 0;padding:1rem;border:1px solid currentColor;border-radius:1rem;max-width:60rem}
+.queue-copy-panel[hidden],.queue-copy-panel [hidden]{display:none}
+.queue-copy-panel h3,.queue-copy-panel h4{margin:0 0 .75rem}
+.queue-copy-panel p{line-height:1.5;overflow-wrap:anywhere}
+.queue-copy-fields{display:flex;flex-wrap:wrap;gap:1rem}
+.queue-copy-fields label{display:flex;flex:1 1 15rem;flex-direction:column;gap:.4rem}
+.queue-copy-fields input,.queue-copy-fields select{width:100%;min-width:0;padding:.6rem;font:inherit;color:inherit;background:transparent;border:1px solid currentColor;border-radius:.5rem}
+.queue-copy-actions{display:flex;flex-wrap:wrap;gap:.5rem;margin:.65rem 0}
+.queue-copy-actions button{padding:.5rem .75rem;font:inherit;cursor:pointer}
+.queue-copy-actions button:disabled{cursor:default;opacity:.5}
+.queue-copy-tracks{padding-inline-start:1.5rem}
+.queue-copy-tracks li{margin:.75rem 0;overflow-wrap:anywhere}
+.queue-copy-review{padding:1rem;margin-top:1rem;border:2px solid currentColor;border-radius:.75rem}
+.queue-copy-result{white-space:pre-wrap}

@@ -1568,6 +1568,18 @@ Swift production-model and transport regressions remain unexecuted in this
 session because the Swift toolchain is unavailable. See
 `docs/NATIVE_APPLE_TRACK_SCENES.md`.
 
+Live queue occurrences now reach the existing `/queue/selection` executor from
+both browser queue views through **Copy selected to rooms…**. Users can copy
+1–10 exact native occurrences, reorder or repeat them in the draft, and choose
+one room or a room set within the original household. Review shows every
+destination's current queue and playback; Play now replaces those queues while
+Play next and Append preserve playback. Source observations, physical audience
+identity and destination state are reread inside the shared command lane before
+one request. The source group is also reserved when it is not a destination.
+Per-group partial results and uncertain acknowledgements survive navigation
+without retrying the write. Model, loopback HTTP and actual DOM-control
+regressions cover the complete browser handoff; see `docs/QUEUE_SELECTION.md`.
+
 Explicit online Spotify catalog search now complements cached library search.
 The CLI `spotify-search`, HTTP `GET /spotify/search`, and MCP
 `search_spotify` read one page for an explicit track, album, artist, playlist,

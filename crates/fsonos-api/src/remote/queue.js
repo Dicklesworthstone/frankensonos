@@ -661,6 +661,16 @@ const QueueRemote = (() => {
       publish();
     }
 
+    function copySelection() {
+      const page = ready();
+      if (!page || state.pending || !page.revision || selectionRevision !== page.revision
+          || selectionTotal !== page.total || !state.selected.size || state.selected.size > 10) return null;
+      const tracks = [...state.selected].sort((a, b) => a - b).map(position => selectedItems.get(position));
+      if (tracks.some(track => !track || !identity(track.uri))) return null;
+      return Object.freeze({ zone, revision: page.revision, total: page.total,
+        tracks: Object.freeze(tracks.map(track => Object.freeze({ ...track }))) });
+    }
+
     function close() {
       visible = false;
       clearSearch();
@@ -673,7 +683,7 @@ const QueueRemote = (() => {
     }
 
     return { state, load, browse, jumpTo, showCurrent, play, add, select, selectRange, editRange, clearSelected, removable, reviewRemoval, cancelRemoval, remove,
-      reviewMove, moveOptions, reviewReorder, move, search, editSearch, cancelSearch, openMatch, block, stale, reconcile, close,
+      reviewMove, moveOptions, reviewReorder, move, search, editSearch, cancelSearch, openMatch, copySelection, block, stale, reconcile, close,
       suspend() { active = false; stale('Queue updates paused while this page is hidden.'); },
       resume() { if (!disposed) { active = true; stale(); } },
       dispose() { disposed = true; close(); } };
@@ -858,6 +868,15 @@ const QueueRemote = (() => {
               !editable || from === null || to === null || from > to || to > page.total || to - from + 1 > MAX_SELECTION))));
       }
       if (state.selected.size) {
+        const copied = control.copySelection();
+        const copy = button('Copy selected to rooms…', () => {
+          if (!editable || !ownsPage() || !copied || JSON.stringify(control.copySelection()) !== JSON.stringify(copied)) return;
+          const event = new CustomEvent('fsonos:queue-selection', { cancelable: true, detail: { selection: copied } });
+          if (document.dispatchEvent(event)) {
+            state.message = 'Finish or close the existing queue-copy review, then select Copy selected to rooms again.';
+            render(state);
+          }
+        }, !editable || !copied);
         const elsewhere = [...state.selected].filter(at => !page.items.some(item => item.position === at)).length;
         const selection = el('section', { class: 'queue-selection-moves', 'aria-label': 'Selected queue entries' },
           el('div', { class: 'row queue-selection-heading' },
@@ -865,7 +884,8 @@ const QueueRemote = (() => {
             button('Clear selection', () => control.clearSelected(), busy)),
           el('div', { class: 'row' },
             button('Show selection start', () => control.jumpTo(Math.min(...state.selected)), busy || untrusted),
-            button('Review removal', () => control.reviewRemoval(), busy || deciding || !control.removable())));
+            button('Review removal', () => control.reviewRemoval(), busy || deciding || !control.removable()), copy));
+        selection.append(el('p', { text: 'Copy up to 10 selected entries to a room or room set. You can reorder and repeat them in the copy review without changing this queue.' }));
         const moves = moveButtons(null, !editable);
         if (moves.length) selection.append(el('div', {
           'aria-label': 'Move selected queue entries' },

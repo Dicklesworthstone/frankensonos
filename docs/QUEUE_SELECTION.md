@@ -74,3 +74,64 @@ receipts when needed; insertion uses `queue_batch`. Partial results identify
 the groups that succeeded, failed, or were not attempted. An uncertain write
 is never automatically repeated: read the affected queues before choosing
 another action.
+
+## Browser remote and dashboard
+
+Select up to ten readable occurrences in either browser queue view and choose
+**Copy selected to rooms…**. The copy panel retains the original queue and
+positions, including selections gathered across queue pages or search
+results. Move, repeat, or remove entries to choose the copy order. These
+controls change only the draft; they do not rearrange the source queue.
+
+Choose a destination room, saved alias, or `all@household`, then choose
+**Play now**, **Play next**, or **Append**. **Review copy** resolves the complete
+destination groups and shows their current playback and queue effects before
+the separate confirmation. Mixed-household destinations are rejected. A
+qualified member room remains the original source even when another member
+coordinates its group.
+
+The browser handoff is `fsonos:queue-selection` with
+`detail.selection = { zone, revision, total, tracks }`. Every track retains
+`position`, `title`, `uri`, `creator`, and `album` from the observed queue;
+ordering and repetitions remain significant. `QueueCopyRemote.selectionOf`
+accepts 1–10 occurrences and rejects caller-supplied DIDL or other metadata.
+`open(selection)` performs source reads and returns a promise of whether the
+source was verified; opening a panel never writes.
+
+The shared model rereads every unique selected position with the original
+queue revision and total. It compares the resource and displayed track
+fields, checks the source against `/zones`, and brackets those reads with
+`/rooms/resolve` physical-group proofs. Each review also reads every
+destination's playback and queue, then resolves its audience again. The
+45-second confirmation window begins when those reads finish. Confirmation
+repeats the source and destination checks inside the shared command lane.
+The lane reserves full destination groups plus a distinct source group for
+reads; the source appears among the affected destinations only when the
+user actually included it.
+
+Confirmation sends exactly one `POST /queue/selection`. Its body contains
+the original `zone`, selected `positions`, `expected_revision`, resolved
+`target`, `expected_target_revision`, and mode (`end` becomes `append`). A
+single destination also includes `expected_queue_revision`. Titles, resource
+URIs, and metadata are never submitted as replacement playback content.
+
+`pending.targets` is the shared `SourceTargetsRemote.inspect` result;
+`pending.mode`, `pending.selection`, and the pending object itself remain
+stable until consumed or invalidated. The shared target adapter uses the
+explicit `native_queue_tracks` kind and validates the response's original
+`source_zone`, destination, positions, titles, mode, and complete per-group
+playback or queue receipts. Multi-group insertions retain the speaker's
+actual confirmed offsets if queues grew after review. The execution callback
+returns the validated receipt with `detail`, `complete`, `partial`,
+`uncertain`, and the daemon's actual `changed` flag.
+
+Editing, closing, suspension, stale callbacks, expired review, or changes to
+source or destination state prevent a late write. A dispatched operation
+keeps its eventual acknowledgement or uncertain outcome even if the panel
+closes. Failed and partial results keep each destination's details; the
+browser never retries the request or a subset automatically.
+
+Run `node --test scripts/test-native-queue-copy.cjs scripts/test-queue-copy-panel.cjs`
+for production-model, loopback HTTP and modeled-DOM coverage. The panel tests
+drive both actual queue handoff buttons, ordered draft controls, destination
+review, the dashboard mutation lane and navigation during reads or writes.
