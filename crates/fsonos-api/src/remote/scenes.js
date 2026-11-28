@@ -4,6 +4,7 @@
 const ScenesRemote = (() => {
   const directionApi = () => typeof DjDirection !== 'undefined' ? DjDirection : require('./dj-direction.js');
   const queueApi = () => typeof SceneQueue !== 'undefined' ? SceneQueue : require('./scene-queue.js');
+  const sourceApi = () => typeof SourcePlayerRemote !== 'undefined' ? SourcePlayerRemote : require('./source-player.js');
   const routes = {
     scene: ['GET', '/scenes/{name}'],
     sceneSave: ['PUT', '/scenes/{name}'],
@@ -305,6 +306,7 @@ const ScenesRemote = (() => {
   }
 
   function librarySelection(value) {
+    if (value?.kind === 'sonos_playlist_tracks') return sourceApi().nativeSceneSelection(value);
     const group = value?.group;
     if (value?.kind !== 'tracks' || !plain(group) || !text(group.target, 1024)
         || !Array.isArray(group.members) || !group.members.length || group.members.length > 512
@@ -433,12 +435,17 @@ const ScenesRemote = (() => {
         if (room(target).household !== leader.household) throw new Error('Rooms in different households cannot share a group.');
         used.add(target);
       }
-      if (!['keep', 'favorite', 'sonos_playlist', 'uri', 'tracks', 'dj'].includes(g.kind)
+      if (!['keep', 'favorite', 'sonos_playlist', 'sonos_playlist_tracks', 'uri', 'tracks', 'dj'].includes(g.kind)
           || !['keep', 'play', 'pause'].includes(g.playing)
           || (g.kind !== 'keep' && g.playing === 'keep')) throw new Error('Choose a source and explicit playback setting.');
       const source = { kind: g.kind };
       if (g.kind === 'uri') source.uri = sourceUri(g.value);
       if (g.kind === 'tracks') source.tracks = g.importedTracks ? queueApi().readTracks(g.importedTracks) : trackSelection(g.value);
+      if (g.kind === 'sonos_playlist_tracks') {
+        const selected = sourceApi().nativeSceneSelection(g.nativeSelection);
+        if (selected.native.group.household !== leader.household) throw new Error('A native selection must stay in its original household. Choose a scene room there.');
+        Object.assign(source, sourceApi().nativeSceneSource(selected));
+      }
       if (g.kind === 'favorite') {
         if (!text(g.value.trim())) throw new Error('Name a favorite by its exact title or ID.');
         source.name = g.value.trim();
@@ -483,7 +490,7 @@ const ScenesRemote = (() => {
   // field while leaving that server-learned field out of the save check.
   function authoredSignature(scene) {
     return signature({ ...scene, revision: null, groups: scene.groups.map((g) => g.source.kind === 'favorite'
-      ? { ...g, source: { ...g.source, uri: null } } : g.source.kind === 'sonos_playlist'
+      ? { ...g, source: { ...g.source, uri: null } } : ['sonos_playlist', 'sonos_playlist_tracks'].includes(g.source.kind)
         ? { ...g, source: { ...g.source, playlist: { ...g.source.playlist, household: null } } } : g) });
   }
 
@@ -534,6 +541,16 @@ const ScenesRemote = (() => {
         dependencies.push({ kind: 'sonos_playlist', zone: group.coordinator, id: chosen.id, title: chosen.title, identity });
         preview.groups[i].source = { kind: 'sonos_playlist', name: chosen.id,
           playlist: { household: room.household, id: chosen.id, title: chosen.title } };
+      } else if (source.kind === 'sonos_playlist_tracks') {
+        const selection = draft.groups[i].nativeSelection;
+        await sourceApi().verifyNativeSceneSelection({ selection, call,
+          valid: () => { if (!active()) throw new Error('The native scene draft changed or closed.'); } });
+        const identity = resolvedRoom(await call('sceneTargets', { query: { target: group.coordinator } }), group.coordinator);
+        if (!active()) return null;
+        const room = rooms.find(r => r.target === group.coordinator);
+        if (identity.room !== room.room || identity.household !== room.household) throw new Error('The native scene destination changed.');
+        dependencies.push({ kind: source.kind, zone: group.coordinator, identity, selection });
+        preview.groups[i].source = sourceApi().nativeSceneSource(selection, true);
       } else if (source.kind === 'dj' && source.mood) {
         const values = await call('moods', { query: { zone: group.coordinator } });
         if (!active()) return null;
@@ -581,16 +598,16 @@ const ScenesRemote = (() => {
     const mapped = new Map();
     for (const target of references) {
       let room = prepared.rooms.find((r) => r.target === target);
-      const native = prepared.dependencies.find((d) => d.kind === 'sonos_playlist' && d.zone === target);
+      const native = prepared.dependencies.find((d) => ['sonos_playlist', 'sonos_playlist_tracks'].includes(d.kind) && d.zone === target);
       if (!room || native) {
         const identity = resolvedRoom(await call('sceneTargets', { query: { target } }), target);
         room = prepared.rooms.find((r) => r.room === identity.room && r.household === identity.household);
         if (!room) throw new Error('The saved scene names a different room.');
-        const expected = prepared.dependencies.find((d) => d.kind === 'sonos_playlist' && d.zone === room.target);
+        const expected = prepared.dependencies.find((d) => ['sonos_playlist', 'sonos_playlist_tracks'].includes(d.kind) && d.zone === room.target);
         if (expected && JSON.stringify(identity) !== JSON.stringify(expected.identity)) {
           throw new Error('The saved playlist scene’s destination changed.');
         }
-        for (const group of saved.groups.filter((g) => g.coordinator === target && g.source.kind === 'sonos_playlist')) {
+        for (const group of saved.groups.filter((g) => g.coordinator === target && ['sonos_playlist', 'sonos_playlist_tracks'].includes(g.source.kind))) {
           if (target !== `${identity.room}@${group.source.playlist.household}`) {
             throw new Error('The saved playlist scene did not confirm its pinned household.');
           }
@@ -730,10 +747,15 @@ const ScenesRemote = (() => {
             throw new Error('The selected listening group changed. Choose the tracks and group again from the library.');
           }
           state.rows = scenesOf(rows); state.loaded = true; state.rooms = rooms;
+          if (selection.kind === 'sonos_playlist_tracks') {
+            await sourceApi().verifyNativeSceneSelection({ selection, call,
+              valid: () => { if (!current(version)) throw new Error('The native scene handoff closed.'); } });
+            if (!current(version)) return;
+          }
           state.draft = freeze({ groups: [{ id: ++groupId, coordinator: selection.group.target,
-            members: selection.group.members.filter(room => room !== selection.group.target), kind: 'tracks',
-            importedTracks: selection.tracks,
-            value: selection.tracks.map(track => track.source_uri + (track.title ? ` | ${track.title.replace(/[\r\n]+/g, ' ')}` : '')).join('\n'),
+            members: selection.group.members.filter(room => room !== selection.group.target), kind: selection.kind,
+            ...(selection.kind === 'sonos_playlist_tracks' ? { nativeSelection: selection } : { importedTracks: selection.tracks }),
+            value: selection.kind === 'sonos_playlist_tracks' ? '' : selection.tracks.map(track => track.source_uri + (track.title ? ` | ${track.title.replace(/[\r\n]+/g, ' ')}` : '')).join('\n'),
             playing: 'play' }], volumes: {}, mutes: {} });
           state.message = 'Name this scene and review its ordered tracks, group and playback setting before saving.';
         } catch (error) { if (current(version)) state.message = errorText(error); }
@@ -829,10 +851,12 @@ const ScenesRemote = (() => {
       }
       if (key === 'coordinator') {
         delete next.roomReferences;
-        next = { ...next, members: [], kind: 'keep', value: '', playing: 'keep' };
+        next = group.kind === 'sonos_playlist_tracks' ? { ...next, members: [] }
+          : { ...next, members: [], kind: 'keep', value: '', playing: 'keep' };
         delete next.direction;
       }
       if (key === 'kind') {
+        if (value !== 'sonos_playlist_tracks') delete next.nativeSelection;
         next = { ...next, value: '', playing: value === 'keep' ? 'keep' : 'play' };
         if (value === 'dj') next.direction = directionApi().draft();
         else delete next.direction;
@@ -1182,7 +1206,8 @@ const ScenesRemote = (() => {
         const lead = s.rooms.find((r) => r.target === g.coordinator);
         const field = el('fieldset', {}, el('legend', { text: `Group ${i + 1}` }));
         field.append(select(`Group ${i + 1} coordinator`, `leader-${g.id}`, g.coordinator,
-          [['', 'Choose a room…'], ...s.rooms.map((r) => [r.target, r.target])],
+          [['', 'Choose a room…'], ...s.rooms.filter(r => g.kind !== 'sonos_playlist_tracks'
+            || r.household === g.nativeSelection.native.group.household).map((r) => [r.target, r.target])],
           (v) => control.editGroup(g, 'coordinator', v)));
         const members = el('div', { class: 'scene-members' });
         for (const r of s.rooms.filter((r) => lead && r.household === lead.household && r.target !== lead.target)) {
@@ -1192,7 +1217,9 @@ const ScenesRemote = (() => {
               ? [...g.members, r.target] : g.members.filter((v) => v !== r.target)) }), r.target));
         }
         field.append(members, select(`Group ${i + 1} source`, `source-${g.id}`, g.kind,
-          [['keep', 'Keep the current source'], ['favorite', 'Sonos favorite'], ['sonos_playlist', 'Saved Sonos playlist'], ['uri', 'Music URI or Spotify link'], ['tracks', 'Ordered tracks or episodes'], ['dj', 'DJ']],
+          [['keep', 'Keep the current source'], ['favorite', 'Sonos favorite'], ['sonos_playlist', 'Saved Sonos playlist'],
+            ...(g.nativeSelection ? [['sonos_playlist_tracks', 'Selected native playlist occurrences']] : []),
+            ['uri', 'Music URI or Spotify link'], ['tracks', 'Ordered tracks or episodes'], ['dj', 'DJ']],
           (v) => {
             if (control.editGroup(g, 'kind', v) && ['favorite', 'sonos_playlist', 'dj'].includes(v)) {
               void control.loadSources(control.state.draft.groups.find((next) => next.id === g.id));
@@ -1216,6 +1243,12 @@ const ScenesRemote = (() => {
           el('p', { id: help, text: 'Add 1–10 Spotify tracks or episodes, one per line. Add | and a title if wanted. Order and repeated entries are kept. Recall replaces this group’s queue; Paused loads it without starting playback. Saving leaves speakers unchanged.' }));
           if (g.importedTracks?.some(track => /[\r\n]/.test(track.title || ''))) field.append(el('p', {
             text: 'Full library titles are retained in the saved selection and its review. Editing these lines uses the single-line titles shown here.' }));
+        }
+        if (g.kind === 'sonos_playlist_tracks') {
+          const selection = g.nativeSelection, source = sourceApi().nativeSceneSource(selection, true);
+          field.append(el('pre', { class: 'scene-source-detail', 'aria-label': `Group ${i + 1} native tracks in playback order`,
+            text: queueApi().describeNativeTracks(source.tracks, source.playlist) }),
+          el('p', { text: `Read from ${selection.native.group.target}. Its exact occurrences are checked again before saving. To change this sequence, cancel and select its tracks in Music again. Scene rooms can change within the same household; saving leaves speakers unchanged.` }));
         }
         if (lead && ['favorite', 'sonos_playlist', 'dj'].includes(g.kind)) field.append(sourceChooser(g, i, busy));
         if (lead && g.kind === 'dj') {

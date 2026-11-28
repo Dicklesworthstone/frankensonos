@@ -75,6 +75,7 @@ on:
       - "scripts/test-music-routines.cjs"
       - "scripts/test-remote-scenes.cjs"
       - "scripts/test-scene-editing.cjs"
+      - "scripts/test-native-track-scene-authoring.cjs"
       - "scripts/test-remote-dj-steering.cjs"
       - "scripts/test-dj-targets.cjs"
       - "scripts/test-dj-targets-panel.cjs"
@@ -213,7 +214,7 @@ jobs:
         run: node --test scripts/test-favorite-routines.cjs scripts/test-favorite-routines-panel.cjs scripts/test-music-routines.cjs scripts/test-music-routines-handoff.cjs
       - name: Web scene regressions
         if: ${{ !cancelled() }}
-        run: node --test scripts/test-remote-scenes.cjs scripts/test-scene-editing.cjs
+        run: node --test scripts/test-remote-scenes.cjs scripts/test-scene-editing.cjs scripts/test-native-track-scene-authoring.cjs
       - name: Web action history regressions
         if: ${{ !cancelled() }}
         run: node --test scripts/test-remote-history.cjs scripts/test-remote-listening-history.cjs

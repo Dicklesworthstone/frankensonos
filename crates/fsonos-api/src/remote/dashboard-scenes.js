@@ -4,6 +4,7 @@ const DashboardScenes = (() => {
   const C = typeof DashboardCore !== 'undefined' ? DashboardCore : require('./dashboard-core.js');
   const S = typeof DashboardSession !== 'undefined' ? DashboardSession : require('./dashboard-session.js');
   const Q = typeof SceneQueue !== 'undefined' ? SceneQueue : require('./scene-queue.js');
+  const player = () => typeof SourcePlayerRemote !== 'undefined' ? SourcePlayerRemote : require('./source-player.js');
   const MAX_AGE = 45000;
   const fail = message => { throw new Error(message); };
   const nameKey = name => name.replace(/[A-Z]/g, letter => letter.toLowerCase());
@@ -40,6 +41,7 @@ const DashboardScenes = (() => {
   }
 
   function selectionOf(value) {
+    if (value?.kind === 'sonos_playlist_tracks') return player().nativeSceneSelection(value);
     const group = value?.group;
     if (value?.kind !== 'tracks' || !group || typeof group.target !== 'string'
         || !Array.isArray(group.members) || !group.members.length || group.members.length > 512
@@ -61,23 +63,32 @@ const DashboardScenes = (() => {
     selectionGroup(selection, groups);
     return Object.freeze({ groups: Object.freeze([Object.freeze({ coordinator: selection.group.target,
       members: Object.freeze(selection.group.members.filter(room => room !== selection.group.target)),
-      source: Object.freeze({ kind: 'tracks', tracks: selection.tracks }), playing })]),
+      source: Object.freeze(selection.kind === 'sonos_playlist_tracks' ? player().nativeSceneSource(selection)
+        : { kind: 'tracks', tracks: selection.tracks }), playing })]),
     volumes: Object.freeze({}), mutes: Object.freeze({}) });
   }
   async function confirmSelection(scene, review, call) {
     const wanted = review.body.groups[0], group = scene.groups[0];
-    if (scene.groups.length !== 1 || group.source.kind !== 'tracks' || group.playing !== wanted.playing
-        || S.stable(Q.tracksSignature(group.source.tracks)) !== S.stable(Q.tracksSignature(wanted.source.tracks))
+    const native = review.selection.kind === 'sonos_playlist_tracks', expected = native ? player().nativeSceneSource(review.selection, true) : wanted.source;
+    const tracksSignature = native ? Q.nativeTracksSignature : Q.tracksSignature;
+    if (scene.groups.length !== 1 || group.source.kind !== expected.kind || group.playing !== wanted.playing
+        || S.stable(tracksSignature(group.source.tracks)) !== S.stable(tracksSignature(expected.tracks))
+        || native && (group.source.name !== expected.name || group.source.playlist.id !== expected.playlist.id
+          || group.source.playlist.title !== expected.playlist.title
+          || group.coordinator !== `${review.selectionRoom.room}@${group.source.playlist.household}`)
         || Object.keys(scene.volumes).length || Object.keys(scene.mutes).length) {
       fail('The reply did not confirm the reviewed track selection and playback setting.');
     }
     const room = async target => {
-      if ([wanted.coordinator, ...wanted.members].includes(target)) return target;
+      if (!native && [wanted.coordinator, ...wanted.members].includes(target)) return target;
       const value = await call('/rooms/resolve?target=' + encodeURIComponent(target));
       const identity = value?.rooms?.[0];
       if (value?.target !== target || value?.matched !== 'room' || value.rooms.length !== 1
           || !identity || typeof identity.room !== 'string' || typeof identity.household !== 'string') {
         fail('The saved selection room identity is unreadable.');
+      }
+      if (native && target === group.coordinator && S.stable(roomIdentity(value, target)) !== S.stable(review.selectionRoom)) {
+        fail('The saved native scene names a different destination player.');
       }
       return `${identity.room}@${identity.household}`;
     };
@@ -87,10 +98,19 @@ const DashboardScenes = (() => {
     }
   }
 
+  function roomIdentity(value, target) {
+    const room = value?.rooms?.[0];
+    if (value?.target !== target || value?.matched !== 'room' || value?.rooms?.length !== 1 || !room
+        || !['room', 'household', 'player', 'coordinator'].every(key => typeof room[key] === 'string' && room[key].trim())) {
+      fail('The native scene destination identity is unreadable.');
+    }
+    return Object.freeze(Object.fromEntries(['room', 'household', 'player', 'coordinator'].map(key => [key, room[key]])));
+  }
+
   function model({ call, controller, changed = () => {}, saved = () => {}, now = () => performance.now() }) {
     let version = 0, active = true, disposed = false, reading = null, readAt = 0;
     const state = { open: false, target: '', scope: '', groups: null, scenes: [], stale: true,
-      loading: false, writing: false, name: '', backupQueues: false, selection: null, playing: true,
+      loading: false, writing: false, name: '', backupQueues: false, selection: null, selectionRoom: null, playing: true,
       pending: null, result: null, message: '' };
     const publish = () => { if (!disposed) { try { changed(state); } catch (_) { /* Presentation only. */ } } };
     const live = () => !disposed && active && state.open;
@@ -100,6 +120,18 @@ const DashboardScenes = (() => {
       && !controller.state.busy && !controller.state.loading && !state.loading && !state.writing);
     const editable = () => !!(live() && matching() && state.groups && !state.stale && controller.state.topologyFresh
       && !state.loading && !state.writing && now() - readAt < MAX_AGE && controller.canControl());
+    const nativeCall = (name, args = {}) => {
+      if (name === 'zones') return call('/zones');
+      if (name !== 'sourcePlaylistContents') fail('Unknown native scene read.');
+      return call('/sonos/playlists/contents?' + new URLSearchParams(args.query));
+    };
+    async function readNative(selection, valid) {
+      await player().verifyNativeSceneSelection({ selection, call: nativeCall, valid });
+      const target = selection.group.target;
+      const identity = roomIdentity(await call('/rooms/resolve?target=' + encodeURIComponent(target)), target); valid();
+      if (`${identity.room}@${identity.household}` !== target) fail('The native scene destination changed.');
+      return identity;
+    }
     function retire(message, discard = false) {
       ++version; reading?.abort(); reading = null; state.loading = false;
       state.pending = null; state.stale = true;
@@ -137,6 +169,7 @@ const DashboardScenes = (() => {
         if (state.selection) {
           if (state.selection.group.target !== state.target) fail('The selected listening group changed. Choose the tracks and group again from the library.');
           selectionGroup(state.selection, next);
+          if (state.selection.kind === 'sonos_playlist_tracks') state.selectionRoom = await readNative(state.selection, valid);
         }
         state.groups = next; state.scenes = catalog; state.stale = false; readAt = started; state.message = ''; return true;
       } catch (error) {
@@ -155,16 +188,36 @@ const DashboardScenes = (() => {
       publish(); return true;
     }
     const canReview = () => !!(editable() && nameOf(state.name));
-    function review() {
+    function reviewReady() {
       if (!canReview()) return null;
       const asked = nameOf(state.name), existing = state.scenes.find(scene => nameKey(scene.name) === nameKey(asked)) || null;
       // Reuse the stored spelling: a case-only edit must not create a second saved name.
       state.pending = Object.freeze({ version, target: state.target, scope: state.scope, groups: state.groups,
         name: existing?.name || asked, existing, expectedRevision: existing?.revision || 'absent', backupQueues: state.backupQueues,
-        selection: state.selection,
+        selection: state.selection, selectionRoom: state.selectionRoom,
         body: state.selection ? selectedDefinition(state.selection, state.groups, state.playing)
           : Object.freeze(state.backupQueues ? { backup_queues: true } : {}) });
       state.message = ''; state.result = null; publish(); return state.pending;
+    }
+    function review() {
+      if (state.selection?.kind !== 'sonos_playlist_tracks') return reviewReady();
+      if (!canReview()) return Promise.resolve(null);
+      const v = ++version, selection = state.selection;
+      state.pending = null; state.loading = true; state.message = 'Checking the exact native occurrences before review…'; publish();
+      const valid = () => {
+        if (!live() || v !== version || !matching() || !controller.canControl() || !controller.state.topologyFresh) {
+          fail('The native scene review changed or closed. Read the selection again.');
+        }
+      };
+      return (async () => {
+        try {
+          const identity = await readNative(selection, valid); valid();
+          if (S.stable(identity) !== S.stable(state.selectionRoom)) fail('The native scene destination changed. Read the selection again.');
+          state.loading = false;
+          return reviewReady();
+        } catch (error) { if (live() && v === version) state.message = C.problem(error); return null; }
+        finally { if (v === version) { state.loading = false; publish(); } }
+      })();
     }
     const canApply = () => !!(editable() && state.pending && state.pending.version === version);
     async function apply(reviewed = state.pending) {
@@ -183,6 +236,10 @@ const DashboardScenes = (() => {
           const [groups, scenes] = await Promise.all([call('/zones'), call('/scenes')]); valid();
           houseOf(groups, reviewed.scope);
           if (reviewed.selection) selectionGroup(reviewed.selection, C.zones(groups));
+          if (reviewed.selection?.kind === 'sonos_playlist_tracks') {
+            const identity = await readNative(reviewed.selection, valid); valid();
+            if (S.stable(identity) !== S.stable(reviewed.selectionRoom)) fail('The native scene destination changed after review.');
+          }
           const existing = catalogOf(scenes).find(scene => nameKey(scene.name) === nameKey(reviewed.name)) || null;
           if (S.stable(existing) !== S.stable(reviewed.existing)) {
             fail('That saved scene changed while you reviewed it. Read the house and review the replacement again.');
@@ -260,7 +317,8 @@ const DashboardScenes = (() => {
       $('capture-scene-playback').disabled = s.loading || s.writing || !!s.pending;
       $('capture-scene-playback').value = s.playing ? 'play' : 'pause';
       $('capture-scene-tracks').hidden = !s.selection;
-      $('capture-scene-tracks').textContent = s.selection ? Q.describeTracks(s.selection.tracks) : '';
+      $('capture-scene-tracks').textContent = !s.selection ? '' : s.selection.kind === 'sonos_playlist_tracks'
+        ? Q.describeNativeTracks(s.selection.tracks, player().nativeSceneSource(s.selection, true).playlist) : Q.describeTracks(s.selection.tracks);
       $('capture-scene-review').textContent = s.selection ? 'Review selected scene' : 'Review capture';
       $('capture-scene-name').disabled = $('capture-scene-backup').disabled = s.loading || s.writing;
       if ($('capture-scene-name').value !== s.name) $('capture-scene-name').value = s.name;
@@ -325,6 +383,14 @@ const DashboardScenes = (() => {
     $('close-capture-scene').addEventListener('click', () => control.close());
     dialog.addEventListener('cancel', event => { event.preventDefault(); control.close(); });
     dialog.addEventListener('close', () => { if (control.state.open) control.close(); });
+    const fromNative = event => {
+      if (event.detail?.kind !== 'sonos_playlist_tracks' || doc.hidden || control.state.open || control.state.loading || control.state.writing) return;
+      void control.openSelection(event.detail);
+      if (control.state.open) { opener = doc.activeElement; event.preventDefault(); }
+    };
+    doc.addEventListener?.('fsonos:scene-selection', fromNative);
+    const dispose = control.dispose;
+    control.dispose = () => { doc.removeEventListener?.('fsonos:scene-selection', fromNative); dispose(); };
     render(control.state); return control;
   }
   return { MAX_AGE, nameOf, catalogOf, signature, confirmed, selectionOf, model, panel };

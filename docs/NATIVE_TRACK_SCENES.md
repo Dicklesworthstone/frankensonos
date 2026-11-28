@@ -100,6 +100,38 @@ are not exposed. As with other captured or household-bound sources, this saved
 DTO is for display and review; it is not an authored source definition. To
 replace a native selection, browse and submit a new reviewed selection.
 
+## Browser authoring
+
+Both browser remotes can create these scenes directly from the saved Sonos
+playlist browser. Choose **1–10 tracks** across its pages, then use the selected
+track controls to repeat, reorder or remove occurrences. **Save selection as
+scene** carries that exact sequence into the scene review, including local files
+and native service tracks. The preview retains full titles and resource strings;
+renderer metadata stays on the daemon.
+
+The entry point names the currently displayed listening group as the scene's
+destination. Clear **Selected-track destination** before using it: that separate
+playback field can name a room set, while scene creation starts from one
+representable group. The full remote's custom scene editor then allows a
+different coordinator and members in the same household. Changing those scene
+rooms retains the original playlist reader and contents revision. The dashboard
+saves the displayed group and shows its rooms in the review.
+
+Name the scene, choose playing or silent loading, review the ordered occurrences
+and destination, then confirm **Save**. Both clients reread every retained source
+range and the original group before review and again before saving. A changed
+playlist revision, source group or destination retires the review without a
+write. Existing scene replacements retain their saved-scene revision check.
+After a save is sent, an unreadable or mismatched receipt is reported as uncertain
+and the write is not repeated. None of these authoring steps starts playback.
+
+The public saved-scene DTO omits the original capture request and renderer
+metadata, so the browser's general saved-scene editor does not turn a saved
+native sequence back into an authored selection. To replace it, choose a fresh
+playlist selection and save it under the existing scene name after reviewing
+the replacement. Saved selections remain independently recallable after the
+original playlist changes or disappears.
+
 ## Recall and scheduled use
 
 `playing: true` replaces the destination queue, selects the first saved
@@ -111,9 +143,8 @@ default to playing when that field is omitted, matching other authored scenes.
 Both browser remotes and the Apple client display the saved source, its original
 household and every occurrence in order. They review and recall it, and accept
 it in Apply scene routines. A changed resource, order, repetition, title,
-household binding or saved definition invalidates an existing review. Author
-the selection through CLI, HTTP or MCP; the browser and Apple custom scene
-composers do not create this source.
+household binding or saved definition invalidates an existing review. The CLI,
+HTTP and MCP interfaces also support authoring these selections.
 
 Recall does not require the original playlist, a Sonos favorite or Spotify Web
 API sign-in. The speakers still need access to the underlying files or service
@@ -144,11 +175,17 @@ bounded queue undo, partial writes and scheduled recall without the original
 catalog. Browser and Apple regressions cover the saved-source contract and
 changed-review behavior.
 
+Browser authoring regressions additionally exercise both clients' actual
+selection handoffs, S1/S2 saves, repeated occurrences from distant pages, silent
+loading, separate source and destination rooms, stale observations and uncertain
+receipts.
+
 Run the focused regression suites with:
 
 ```sh
 cargo test -p fsonos-core --test native_track_batch_sim scenes::
 cargo test -p fsonos-api --test scenes_sonos_playlists_sim native_selections::
 node --test scripts/test-remote-scenes.cjs scripts/test-dashboard-session.cjs
+node --test scripts/test-native-track-scene-authoring.cjs
 swift test --package-path apps/apple --filter frozenNativeScenes
 ```

@@ -1547,6 +1547,17 @@ Explicit refresh and changed catalog or group observations retire the basket;
 transient page-read failures retain it for deliberate retry. Focused Node
 regressions cover both shipped controllers, shared verification and DOM panels.
 
+Both browser remotes can save those exact native occurrences as reusable scenes
+through **Save selection as scene**. The scene retains order, repeated tracks,
+local or native-service resources and the original household, independently of
+later playlist changes. Authoring checks the original source ranges and group
+again before review and save, submits only the observed positions and revision,
+and supports explicit playing or silent recall. The full remote can choose a
+different scene group in that household while retaining the original playlist
+reader. Scene replacements retain the existing revision check. The focused
+browser suites pass 326 tests, including 33 new authoring regressions; see
+`docs/NATIVE_TRACK_SCENES.md`.
+
 Explicit online Spotify catalog search now complements cached library search.
 The CLI `spotify-search`, HTTP `GET /spotify/search`, and MCP
 `search_spotify` read one page for an explicit track, album, artist, playlist,

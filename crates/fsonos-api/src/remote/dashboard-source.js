@@ -389,6 +389,26 @@ const DashboardSource = (() => {
       catch (error) { retire(); state.message = C.problem(error); publish(); return null; }
       return review(choice);
     }
+    async function sceneSelection(page = state.contents, basket = state.contentsBasket) {
+      if (!canReview() || state.pending || targetSet() || state.sourceType !== 'playlist' || !page || page !== state.contents
+          || page.playlist.id !== state.playlist || basket !== state.contentsBasket) return null;
+      if (state.selectionTarget.trim()) {
+        state.message = 'Clear Selected-track destination to save a scene for the displayed group.';
+        publish(); return null;
+      }
+      let selection;
+      try { selection = P.nativeSceneFromBasket(basket, state.group); }
+      catch (error) { state.message = C.problem(error); publish(); return null; }
+      retire(); const v = version;
+      state.loading = true; state.message = 'Checking the selected native occurrences for a reusable scene…'; publish();
+      const valid = () => {
+        if (!live() || version !== v || !matching() || !controller.canControl() || !controller.state.topologyFresh
+            || basket !== state.contentsBasket || page !== state.contents) fail('The selected tracks or source group changed. Choose them again.');
+      };
+      try { await P.verifyNativeSceneSelection({ selection, call: targetCall, valid }); valid(); return selection; }
+      catch (error) { if (live() && version === v) state.message = C.problem(error); return null; }
+      finally { if (live() && version === v) { state.loading = false; publish(); } }
+    }
     async function reviewCatalog(mode, basket = state.catalog.basket) {
       if (!canReviewCatalog() || basket !== state.catalog.basket) return null;
       let choice;
@@ -481,7 +501,7 @@ const DashboardSource = (() => {
       publish(); return true;
     }
     return { state, manager, catalog, chooseCatalog, observe, editable, edit, loadTargets, loadPlaylists, loadLineInSources, loadContents,
-      canReview, review, reviewTrack, selectTrack, changeTrackSelection, reviewTracks, clearTrackSelection, canReviewCatalog, reviewCatalog, canApply, apply, open,
+      canReview, review, reviewTrack, selectTrack, changeTrackSelection, reviewTracks, sceneSelection, clearTrackSelection, canReviewCatalog, reviewCatalog, canApply, apply, open,
       catalogChanged(change = null) {
         manager.catalogChanged(change);
         const favorite = state.sourceType === 'favorite';
@@ -539,7 +559,14 @@ const DashboardSource = (() => {
     let shownSuggestions = null;
     const control = model({ call, controller, completed, now, changed: render });
     const selectionPanel = P.playlistTrackSelectionPanel(doc, { review: control.reviewTracks, clear: control.clearTrackSelection,
-      destination: value => control.edit('selectionTarget', value), loadTargets: control.loadTargets, changeSelection: control.changeTrackSelection });
+      destination: value => control.edit('selectionTarget', value), loadTargets: control.loadTargets, changeSelection: control.changeTrackSelection,
+      async scene(page, basket) {
+        const selection = await control.sceneSelection(page, basket);
+        if (!selection || doc.hidden || !control.state.open) return;
+        const event = new CustomEvent('fsonos:scene-selection', { cancelable: true, detail: selection });
+        if (!doc.dispatchEvent(event)) control.close();
+        else { control.state.message = 'Finish or close the current scene draft, then choose Save selection as scene again.'; render(control.state); }
+      } });
     $('source-contents').append(selectionPanel.node);
     const catalogSelectionPanel = P.catalogSelectionPanel(doc, { review: control.reviewCatalog,
       clear: control.catalog.clearSelection, changeSelection: control.catalog.editSelection });

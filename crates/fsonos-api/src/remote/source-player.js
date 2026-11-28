@@ -650,6 +650,72 @@ const SourcePlayerRemote = (() => {
     }
   }
 
+  // Carry the observed source into scene authoring. Only its positions and
+  // revision are sent to the daemon; renderer metadata never comes from a UI.
+  function nativeSceneSelection(value) {
+    const source = value?.native, supplied = source?.group;
+    let shape;
+    try { shape = JSON.parse(supplied?.signature); } catch (_) { /* Invalid below. */ }
+    if (value?.kind !== 'sonos_playlist_tracks' || !Array.isArray(shape) || shape.length !== 3
+        || !Array.isArray(shape[2]) || !shape[2].length || shape[2].length > 512) {
+      throw new Error('Choose the native playlist selection and its original group again.');
+    }
+    const group = groups([{ household: shape[0], coordinator_room: shape[1], members: shape[2] }])[0];
+    if (group.target !== supplied.target || group.signature !== supplied.signature
+        || group.household !== supplied.household || group.coordinator !== supplied.coordinator) {
+      throw new Error('The native selection has no complete original group identity.');
+    }
+    const original = source.item;
+    if (!original || !/^SQ:\d+$/.test(original.id) || !text(original.playlistTitle)
+        || typeof original.revision !== 'string' || !original.revision || original.revision.length > 4096
+        || /[\p{Cc}]/u.test(original.revision) || !Number.isInteger(original.total)
+        || original.total < 1 || original.total > 100000) {
+      throw new Error('The native selection has no complete playlist observation.');
+    }
+    const item = preparePlaylistTracks({ playlist: { id: original.id, title: original.playlistTitle },
+      revision: original.revision, total: original.total, items: original.tracks }, original.positions, 'play').item;
+    if (JSON.stringify(item) !== JSON.stringify(original) || item.positions.some(position => position > item.total)) {
+      throw new Error('The native selection no longer describes the reviewed occurrences.');
+    }
+    const Q = typeof SceneQueue !== 'undefined' ? SceneQueue : require('./scene-queue.js');
+    const tracks = Q.readNativeTracks(item.tracks.map(track => ({ source_uri: track.uri,
+      ...(track.title.trim() ? { title: track.title } : {}) })));
+    const members = Object.freeze(shape[2].map(room => `${room}@${group.household}`).sort());
+    if (value.group?.target !== group.target || JSON.stringify(value.group?.members) !== JSON.stringify(members)) {
+      throw new Error('The scene selection must name its displayed listening group.');
+    }
+    return Object.freeze({ kind: 'sonos_playlist_tracks', tracks,
+      group: Object.freeze({ target: group.target, members }), native: Object.freeze({ group, item }) });
+  }
+
+  function nativeSceneFromBasket(basket, group) {
+    const item = preparePlaylistBasket(basket, 'play', group).item;
+    return nativeSceneSelection({ kind: 'sonos_playlist_tracks', native: { group, item },
+      group: { target: group.target, members: JSON.parse(group.signature)[2].map(room => `${room}@${group.household}`).sort() } });
+  }
+
+  function nativeSceneSource(value, preview = false) {
+    const selection = nativeSceneSelection(value), { group, item } = selection.native;
+    return preview ? { kind: selection.kind, name: item.id,
+      playlist: { household: group.household, id: item.id, title: item.playlistTitle }, tracks: selection.tracks }
+      : { kind: selection.kind, name: item.id, selection: { zone: group.target,
+        positions: item.positions, expected_revision: item.revision } };
+  }
+
+  async function verifyNativeSceneSelection({ selection, call, valid = () => {} }) {
+    const selected = nativeSceneSelection(selection), { group, item } = selected.native;
+    const checkGroup = async () => {
+      valid(); const current = groups(await call('zones')); valid();
+      if (!current.some(candidate => candidate.target === group.target && candidate.signature === group.signature)) {
+        throw new Error('The native playlist’s source group changed. Choose its tracks again.');
+      }
+    };
+    await checkGroup();
+    await readPlaylistTracks({ call, item, group, valid });
+    await checkGroup();
+    return selected;
+  }
+
   function tracksOutcome(value, reviewed) {
     const item = reviewed.item, mode = reviewed.mode === 'end' ? 'append' : reviewed.mode;
     if (!value || value.zone !== reviewed.group.coordinator || value.playlist !== item.id || value.mode !== mode
@@ -719,7 +785,7 @@ const SourcePlayerRemote = (() => {
     }
   }
 
-  function playlistTrackSelectionPanel(doc, { review, clear, destination, loadTargets, changeSelection }) {
+  function playlistTrackSelectionPanel(doc, { review, clear, destination, loadTargets, changeSelection, scene }) {
     const node = doc.createElement('section'), help = doc.createElement('p'), list = doc.createElement('ol');
     node.className = 'source-track-selection'; node.setAttribute('aria-label', 'Selected saved tracks');
     help.className = 'source-help'; help.setAttribute('role', 'status'); help.setAttribute('aria-live', 'polite');
@@ -750,7 +816,11 @@ const SourcePlayerRemote = (() => {
       });
     const reset = doc.createElement('button'); reset.type = 'button'; reset.textContent = 'Clear selection';
     reset.addEventListener('click', () => { if (!reset.disabled) clear(); }); actions.append(reset);
-    node.append(help, list, destinationFields, actions);
+    const saveScene = doc.createElement('button'), sceneHelp = doc.createElement('p');
+    saveScene.type = 'button'; saveScene.textContent = 'Save selection as scene'; saveScene.hidden = !scene;
+    saveScene.addEventListener('click', () => { if (!saveScene.disabled) void scene(current, currentBasket); });
+    sceneHelp.className = 'source-help'; sceneHelp.hidden = !scene;
+    actions.append(saveScene); node.append(help, list, destinationFields, actions, sceneHelp);
     return { node, render(page, positions, disabled, { target = '', group = null, choices = [], basket = null } = {}) {
       current = page; currentBasket = basket; node.hidden = !page;
       help.textContent = positions.length ? `${positions.length} of ${MAX_PLAYLIST_TRACKS} selected, in the order shown. Next and Previous keep this selection. Reorder, repeat or remove tracks below; Refresh tracks clears it. Clear the selection to review the whole playlist.`
@@ -775,6 +845,11 @@ const SourcePlayerRemote = (() => {
         }
       }
       for (const button of [...buttons, reset]) button.disabled = disabled || !positions.length;
+      saveScene.disabled = disabled || !positions.length || !group || !!target.trim();
+      sceneHelp.hidden = !scene || !positions.length;
+      sceneHelp.textContent = target.trim()
+        ? 'Scene creation starts with the displayed group. Clear Selected-track destination before saving a scene; room-set playback remains available above.'
+        : group ? `Save these exact occurrences for ${group.target}, then review the scene’s playing or silent setting. Later playlist edits do not change a saved selection.` : '';
       if (shown !== positions || shownPage !== page || shownBasket !== basket || shownDisabled !== disabled) {
         const focused = list.contains?.(doc.activeElement) ? doc.activeElement : null;
         const focusAction = focused?.getAttribute('data-playlist-basket-action');
@@ -1770,6 +1845,29 @@ const SourcePlayerRemote = (() => {
       return review(choice);
     }
 
+    async function sceneSelection(page = state.contents, basket = state.contentsBasket) {
+      if (disposed || !state.open || blocked() || manager.busy() || state.reading || state.pending || collective()
+          || state.sourceType !== 'playlist' || !page || page !== state.contents || basket !== state.contentsBasket
+          || page.playlist.id !== state.playlist) return null;
+      if (state.selectionTarget.trim()) {
+        state.message = 'Clear Selected-track destination to save a scene for the displayed group. Choose its scene rooms in the scene editor.';
+        publish(); return null;
+      }
+      let selection;
+      try { selection = nativeSceneFromBasket(basket, selected()); }
+      catch (error) { state.message = problem(error); publish(); return null; }
+      invalidate(); const version = epoch;
+      state.reading = true; state.message = 'Checking the selected native occurrences for a reusable scene…'; publish();
+      const valid = () => {
+        if (!current(version) || basket !== state.contentsBasket || page !== state.contents) {
+          throw new Error('The native selection changed or closed. Choose it again before creating a scene.');
+        }
+      };
+      try { await verifyNativeSceneSelection({ selection, call, valid }); valid(); return selection; }
+      catch (error) { if (current(version)) state.message = problem(error); return null; }
+      finally { if (current(version)) { state.reading = false; publish(); } }
+    }
+
     function clearTrackSelection() {
       if (disposed || !state.open || blocked() || manager.busy() || state.reading) return false;
       invalidate(); setBasket(null); state.message = ''; publish(); return true;
@@ -1834,7 +1932,7 @@ const SourcePlayerRemote = (() => {
     }
 
     return { state, manager, catalog, chooseCatalog, refresh, edit, loadTargetSuggestions, loadPlaylists, loadLineInSources, loadContents,
-      review, reviewCatalog, reviewTrack, selectTrack, changeTrackSelection, reviewTracks, clearTrackSelection, confirm, offer, offerTracks, browseSaved, clearDraft,
+      review, reviewCatalog, reviewTrack, selectTrack, changeTrackSelection, reviewTracks, sceneSelection, clearTrackSelection, confirm, offer, offerTracks, browseSaved, clearDraft,
       catalogChanged(change = null) {
         manager.catalogChanged(change);
         if (disposed || !['playlist', 'favorite'].includes(state.sourceType)
@@ -1936,7 +2034,14 @@ const SourcePlayerRemote = (() => {
     catalogFields.append(onlineSelection.node);
     const selectionPanel = playlistTrackSelectionPanel(doc, { review: control.reviewTracks, clear: control.clearTrackSelection,
       changeSelection: control.changeTrackSelection,
-      destination: value => control.edit('selectionTarget', value), loadTargets: control.loadTargetSuggestions });
+      destination: value => control.edit('selectionTarget', value), loadTargets: control.loadTargetSuggestions,
+      async scene(page, basket) {
+        const selection = await control.sceneSelection(page, basket);
+        if (!selection || doc.hidden || !details.open || node.closest?.('[hidden], [inert]')) return;
+        const event = new CustomEvent('fsonos:scene-selection', { cancelable: true, detail: selection });
+        if (doc.dispatchEvent(event)) message.textContent = 'Finish or close the current scene draft, then choose Save selection as scene again.';
+        else { details.open = false; control.close(); }
+      } });
     contentsFields.append(selectionPanel.node);
     const managerPanel = playlistManagerPanel(control.manager, doc);
     managerHost.append(managerPanel.node);
@@ -2201,6 +2306,7 @@ const SourcePlayerRemote = (() => {
     preparePlaylistTrack, trackQuery, verifyPlaylistTrack, trackOutcome,
     preparePlaylistTracks, tracksQuery, verifyPlaylistTracks, readPlaylistTracks, tracksOutcome, renderSelectedTracks, playlistTrackSelectionPanel, MAX_PLAYLIST_TRACKS,
     playlistBasketPositions, verifyPlaylistBasket, togglePlaylistTrack, editPlaylistBasket, preparePlaylistBasket,
+    nativeSceneSelection, nativeSceneFromBasket, nativeSceneSource, verifyNativeSceneSelection,
     commandBody, offeredSource, groups, playback, queue, queued, outcome, model, panel, routes, modes, MAX_BYTES, MAX_TITLE,
     catalogKinds, catalogQuery, catalogPage, catalogModel, renderCatalog, catalogSelection, verifyCatalogSelection, catalogSelectionPanel, catalogOrigin,
     CATALOG_LIMIT, MAX_QUERY_BYTES, MAX_CATALOG_OFFSET };
