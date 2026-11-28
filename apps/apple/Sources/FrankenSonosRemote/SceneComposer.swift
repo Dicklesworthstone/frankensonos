@@ -89,7 +89,13 @@ import FrankenSonosKit
     }
 
     private func sourceLabel(_ source: SceneSourceKind) -> String {
-        switch source { case .keep: "Keep music"; case .favorite: "Favorite"; case .uri: "Music link"; case .dj: "DJ" }
+        switch source {
+        case .keep: "Keep music"
+        case .favorite: "Favorite"
+        case .uri: "Music link"
+        case .dj: "DJ"
+        case .nativeTracks: "Exact native tracks"
+        }
     }
 
     private func roomSummary(_ room: RoomID) -> String {
@@ -161,7 +167,9 @@ import FrankenSonosKit
                     Text("Choose room and household").tag(Optional<RoomID>.none)
                     if let chosen = group.coordinator, !rooms.contains(chosen) { Text("Unavailable: \(chosen.address)").tag(Optional(chosen)) }
                     ForEach(rooms) { room in
-                        Text(room.address).tag(Optional(room)).disabled(usedByOthers.contains(room))
+                        Text(room.address).tag(Optional(room))
+                            .disabled(usedByOthers.contains(room) || (group.source == .nativeTracks
+                                && group.nativeSelection?.zone.household != room.household))
                     }
                 }.pickerStyle(.menu)
                 if let coordinator = group.coordinator {
@@ -190,12 +198,13 @@ import FrankenSonosKit
                     Text("Sonos favorite").tag(SceneSourceKind.favorite)
                     Text("Music URI or Spotify link").tag(SceneSourceKind.uri)
                     Text("Your DJ").tag(SceneSourceKind.dj)
+                    if group.nativeSelection != nil { Text("Selected native playlist tracks").tag(SceneSourceKind.nativeTracks) }
                 }.pickerStyle(.menu)
                 sourceFields(group)
                 Picker("Playback", selection: Binding(get: { self.group?.playback ?? .unchanged }, set: { playback in update { $0.playback = playback } })) {
                     if group.source == .keep { Text("Leave unchanged").tag(ScenePlayback.unchanged) }
                     Text("Play").tag(ScenePlayback.playing)
-                    Text("Pause").tag(ScenePlayback.paused)
+                    Text(group.source == .nativeTracks ? "Prepare silently" : "Pause").tag(ScenePlayback.paused)
                 }.pickerStyle(.menu)
                 Button("Remove this group", systemImage: "minus.circle", role: .destructive) {
                     var draft = model.sceneDraft; draft.groups.removeAll { $0.id == id }; model.updateSceneDraft(draft)
@@ -207,6 +216,23 @@ import FrankenSonosKit
 
     @ViewBuilder private func sourceFields(_ group: SceneGroupDraft) -> some View {
         switch group.source {
+        case .nativeTracks:
+            if let selection = group.nativeSelection {
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("\(selection.playlist.title) · \(selection.zone.household)").font(.subheadline.weight(.semibold))
+                    Text("Read from \(selection.zone.id.address). The scene destination can be another group in this household.")
+                        .font(.caption).foregroundStyle(.secondary)
+                    ForEach(Array(selection.choices.enumerated()), id: \.element.id) { index, choice in
+                        VStack(alignment: .leading, spacing: 3) {
+                            Text("\(index + 1). \(choice.item.title.isEmpty ? "Untitled entry" : choice.item.title)")
+                            Text("Saved position \(choice.item.position) · \(choice.item.uri ?? "")")
+                                .font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
+                        }
+                    }
+                    Text("Saving freezes this order and its repeated occurrences. Later playlist edits or deletion do not change the saved sequence. Applying the scene replaces its destination queues; silent preparation loads them without starting playback.")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+            }
         case .keep:
             Text("Use whatever this leading room is playing when the scene is applied.")
                 .font(.caption).foregroundStyle(.secondary)

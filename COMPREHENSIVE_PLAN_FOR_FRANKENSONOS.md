@@ -1533,7 +1533,7 @@ existing shared engines. Source and target revisions are independent; a single
 queue revision is valid only for one destination. Phone and dashboard selections
 also expose the separate destination with room and alias suggestions, source
 group authority, per-group review and partial receipts. Native Apple selection
-controls retain their existing one-group destination. Added S1/S2 and
+controls resolve the same room-set audiences. Added S1/S2 and
 surface regressions await execution after the workspace build was killed and
 the executor disconnected.
 
@@ -1557,6 +1557,16 @@ different scene group in that household while retaining the original playlist
 reader. Scene replacements retain the existing revision check. The focused
 browser suites pass 326 tests, including 33 new authoring regressions; see
 `docs/NATIVE_TRACK_SCENES.md`.
+
+The Apple playlist basket also offers **Create scene from selection**. It
+resolves the chosen room or room set into explicit groups in the existing
+scene composer, retains source evidence independently of the destination and
+supports per-group playing or silent preparation. Import, review and final
+confirmation reread the retained source pages; conditional saves verify the
+returned frozen scene and preserve uncertain outcomes without retrying. Added
+Swift production-model and transport regressions remain unexecuted in this
+session because the Swift toolchain is unavailable. See
+`docs/NATIVE_APPLE_TRACK_SCENES.md`.
 
 Explicit online Spotify catalog search now complements cached library search.
 The CLI `spotify-search`, HTTP `GET /spotify/search`, and MCP

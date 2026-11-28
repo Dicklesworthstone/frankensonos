@@ -354,6 +354,42 @@ public struct RemoteResult: Identifiable, Sendable {
         catch { panelProblem = error.localizedDescription }
     }
 
+    /// Import native occurrence evidence into the ordinary scene composer.
+    /// Resolving a room set creates explicit groups; it never sends playback.
+    public func beginNativeTrackScene(selection: UUID, in expectedZone: Zone) {
+        guard canPrepare && panel == .sonosPlaylists && !panelLoading && panelProblem == nil,
+              let zone = selectedZone, expectedZone.sameGroup(as: zone),
+              let request = sonosPlaylistRequest, let page = sonosPlaylistContents,
+              sonosPlaylistTracks.isCurrent(selection, page: page, request: request) else { return }
+        do {
+            let target = sonosPlaylistTracks.target.trimmingCharacters(in: .whitespacesAndNewlines)
+            let source = try SonosPlaylistTracksSelection(sonosPlaylistTracks,
+                action: .play, target: target.isEmpty ? nil : target)
+            actionPhase = .preparing
+            let token = epoch, client = client, barrier = cancellation
+            actionTask = Task { [weak self] in
+                defer { self?.actionFinished() }
+                do {
+                    await barrier?.value
+                    try Task.checkCancellation()
+                    let destinations = try await client.nativeSceneDestinations(source)
+                    let draft = try SceneDraft(nativeSelection: source, destinations: destinations)
+                    guard let self, self.active, self.epoch == token, !Task.isCancelled,
+                          self.sonosPlaylistTracks.id == selection,
+                          self.selectedZone?.sameGroup(as: zone) == true else { return }
+                    self.sceneDraft = draft; self.sceneDraftReplacing = nil
+                    self.sceneComposerOpen = true; self.sceneDraftProblem = nil
+                    self.invalidateSceneChoices()
+                    self.show(.scenes)
+                } catch {
+                    if let self, self.epoch == token && !Task.isCancelled {
+                        self.panelProblem = error.localizedDescription
+                    }
+                }
+            }
+        } catch { panelProblem = error.localizedDescription }
+    }
+
     public func openPlaylistSave() {
         guard canPrepare && panel == .queue && !panelLoading, let zone = selectedZone else { return }
         playlistManagement.openSave(in: zone)

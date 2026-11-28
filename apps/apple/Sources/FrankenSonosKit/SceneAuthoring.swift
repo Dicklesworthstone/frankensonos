@@ -18,7 +18,10 @@ public enum SceneName {
     }
 }
 
-public enum SceneSourceKind: String, CaseIterable, Hashable, Sendable { case keep, favorite, uri, dj }
+public enum SceneSourceKind: String, CaseIterable, Hashable, Sendable {
+    case keep, favorite, uri, dj
+    case nativeTracks = "sonos_playlist_tracks"
+}
 public enum ScenePlayback: String, CaseIterable, Sendable { case unchanged, playing, paused }
 
 public struct SceneGroupDraft: Equatable, Sendable, Identifiable {
@@ -28,6 +31,8 @@ public struct SceneGroupDraft: Equatable, Sendable, Identifiable {
     public var source: SceneSourceKind = .keep
     public var value = ""
     public var playback: ScenePlayback = .unchanged
+    /// Retained browse evidence, never metadata supplied to a renderer.
+    public var nativeSelection: SonosPlaylistTracksSelection?
     public init() {}
 }
 
@@ -42,7 +47,8 @@ public struct SceneDraft: Equatable, Sendable {
 
     public func definition(zones: [Zone]) throws -> SceneDefinition {
         _ = try SceneName.validated(name)
-        let groups = try groups.map { group -> Scene.Group in
+        var selections: [Int: SonosPlaylistTracksSelection] = [:]
+        let groups = try groups.enumerated().map { index, group -> Scene.Group in
             guard let coordinator = group.coordinator else {
                 throw ContractError.invalid("Choose the room that leads each scene group.")
             }
@@ -50,17 +56,27 @@ public struct SceneDraft: Equatable, Sendable {
                 throw ContractError.invalid("Choose Play or Pause for every new music source.")
             }
             let value = group.value.trimmingCharacters(in: .whitespacesAndNewlines)
-            let source = Scene.Source(kind: group.source.rawValue,
-                name: group.source == .favorite ? value : nil,
-                uri: group.source == .uri ? value : nil,
-                mood: group.source == .dj && !value.isEmpty ? value : nil)
+            let source: Scene.Source
+            if group.source == .nativeTracks {
+                guard let selection = group.nativeSelection else {
+                    throw ContractError.invalid("Choose native tracks from a saved playlist before creating this scene.")
+                }
+                source = try selection.sceneSource()
+                selections[index] = selection
+            } else {
+                source = Scene.Source(kind: group.source.rawValue,
+                    name: group.source == .favorite ? value : nil,
+                    uri: group.source == .uri ? value : nil,
+                    mood: group.source == .dj && !value.isEmpty ? value : nil)
+            }
             return Scene.Group(coordinator: coordinator.address,
                 members: group.members.map(\.address).sorted(), source: source,
                 playing: group.playback == .unchanged ? nil : group.playback == .playing)
         }
         return try SceneDefinition(groups: groups,
             volumes: Dictionary(uniqueKeysWithValues: volumes.map { ($0.key.address, $0.value) }),
-            mutes: Dictionary(uniqueKeysWithValues: mutes.map { ($0.key.address, $0.value) })).validated(zones: zones)
+            mutes: Dictionary(uniqueKeysWithValues: mutes.map { ($0.key.address, $0.value) }),
+            nativeSelections: selections).validated(zones: zones)
     }
 }
 
@@ -70,8 +86,22 @@ public struct SceneDefinition: Codable, Equatable, Sendable {
     public let groups: [Scene.Group]
     public let volumes: [String: Int]
     public let mutes: [String: Bool]
-    public init(groups: [Scene.Group] = [], volumes: [String: Int] = [:], mutes: [String: Bool] = [:]) {
+    /// Admission evidence is local to the reviewed request and is never decoded
+    /// from a saved scene or sent as caller-authored playback metadata.
+    var nativeSelections: [Int: SonosPlaylistTracksSelection] = [:]
+    enum CodingKeys: String, CodingKey { case groups, volumes, mutes }
+
+    public init(groups: [Scene.Group] = [], volumes: [String: Int] = [:], mutes: [String: Bool] = [:],
+                nativeSelections: [Int: SonosPlaylistTracksSelection] = [:]) {
         self.groups = groups; self.volumes = volumes; self.mutes = mutes
+        self.nativeSelections = nativeSelections
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var fields = encoder.container(keyedBy: CodingKeys.self)
+        try fields.encode(requestGroups(), forKey: .groups)
+        try fields.encode(volumes, forKey: .volumes)
+        try fields.encode(mutes, forKey: .mutes)
     }
 
     func validated(zones: [Zone]) throws -> Self {
@@ -92,14 +122,19 @@ public struct SceneDefinition: Codable, Equatable, Sendable {
             return room
         }
         var used = Set<RoomID>()
-        let checked = try groups.map { group -> Scene.Group in
+        guard nativeSelections.keys.allSatisfy({ groups.indices.contains($0) && groups[$0].source.kind == "sonos_playlist_tracks" }) else {
+            throw ContractError.invalid("The selected native scene sources no longer match this definition.")
+        }
+        let checked = try groups.enumerated().map { index, group -> Scene.Group in
             guard group.source.kind != "queue", group.source.kind != "queue_backup", group.source.queue == nil else {
                 throw ContractError.invalid("Capture the current house to save a queue position or backup. Captured queues cannot be authored.")
             }
-            guard group.source.kind != "sonos_playlist", group.source.playlist == nil else {
+            guard group.source.kind != "sonos_playlist",
+                  group.source.kind == "sonos_playlist_tracks" || group.source.playlist == nil else {
                 throw ContractError.invalid("Use the web remote or CLI to author a saved Sonos playlist source. Pinned playlist references cannot be copied into a custom native definition.")
             }
-            guard group.source.kind != "tracks", group.source.tracks == nil else {
+            guard group.source.kind != "tracks",
+                  group.source.kind == "sonos_playlist_tracks" || group.source.tracks == nil else {
                 throw ContractError.invalid("Use the web remote or CLI to author an ordered track scene. The native custom composer cannot copy or edit its saved selection.")
             }
             guard group.source.kind == "dj" || group.source.direction == nil else {
@@ -117,6 +152,14 @@ public struct SceneDefinition: Codable, Equatable, Sendable {
             }
             let source: Scene.Source
             switch group.source.kind {
+            case "sonos_playlist_tracks":
+                guard let selection = nativeSelections[index],
+                      PlaylistContentsRequest.exact(selection.zone.household, coordinator.household),
+                      zones.contains(where: { selection.zone.sameGroup(as: $0) }),
+                      try selection.sceneSource() == group.source else {
+                    throw ContractError.invalid("Choose the native selection again from its original household. Its saved display cannot be copied into an authored scene.")
+                }
+                source = group.source
             case "keep": source = .init(kind: "keep", name: nil, uri: nil, mood: nil)
             case "favorite":
                 let name = (group.source.name ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
@@ -141,7 +184,7 @@ public struct SceneDefinition: Codable, Equatable, Sendable {
             guard (0...100).contains(value) else { throw ContractError.invalid("Room levels must be from 0 to 100.") }
         }
         for address in mutes.keys { _ = try room(address) }
-        let definition = Self(groups: checked, volumes: volumes, mutes: mutes)
+        let definition = Self(groups: checked, volumes: volumes, mutes: mutes, nativeSelections: nativeSelections)
         _ = try definition.scene(named: "Draft").validated()
         return definition
     }
@@ -317,6 +360,7 @@ struct SceneMutationObservation: Sendable {
         }
         guard case .save(_, let requested, _) = command else { throw ClientError.unreadable }
         let checked = try requested.validated(zones: zones)
+        try await checked.validateNativeSelections(client: client, zones: zones)
         var wireGroups: [Scene.Group] = [], previewGroups: [Scene.Group] = []
         var favorites: [String: Favorite] = [:], moods: [String: MoodCatalog.Mood] = [:]
         for group in checked.groups {
@@ -346,7 +390,8 @@ struct SceneMutationObservation: Sendable {
         try Task.checkCancellation()
         let relevant = zones.filter { !$0.rooms.map(\.address).allSatisfy { !checked.roomAddresses.contains($0) } }
         return Self(expectedRevision: expectedRevision, groups: relevant,
-            definition: .init(groups: wireGroups, volumes: checked.volumes, mutes: checked.mutes),
+            definition: .init(groups: wireGroups, volumes: checked.volumes, mutes: checked.mutes,
+                              nativeSelections: checked.nativeSelections),
             preview: Scene(name: name, saved: 0, groups: previewGroups, volumes: checked.volumes, mutes: checked.mutes),
             favorites: favorites, moods: moods)
     }
@@ -367,7 +412,7 @@ struct SceneMutationObservation: Sendable {
               groups.allSatisfy({ old in current.groups.contains { old.sameGroup(as: $0) } }),
               definition == current.definition, preview == current.preview,
               favorites == current.favorites, moods == current.moods else {
-            throw ContractError.invalid("The reviewed rooms, favorite or DJ mood changed. Review the scene again; nothing was sent.")
+            throw ContractError.invalid("The reviewed rooms or selected music changed. Review the scene again; nothing was sent.")
         }
     }
 }

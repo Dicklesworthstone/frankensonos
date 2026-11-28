@@ -40,6 +40,11 @@ import FrankenSonosKit
     var body: some View {
         navigation
             .onChange(of: destination) { _, chosen in showPanel(for: chosen) }
+            .onChange(of: model.panel) { _, panel in
+                if panel == .scenes && model.sceneComposerOpen {
+                    housePanel = .scenes; destination = .house
+                }
+            }
             .sheet(isPresented: $showRooms) {
                 RoomPicker(bridge: bridge, select: { room in
                     model.select(room); showRooms = false

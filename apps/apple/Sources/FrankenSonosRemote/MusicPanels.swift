@@ -427,6 +427,11 @@ private enum MusicLibraryMode: String, CaseIterable {
             }.buttonStyle(.borderedProminent).disabled(!ready || model.panelProblem != nil)
             Text("Play now replaces each destination queue in this order with shuffle and repeat off. Queue next and Add to end leave playback alone. Review shows the affected groups and checks the selected source and destination observations again.")
                 .font(.caption).foregroundStyle(.secondary)
+            Button("Create scene from selection", systemImage: "sparkles") {
+                model.beginNativeTrackScene(selection: selection.id, in: zone)
+            }.buttonStyle(.bordered).disabled(!ready || model.panelProblem != nil)
+            Text("Keep these exact occurrences for later or for a routine. The chosen destinations open as explicit scene groups; choose a name and playing or silent preparation before saving. No music changes while creating the scene.")
+                .font(.caption).foregroundStyle(.secondary)
         }.remoteCard()
     }
 

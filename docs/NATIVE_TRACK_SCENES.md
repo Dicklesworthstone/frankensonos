@@ -132,6 +132,17 @@ playlist selection and save it under the existing scene name after reviewing
 the replacement. Saved selections remain independently recallable after the
 original playlist changes or disappears.
 
+## Apple authoring
+
+The native iPhone, iPad and Mac app offers **Create scene from selection** in
+**Music → Sonos playlists → Selected tracks**. It imports the same exact native
+occurrences and turns the chosen destination room or room set into explicit
+scene groups. The composer lets you name the scene, adjust its groups within
+the original household and choose **Play** or **Prepare silently** per group.
+Source pages and group identities are checked again before review and save.
+See [the Apple creation workflow](NATIVE_APPLE_TRACK_SCENES.md) for the complete
+steps and confirmation behavior.
+
 ## Recall and scheduled use
 
 `playing: true` replaces the destination queue, selects the first saved

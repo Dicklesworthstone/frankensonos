@@ -318,7 +318,7 @@ extension DaemonClient {
     func perform(_ review: SceneMutationReview) async throws -> SceneMutationReceipt {
         struct Body: Encodable {
             let expectedRevision: String
-            let groups: [Scene.Group]?
+            let groups: [JSONValue]?
             let volumes: [String: Int]?
             let mutes: [String: Bool]?
             enum CodingKeys: String, CodingKey {
@@ -334,7 +334,7 @@ extension DaemonClient {
         let definition = review.observation.definition
         request.httpBody = try JSONEncoder().encode(Body(
             expectedRevision: review.observation.expectedRevision,
-            groups: definition?.groups, volumes: definition?.volumes, mutes: definition?.mutes))
+            groups: try definition?.requestGroups(), volumes: definition?.volumes, mutes: definition?.mutes))
         try Task.checkCancellation()
         do {
             let reply = try await transport.send(request)
